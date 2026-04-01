@@ -245,64 +245,53 @@ static uint32_t s_prog_last_fetch = 0;
 
 static void fetch_program_info(const char* station_id) {
   HTTPClient h;
-  String url = "http://radiko.jp/v3/program/now/JP13.xml";  // Tokyo area, HTTP to save RAM
+  // Use per-station endpoint — smaller response, faster
+  String url = "http://radiko.jp/v3/program/station/weekly/" + String(station_id) + ".xml";
   h.begin(url);
-  h.setTimeout(8000);
+  h.setTimeout(5000);
+  h.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   int code = h.GET();
   if (code != 200) {
-    songTitle = String("Fetch err:") + code;
+    songTitle = String("Fetch:") + code;
     h.end();
     return;
   }
 
-  // Stream through response looking for our station
-  WiFiClient* stream = h.getStreamPtr();
-  String stationTag = String("<station id=\"") + station_id + "\"";
-  bool inStation = false;
-  bool foundProg = false;
+  String body = h.getString();
+  h.end();
+
+  // Find first <prog> block (currently airing program)
+  // Look for <title> and <pfm> in the first prog entry
   s_prog_title = "";
   s_prog_pfm = "";
 
-  String line;
-  while (stream->available() || stream->connected()) {
-    line = stream->readStringUntil('\n');
-    if (!inStation) {
-      if (line.indexOf(stationTag) >= 0) inStation = true;
-      continue;
-    }
-    // Inside our station block
-    if (line.indexOf("</station>") >= 0) break;
+  int progStart = body.indexOf("<prog ");
+  if (progStart < 0) return;
 
-    // Find first <prog> block (current program)
-    if (!foundProg && line.indexOf("<prog ") >= 0) foundProg = true;
-    if (foundProg) {
-      // Extract <title>...</title>
-      int ts = line.indexOf("<title>");
-      int te = line.indexOf("</title>");
-      if (ts >= 0 && te > ts) {
-        s_prog_title = line.substring(ts + 7, te);
-        s_prog_title.trim();
-      }
-      // Extract <pfm>...</pfm> (personality)
-      int ps = line.indexOf("<pfm>");
-      int pe = line.indexOf("</pfm>");
-      if (ps >= 0 && pe > ps) {
-        s_prog_pfm = line.substring(ps + 5, pe);
-        s_prog_pfm.trim();
-      }
-      // Stop after first </prog>
-      if (line.indexOf("</prog>") >= 0) break;
-    }
+  int progEnd = body.indexOf("</prog>", progStart);
+  if (progEnd < 0) progEnd = body.length();
+  String prog = body.substring(progStart, progEnd);
+
+  int ts = prog.indexOf("<title>");
+  int te = prog.indexOf("</title>");
+  if (ts >= 0 && te > ts) {
+    s_prog_title = prog.substring(ts + 7, te);
+    s_prog_title.trim();
   }
-  h.end();
+
+  int ps = prog.indexOf("<pfm>");
+  int pe = prog.indexOf("</pfm>");
+  if (ps >= 0 && pe > ps) {
+    s_prog_pfm = prog.substring(ps + 5, pe);
+    s_prog_pfm.trim();
+  }
+
   s_prog_last_fetch = millis();
 
-  // Update song title
   if (s_prog_title.length() > 0) {
     songTitle = s_prog_title;
-    if (s_prog_pfm.length() > 0) {
+    if (s_prog_pfm.length() > 0)
       songTitle += " / " + s_prog_pfm;
-    }
   }
 }
 
