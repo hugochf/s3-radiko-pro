@@ -156,9 +156,18 @@ static int bat_pct() {
 }
 
 static bool bat_is_charging() {
-  // Charging detection: voltage > 4200mV suggests USB power / charging
+  // No hardware charge status pin on this board (TP4054 CHRG drives LED only).
+  // Detect charging by voltage trend: if voltage is rising, likely charging.
+  static int prev_mv = 0;
+  static int rising_count = 0;
   int mv = s_bat_mv_avg;
-  return mv > 4250;
+  if (prev_mv > 0) {
+    if (mv > prev_mv + 5) rising_count = min(rising_count + 1, 5);  // rising
+    else if (mv < prev_mv - 5) rising_count = max(rising_count - 2, 0);  // falling
+  }
+  prev_mv = mv;
+  // Consider charging if voltage consistently rising AND above 4.0V (to avoid false positives during WiFi load dips)
+  return (rising_count >= 3 && mv > 4000) || mv > 4250;
 }
 
 // ============================================================
