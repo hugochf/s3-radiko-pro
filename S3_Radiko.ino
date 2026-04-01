@@ -88,17 +88,18 @@ i2c_master_dev_handle_t g_es8311_dev = nullptr;
 static Audio  audio;
 static String radikoToken  = "";
 static int    currentStn   = 0;
-static int    currentVol   = 50;   // 0–100 (ES8311 percentage)
+static int    currentVol   = 40;   // 0–100 (ES8311 percentage)
 static bool   isPlaying    = false;
 static String songTitle    = "";
 
 // ============================================================
 // BACKLIGHT / SCREEN TIMEOUT
 // ============================================================
-#define TIMEOUT_MS   60000UL  // 60 s → dim screen
-#define DIM_DUTY     18       // ~7% brightness when dimmed (0–255)
+#define DIM_TIMEOUT_MS   300000UL  // 5 min → dim screen
+#define OFF_TIMEOUT_MS   600000UL  // 10 min → screen off
+#define DIM_DUTY     18            // ~7% brightness when dimmed (0–255)
 static unsigned long lastTouch  = 0;
-static bool          isDimmed   = false;
+static uint8_t       screenState = 0;  // 0=on, 1=dimmed, 2=off
 
 static void bl_set(int duty) { ledcWrite(PIN_BL, duty); }
 
@@ -199,7 +200,7 @@ static void lv_touch(lv_indev_drv_t *, lv_indev_data_t *data) {
     data->point.x = touch_last_x;
     data->point.y = touch_last_y;
     lastTouch     = millis();
-    if (isDimmed) { isDimmed = false; bl_set(255); }
+    if (screenState > 0) { screenState = 0; bl_set(255); }
   } else {
     data->state = LV_INDEV_STATE_REL;
   }
@@ -544,41 +545,57 @@ static void build_playing_screen() {
   lv_obj_set_style_text_font(wi_vol, &lv_font_montserrat_12, 0);
   lv_obj_align(wi_vol, LV_ALIGN_RIGHT_MID, -8, 0);
 
-  // ---- Control buttons ----
-  lv_obj_t *brow = lv_obj_create(scr_play);
-  lv_obj_set_size(brow, 320, 40);
-  lv_obj_set_pos(brow, 0, 163);
-  lv_obj_set_style_bg_opa(brow, LV_OPA_TRANSP, 0);
-  lv_obj_set_style_border_width(brow, 0, 0);
-  lv_obj_set_style_pad_all(brow, 0, 0);
-  lv_obj_clear_flag(brow, LV_OBJ_FLAG_SCROLLABLE);
+  // ---- Circle control buttons ----
+  int btn_y = 170;  // vertical center for buttons
 
-  struct { const char* sym; lv_event_cb_t cb; lv_align_t al; int xo; } btns[] = {
-    {LV_SYMBOL_PREV,  ev_prev, LV_ALIGN_LEFT_MID,   10},
-    {LV_SYMBOL_PLAY,  ev_play, LV_ALIGN_CENTER,       0},
-    {LV_SYMBOL_NEXT,  ev_next, LV_ALIGN_RIGHT_MID, -10},
-  };
-  for (int i = 0; i < 3; i++) {
-    lv_obj_t *btn = lv_btn_create(brow);
-    lv_obj_set_size(btn, 90, 36);
-    lv_obj_align(btn, btns[i].al, btns[i].xo, 0);
-    lv_obj_set_style_bg_color(btn, lv_color_hex(C_ACCENT), LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(btn, lv_color_hex(C_HL),     LV_STATE_PRESSED);
-    lv_obj_set_style_radius(btn, 8, 0);
-    lv_obj_set_style_shadow_width(btn, 0, 0);
-    lv_obj_add_event_cb(btn, btns[i].cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *lbl = lv_label_create(btn);
-    lv_label_set_text(lbl, btns[i].sym);
-    lv_obj_set_style_text_color(lbl, lv_color_hex(C_TEXT), 0);
-    lv_obj_center(lbl);
-    if (i == 1) wi_play = lbl;  // keep handle to PLAY label
-  }
+  // Prev (small circle)
+  lv_obj_t *btn_prev = lv_btn_create(scr_play);
+  lv_obj_set_size(btn_prev, 44, 44);
+  lv_obj_set_pos(btn_prev, 50, btn_y);
+  lv_obj_set_style_radius(btn_prev, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(btn_prev, lv_color_hex(C_ACCENT), LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_color(btn_prev, lv_color_hex(C_HL), LV_STATE_PRESSED);
+  lv_obj_set_style_shadow_width(btn_prev, 0, 0);
+  lv_obj_add_event_cb(btn_prev, ev_prev, LV_EVENT_CLICKED, NULL);
+  lv_obj_t *lbl_prev = lv_label_create(btn_prev);
+  lv_label_set_text(lbl_prev, LV_SYMBOL_PREV);
+  lv_obj_set_style_text_color(lbl_prev, lv_color_hex(C_TEXT), 0);
+  lv_obj_center(lbl_prev);
+
+  // Play/Pause (big circle)
+  lv_obj_t *btn_play = lv_btn_create(scr_play);
+  lv_obj_set_size(btn_play, 56, 56);
+  lv_obj_set_pos(btn_play, 132, btn_y - 6);
+  lv_obj_set_style_radius(btn_play, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(btn_play, lv_color_hex(C_HL), LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_color(btn_play, lv_color_hex(0xC03050), LV_STATE_PRESSED);
+  lv_obj_set_style_shadow_width(btn_play, 0, 0);
+  lv_obj_add_event_cb(btn_play, ev_play, LV_EVENT_CLICKED, NULL);
+  wi_play = lv_label_create(btn_play);
+  lv_label_set_text(wi_play, LV_SYMBOL_PLAY);
+  lv_obj_set_style_text_color(wi_play, lv_color_hex(C_TEXT), 0);
+  lv_obj_set_style_text_font(wi_play, &lv_font_montserrat_16, 0);
+  lv_obj_center(wi_play);
+
+  // Next (small circle)
+  lv_obj_t *btn_next = lv_btn_create(scr_play);
+  lv_obj_set_size(btn_next, 44, 44);
+  lv_obj_set_pos(btn_next, 226, btn_y);
+  lv_obj_set_style_radius(btn_next, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(btn_next, lv_color_hex(C_ACCENT), LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_color(btn_next, lv_color_hex(C_HL), LV_STATE_PRESSED);
+  lv_obj_set_style_shadow_width(btn_next, 0, 0);
+  lv_obj_add_event_cb(btn_next, ev_next, LV_EVENT_CLICKED, NULL);
+  lv_obj_t *lbl_next = lv_label_create(btn_next);
+  lv_label_set_text(lbl_next, LV_SYMBOL_NEXT);
+  lv_obj_set_style_text_color(lbl_next, lv_color_hex(C_TEXT), 0);
+  lv_obj_center(lbl_next);
 
   // ---- Station position dots ----
   lv_obj_t *drow = lv_obj_create(scr_play);
-  int dot_w = NUM_STATIONS * 8 + (NUM_STATIONS - 1) * 4;  // 8px dot, 4px gap
+  int dot_w = NUM_STATIONS * 8 + (NUM_STATIONS - 1) * 4;
   lv_obj_set_size(drow, 320, 12);
-  lv_obj_set_pos(drow, 0, 206);
+  lv_obj_set_pos(drow, 0, 224);
   lv_obj_set_style_bg_opa(drow, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(drow, 0, 0);
   lv_obj_set_style_pad_all(drow, 0, 0);
@@ -616,16 +633,17 @@ static void build_list_screen() {
   lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
 
   lv_obj_t *back = lv_btn_create(hdr);
-  lv_obj_set_size(back, 60, 22);
-  lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
+  lv_obj_set_size(back, 80, 26);
+  lv_obj_align(back, LV_ALIGN_LEFT_MID, -2, 0);
   lv_obj_set_style_bg_color(back, lv_color_hex(C_ACCENT), 0);
+  lv_obj_set_style_bg_color(back, lv_color_hex(C_HL), LV_STATE_PRESSED);
   lv_obj_set_style_radius(back, 6, 0);
   lv_obj_set_style_shadow_width(back, 0, 0);
   lv_obj_add_event_cb(back, ev_back, LV_EVENT_CLICKED, NULL);
   lv_obj_t *blbl = lv_label_create(back);
   lv_label_set_text(blbl, LV_SYMBOL_LEFT " Back");
   lv_obj_set_style_text_color(blbl, lv_color_hex(C_TEXT), 0);
-  lv_obj_set_style_text_font(blbl, &lv_font_montserrat_12, 0);
+  lv_obj_set_style_text_font(blbl, &lv_font_montserrat_14, 0);
   lv_obj_center(blbl);
 
   lv_obj_t *ttl = lv_label_create(hdr);
@@ -660,36 +678,19 @@ static void build_list_screen() {
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(row, ev_select_stn, LV_EVENT_CLICKED, (void*)(uintptr_t)i);
 
-    // Station color tile
-    lv_obj_t *tile = lv_obj_create(row);
-    lv_obj_set_size(tile, 34, 34);
-    lv_obj_set_pos(tile, 0, 0);
-    lv_obj_set_style_bg_color(tile, lv_color_hex(STATIONS[i].color), 0);
-    lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(tile, 6, 0);
-    lv_obj_set_style_border_width(tile, 0, 0);
-    lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_t *tlbl = lv_label_create(tile);
-    lv_label_set_text(tlbl, STATIONS[i].abbr);
-    lv_obj_set_style_text_color(tlbl, lv_color_white(), 0);
-    lv_obj_set_style_text_font(tlbl, &lv_font_montserrat_10, 0);
-    lv_obj_center(tlbl);
-
-    // Japanese station name
-    lv_obj_t *name = lv_label_create(row);
-    lv_label_set_text(name, STATIONS[i].name);
-    lv_obj_set_style_text_color(name, lv_color_hex(C_TEXT), 0);
-    lv_obj_set_style_text_font(name, &lv_font_jp_16, 0);
-    lv_obj_set_width(name, 210);
-    lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-    lv_obj_set_pos(name, 42, 2);
+    // Station logo (scaled down)
+    lv_obj_t *logo = lv_img_create(row);
+    lv_img_set_src(logo, STATIONS[i].logo);
+    lv_img_set_zoom(logo, 142);  // scale 216x54 → ~120x30
+    lv_obj_set_pos(logo, 0, 0);
+    lv_obj_set_size(logo, 120, 30);
 
     // Station ID
     lv_obj_t *id = lv_label_create(row);
     lv_label_set_text(id, STATIONS[i].id);
     lv_obj_set_style_text_color(id, lv_color_hex(C_DIM), 0);
     lv_obj_set_style_text_font(id, &lv_font_montserrat_10, 0);
-    lv_obj_set_pos(id, 42, 22);
+    lv_obj_set_pos(id, 130, 10);
   }
 }
 
@@ -840,9 +841,14 @@ void loop() {
   }
 
   // Screen timeout
-  if (!isDimmed && millis() - lastTouch > TIMEOUT_MS) {
-    isDimmed = true;
+  // Screen timeout: 5min→dim, 10min→off
+  uint32_t idle = millis() - lastTouch;
+  if (screenState == 0 && idle > DIM_TIMEOUT_MS) {
+    screenState = 1;
     bl_set(DIM_DUTY);
+  } else if (screenState == 1 && idle > OFF_TIMEOUT_MS) {
+    screenState = 2;
+    bl_set(0);
   }
 
   // Periodic status bar + song title (~2s)
