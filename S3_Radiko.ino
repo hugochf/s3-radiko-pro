@@ -245,11 +245,15 @@ static uint32_t s_prog_last_fetch = 0;
 
 static void fetch_program_info(const char* station_id) {
   HTTPClient h;
-  String url = "https://radiko.jp/v3/program/now/JP13.xml";  // Tokyo area
+  String url = "http://radiko.jp/v3/program/now/JP13.xml";  // Tokyo area, HTTP to save RAM
   h.begin(url);
-  h.setTimeout(5000);
+  h.setTimeout(8000);
   int code = h.GET();
-  if (code != 200) { h.end(); return; }
+  if (code != 200) {
+    songTitle = String("Fetch err:") + code;
+    h.end();
+    return;
+  }
 
   // Stream through response looking for our station
   WiFiClient* stream = h.getStreamPtr();
