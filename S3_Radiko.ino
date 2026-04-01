@@ -336,6 +336,10 @@ static void do_connect(int idx) {
   lv_refr_now(NULL);  // force pixels to display before blocking SSL
 
   audio.stopSong();
+
+  // Fetch program info NOW while audio is stopped (no conflict)
+  fetch_program_info(STATIONS[idx].id);
+
   String hdr = "X-Radiko-AuthToken: " + radikoToken + "\r\n";
   audio.setExtraHeaders(hdr.c_str());
   String url = "https://f-radiko.smartstream.ne.jp/";
@@ -345,10 +349,8 @@ static void do_connect(int idx) {
 
   hide_status();
   isPlaying = true;
-  songTitle = "";
   s_pending_stn = -1;
   s_pending_connect_ms = 0;
-  s_prog_last_fetch = 0;  // trigger fetch on next loop iteration
 }
 
 static void stop_stn() {
@@ -949,10 +951,4 @@ void loop() {
     }
   }
 
-  // Fetch program info: immediately after connect (s_prog_last_fetch==0) then every 3 min
-  if (isPlaying && (s_prog_last_fetch == 0 || millis() - s_prog_last_fetch > 180000)) {
-    fetch_program_info(STATIONS[currentStn].id);
-    if (wi_title && songTitle.length() > 0)
-      lv_label_set_text(wi_title, songTitle.c_str());
-  }
 }
