@@ -269,21 +269,12 @@ static void fetch_program_info(const char* station_id) {
   s_prog_pfm = "";
 
   // Debug: show size + first 50 chars
-  if (body.length() == 0) {
-    songTitle = String("Empty H:") + code;
-    return;
-  }
+  if (body.length() == 0) { return; }
 
   // Find our station
   String tag = String("id=\"") + station_id + "\"";
   int stnPos = body.indexOf(tag);
-  if (stnPos < 0) {
-    // Debug: check if station_id exists at all
-    int anyPos = body.indexOf(station_id);
-    songTitle = String("A:") + radikoArea + " L:" + body.length()
-              + (anyPos >= 0 ? " @" + String(anyPos) : " NO");
-    return;
-  }
+  if (stnPos < 0) { return; }
 
   // Find first <prog> after station
   int progStart = body.indexOf("<prog ", stnPos);
@@ -306,7 +297,7 @@ static void fetch_program_info(const char* station_id) {
     if (s_prog_pfm.length() > 0)
       songTitle += "  " + s_prog_pfm;
   } else {
-    songTitle = "no title in prog";
+    songTitle = STATIONS[currentStn].name;
   }
 }
 
