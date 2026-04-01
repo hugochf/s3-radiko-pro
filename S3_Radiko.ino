@@ -252,66 +252,50 @@ static void fetch_program_info(const char* station_id) {
   int code = h.GET();
   if (code != 200) { h.end(); return; }
 
-  WiFiClient* stream = h.getStreamPtr();
-  String tag = String("id=\"") + station_id + "\"";
-  bool inStation = false;
+  // Read small portion with getString — simpler, avoids stream issues
+  String body = h.getString();
+  h.end();
+  s_prog_last_fetch = millis();
+
   s_prog_title = "";
   s_prog_pfm = "";
 
-  // Read in larger chunks for speed
-  String buf;
-  buf.reserve(4096);
-  uint32_t t0 = millis();
-  while (stream->connected() && millis() - t0 < 5000) {
-    int avail = stream->available();
-    if (avail == 0) { delay(5); continue; }
-    // Read a chunk
-    char tmp[512];
-    int n = stream->readBytes(tmp, min(avail, 511));
-    tmp[n] = 0;
-    buf += tmp;
-
-    // Searching for our station
-    if (!inStation) {
-      int pos = buf.indexOf(tag);
-      if (pos >= 0) {
-        inStation = true;
-        buf = buf.substring(pos);  // keep from station tag onward
-      } else if (buf.length() > 4000) {
-        buf = buf.substring(buf.length() - 500);  // keep tail
-      }
-      continue;
-    }
-
-    // In our station — look for first </prog>
-    int progEnd = buf.indexOf("</prog>");
-    if (progEnd >= 0) {
-      String prog = buf.substring(0, progEnd);
-      int ts = prog.indexOf("<title>");
-      int te = prog.indexOf("</title>");
-      if (ts >= 0 && te > ts) s_prog_title = prog.substring(ts + 7, te);
-      int ps = prog.indexOf("<pfm>");
-      int pe = prog.indexOf("</pfm>");
-      if (ps >= 0 && pe > ps) s_prog_pfm = prog.substring(ps + 5, pe);
-      break;
-    }
-    if (buf.indexOf("</station>") >= 0) break;  // past our station
+  // Debug: show size + first 50 chars
+  if (body.length() == 0) {
+    songTitle = String("Empty H:") + code;
+    return;
   }
-  h.end();
-  s_prog_last_fetch = millis();
+
+  // Find our station
+  String tag = String("id=\"") + station_id + "\"";
+  int stnPos = body.indexOf(tag);
+  if (stnPos < 0) {
+    songTitle = String("L:") + body.length() + " " + body.substring(0, 40);
+    return;
+  }
+
+  // Find first <prog> after station
+  int progStart = body.indexOf("<prog ", stnPos);
+  int progEnd = body.indexOf("</prog>", progStart);
+  if (progStart < 0 || progEnd < 0) {
+    songTitle = "no prog block";
+    return;
+  }
+
+  String prog = body.substring(progStart, progEnd);
+  int ts = prog.indexOf("<title>");
+  int te = prog.indexOf("</title>");
+  if (ts >= 0 && te > ts) s_prog_title = prog.substring(ts + 7, te);
+  int ps = prog.indexOf("<pfm>");
+  int pe = prog.indexOf("</pfm>");
+  if (ps >= 0 && pe > ps) s_prog_pfm = prog.substring(ps + 5, pe);
 
   if (s_prog_title.length() > 0) {
     songTitle = s_prog_title;
     if (s_prog_pfm.length() > 0)
       songTitle += "  " + s_prog_pfm;
   } else {
-    // Debug: show HTTP code + first 20 bytes as hex
-    String dbg = String("H:") + code + " ";
-    for (int i = 0; i < 20 && i < (int)buf.length(); i++) {
-      char hx[4]; snprintf(hx, sizeof hx, "%02X ", (uint8_t)buf[i]);
-      dbg += hx;
-    }
-    songTitle = dbg;
+    songTitle = "no title in prog";
   }
 }
 
