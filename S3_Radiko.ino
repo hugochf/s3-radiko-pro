@@ -132,18 +132,14 @@ static int bat_pct() {
 // ============================================================
 static TFT_eSPI           tft;
 static lv_disp_draw_buf_t lv_draw_buf;
-static lv_color_t*        lv_px_buf1 = nullptr;  // double buffer in PSRAM
-static lv_color_t*        lv_px_buf2 = nullptr;
+static lv_color_t*        lv_px_buf = nullptr;  // allocated in PSRAM to save internal RAM for SSL
 
 static void lv_flush(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *px) {
   uint32_t w = area->x2 - area->x1 + 1;
   uint32_t h = area->y2 - area->y1 + 1;
-  tft.dmaWait();  // wait for previous DMA to finish
-  tft.startWrite();
   tft.setAddrWindow(area->x1, area->y1, w, h);
-  tft.pushPixelsDMA((uint16_t*)px, w * h);
-  tft.endWrite();
-  lv_disp_flush_ready(drv);  // LVGL can render to other buffer while DMA runs
+  tft.pushColors((uint16_t*)&px->full, w * h, true);
+  lv_disp_flush_ready(drv);
 }
 
 static void lv_touch(lv_indev_drv_t *, lv_indev_data_t *data) {
@@ -709,13 +705,10 @@ void setup() {
   // Battery ADC
   bat_init();
 
-  // LVGL — double-buffered DMA in PSRAM (saves internal RAM for SSL + faster flushes)
-  #define LV_BUF_LINES 60  // larger buffer = fewer flush cycles
-  lv_px_buf1 = (lv_color_t*)ps_malloc(320 * LV_BUF_LINES * sizeof(lv_color_t));
-  lv_px_buf2 = (lv_color_t*)ps_malloc(320 * LV_BUF_LINES * sizeof(lv_color_t));
-  tft.initDMA();
+  // LVGL — display buffer in PSRAM to keep internal RAM free for SSL
+  lv_px_buf = (lv_color_t*)ps_malloc(320 * 30 * sizeof(lv_color_t));
   lv_init();
-  lv_disp_draw_buf_init(&lv_draw_buf, lv_px_buf1, lv_px_buf2, 320 * LV_BUF_LINES);
+  lv_disp_draw_buf_init(&lv_draw_buf, lv_px_buf, NULL, 320 * 30);
 
   static lv_disp_drv_t disp_drv;
   lv_disp_drv_init(&disp_drv);
