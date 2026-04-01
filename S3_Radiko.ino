@@ -87,6 +87,7 @@ i2c_master_dev_handle_t g_es8311_dev = nullptr;
 
 static Audio  audio;
 static String radikoToken  = "";
+static String radikoArea   = "JP13";  // updated by auth2 response
 static int    currentStn   = 0;
 static int    currentVol   = 50;   // 0–100 (ES8311 percentage)
 static bool   isPlaying    = false;
@@ -232,7 +233,13 @@ static bool radiko_auth() {
   h.addHeader("X-Radiko-User",       "dummy_user");
   h.addHeader("X-Radiko-Device",     "pc");
   if (h.GET() != 200) { h.end(); return false; }
+  String auth2body = h.getString();  // e.g. "JP13,東京都,tokyo Japan"
   h.end();
+
+  // Extract area_id from auth2 response (first field before comma)
+  int comma = auth2body.indexOf(',');
+  if (comma > 0) radikoArea = auth2body.substring(0, comma);
+  radikoArea.trim();
 
   radikoToken = tok1;
   return true;
@@ -245,7 +252,8 @@ static uint32_t s_prog_last_fetch = 0;
 
 static void fetch_program_info(const char* station_id) {
   HTTPClient h;
-  h.begin("https://radiko.jp/v3/program/now/JP13.xml");
+  String progUrl = "https://radiko.jp/v3/program/now/" + radikoArea + ".xml";
+  h.begin(progUrl);
   h.setTimeout(5000);
   h.useHTTP10(true);  // HTTP/1.0: no chunked, no compression
   h.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
