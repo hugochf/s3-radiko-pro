@@ -249,6 +249,8 @@ static uint32_t s_pending_connect_ms = 0;
 static int      s_pending_stn        = -1;
 
 static void play_stn(int idx) {
+  audio.stopSong();  // stop immediately for smooth UI navigation
+  isPlaying = false;
   currentStn = idx;
   songTitle = STATIONS[idx].name;
   s_pending_stn = idx;
