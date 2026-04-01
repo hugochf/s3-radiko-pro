@@ -245,53 +245,61 @@ static uint32_t s_prog_last_fetch = 0;
 
 static void fetch_program_info(const char* station_id) {
   HTTPClient h;
-  // Use per-station endpoint — smaller response, faster
-  String url = "http://radiko.jp/v3/program/station/weekly/" + String(station_id) + ".xml";
-  h.begin(url);
-  h.setTimeout(5000);
+  // "now" area endpoint — small response, only current programs
+  h.begin("https://radiko.jp/v3/program/now/JP13.xml");
+  h.setTimeout(8000);
   h.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   int code = h.GET();
-  if (code != 200) {
-    songTitle = String("Fetch:") + code;
-    h.end();
-    return;
-  }
+  if (code != 200) { h.end(); return; }
 
-  String body = h.getString();
-  h.end();
-
-  // Find first <prog> block (currently airing program)
-  // Look for <title> and <pfm> in the first prog entry
+  // Find our station's current program in the response
+  // Search for station block, then extract title and pfm
+  WiFiClient* stream = h.getStreamPtr();
+  String stationTag = String("id=\"") + station_id + "\"";
+  bool found = false;
   s_prog_title = "";
   s_prog_pfm = "";
 
-  int progStart = body.indexOf("<prog ");
-  if (progStart < 0) return;
+  // Read in chunks, search for our station's prog block
+  String buf = "";
+  uint32_t start = millis();
+  while ((stream->available() || stream->connected()) && millis() - start < 6000) {
+    if (!stream->available()) { delay(1); continue; }
+    char c = stream->read();
+    buf += c;
 
-  int progEnd = body.indexOf("</prog>", progStart);
-  if (progEnd < 0) progEnd = body.length();
-  String prog = body.substring(progStart, progEnd);
+    // Keep buffer manageable — only need to find our station
+    if (buf.length() > 2000) {
+      if (!found) buf = buf.substring(1000);  // slide window
+      else break;  // got enough
+    }
 
-  int ts = prog.indexOf("<title>");
-  int te = prog.indexOf("</title>");
-  if (ts >= 0 && te > ts) {
-    s_prog_title = prog.substring(ts + 7, te);
-    s_prog_title.trim();
+    if (!found && buf.indexOf(stationTag) >= 0) {
+      found = true;
+      buf = "";  // reset, collect prog data
+    }
+
+    if (found && buf.indexOf("</prog>") >= 0) {
+      // Extract title
+      int ts = buf.indexOf("<title>");
+      int te = buf.indexOf("</title>");
+      if (ts >= 0 && te > ts)
+        s_prog_title = buf.substring(ts + 7, te);
+      // Extract personality
+      int ps = buf.indexOf("<pfm>");
+      int pe = buf.indexOf("</pfm>");
+      if (ps >= 0 && pe > ps)
+        s_prog_pfm = buf.substring(ps + 5, pe);
+      break;
+    }
   }
-
-  int ps = prog.indexOf("<pfm>");
-  int pe = prog.indexOf("</pfm>");
-  if (ps >= 0 && pe > ps) {
-    s_prog_pfm = prog.substring(ps + 5, pe);
-    s_prog_pfm.trim();
-  }
-
+  h.end();
   s_prog_last_fetch = millis();
 
   if (s_prog_title.length() > 0) {
     songTitle = s_prog_title;
     if (s_prog_pfm.length() > 0)
-      songTitle += " / " + s_prog_pfm;
+      songTitle += "  " + s_prog_pfm;
   }
 }
 
@@ -338,6 +346,8 @@ static void do_connect(int idx) {
 
   hide_status();
   isPlaying = true;
+  if (songTitle == "Connecting...") songTitle = "";  // clear if fetch didn't update
+  refresh_playing();
   s_pending_stn = -1;
   s_pending_connect_ms = 0;
 }
