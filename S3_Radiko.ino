@@ -86,7 +86,7 @@ i2c_master_dev_handle_t g_es8311_dev = nullptr;
 static Audio  audio;
 static String radikoToken  = "";
 static int    currentStn   = 0;
-static int    currentVol   = 75;   // 0–100 (ES8311 percentage)
+static int    currentVol   = 50;   // 0–100 (ES8311 percentage)
 static bool   isPlaying    = false;
 static String songTitle    = "";
 
