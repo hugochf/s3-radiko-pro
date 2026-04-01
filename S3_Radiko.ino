@@ -132,13 +132,17 @@ static int bat_pct() {
 // ============================================================
 static TFT_eSPI           tft;
 static lv_disp_draw_buf_t lv_draw_buf;
-static lv_color_t*        lv_px_buf = nullptr;  // allocated in PSRAM to save internal RAM for SSL
+static lv_color_t*        lv_px_buf1 = nullptr;  // double buffer in PSRAM
+static lv_color_t*        lv_px_buf2 = nullptr;
 
 static void lv_flush(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *px) {
   uint32_t w = area->x2 - area->x1 + 1;
   uint32_t h = area->y2 - area->y1 + 1;
+  tft.dmaWait();   // wait for previous DMA transfer to finish
+  tft.startWrite();
   tft.setAddrWindow(area->x1, area->y1, w, h);
-  tft.pushColors((uint16_t*)&px->full, w * h, true);
+  tft.pushPixelsDMA((uint16_t*)px, w * h);  // start DMA (non-blocking)
+  tft.endWrite();
   lv_disp_flush_ready(drv);
 }
 
@@ -678,6 +682,7 @@ void setup() {
   tft.init();
   tft.setRotation(1);
   tft.fillScreen(TFT_BLACK);
+  tft.initDMA();
 
   // Backlight PWM – attach AFTER tft.init() which calls pinMode(TFT_BL)
   ledcAttach(PIN_BL, 5000, 8);
@@ -705,10 +710,11 @@ void setup() {
   // Battery ADC
   bat_init();
 
-  // LVGL — display buffer in PSRAM to keep internal RAM free for SSL
-  lv_px_buf = (lv_color_t*)ps_malloc(320 * 30 * sizeof(lv_color_t));
+  // LVGL — double buffer in PSRAM (keeps internal RAM free for SSL + enables DMA overlap)
+  lv_px_buf1 = (lv_color_t*)ps_malloc(320 * 60 * sizeof(lv_color_t));
+  lv_px_buf2 = (lv_color_t*)ps_malloc(320 * 60 * sizeof(lv_color_t));
   lv_init();
-  lv_disp_draw_buf_init(&lv_draw_buf, lv_px_buf, NULL, 320 * 30);
+  lv_disp_draw_buf_init(&lv_draw_buf, lv_px_buf1, lv_px_buf2, 320 * 60);
 
   static lv_disp_drv_t disp_drv;
   lv_disp_drv_init(&disp_drv);
