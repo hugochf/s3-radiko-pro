@@ -303,6 +303,9 @@ static void fetch_program_info(const char* station_id) {
     songTitle = s_prog_title;
     if (s_prog_pfm.length() > 0)
       songTitle += "  " + s_prog_pfm;
+  } else {
+    // Debug: show what happened
+    songTitle = inStation ? "found stn, no title" : "stn not found";
   }
 }
 
