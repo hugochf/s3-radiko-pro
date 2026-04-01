@@ -688,7 +688,7 @@ static void build_list_screen() {
     lv_label_set_text(id, STATIONS[i].id);
     lv_obj_set_style_text_color(id, lv_color_hex(C_DIM), 0);
     lv_obj_set_style_text_font(id, &lv_font_montserrat_12, 0);
-    lv_obj_align(id, LV_ALIGN_RIGHT_MID, -10, 0);
+    lv_obj_align(id, LV_ALIGN_RIGHT_MID, -16, 0);
   }
 }
 
