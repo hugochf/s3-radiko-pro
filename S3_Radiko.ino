@@ -365,6 +365,10 @@ static void ev_vol_changed(lv_event_t*) {
   es8311_voice_volume_set(g_es8311_dev, currentVol, nullptr);
 }
 static void ev_show_list(lv_event_t*) {
+  audio.stopSong();
+  isPlaying = false;
+  s_pending_stn = -1;       // cancel any pending connect
+  s_pending_connect_ms = 0;
   lv_scr_load(scr_list);
 }
 static void ev_back(lv_event_t*) {
