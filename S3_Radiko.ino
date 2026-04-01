@@ -686,7 +686,7 @@ static void build_list_screen() {
     lv_obj_t *logo = lv_img_create(row);
     lv_img_set_src(logo, STATIONS[i].logo);
     lv_img_set_zoom(logo, 200);  // scale 216x54 → ~169x42
-    lv_obj_align(logo, LV_ALIGN_LEFT_MID, -4, 0);
+    lv_obj_align(logo, LV_ALIGN_LEFT_MID, -6, 0);
 
     // Station full name, right-aligned
     lv_obj_t *name = lv_label_create(row);
