@@ -323,7 +323,6 @@ static lv_obj_t *wi_wifi   = nullptr;  // status bar: WiFi icon
 static lv_obj_t *wi_bat    = nullptr;  // status bar: battery
 static lv_obj_t *wi_logo   = nullptr;  // station logo box
 static lv_obj_t *wi_logo_img = nullptr; // station logo image
-static lv_obj_t *wi_name   = nullptr;  // Japanese station name
 static lv_obj_t *wi_slider = nullptr;  // volume slider
 static lv_obj_t *wi_vol    = nullptr;  // volume value label
 static lv_obj_t *wi_play   = nullptr;  // play/pause button label
@@ -389,7 +388,6 @@ static void refresh_playing() {
   if (!scr_play) return;
   const Station& s = STATIONS[currentStn];
   if (wi_logo_img && s.logo) lv_img_set_src(wi_logo_img, s.logo);
-  lv_label_set_text(wi_name, s.name);
   lv_label_set_text(wi_title, songTitle.isEmpty() ? "---" : songTitle.c_str());
   lv_label_set_text(wi_play, isPlaying ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
   lv_slider_set_value(wi_slider, currentVol, LV_ANIM_OFF);
@@ -488,10 +486,10 @@ static void build_playing_screen() {
   lv_obj_set_style_text_font(wi_bat, &lv_font_montserrat_12, 0);
   lv_obj_align(wi_bat, LV_ALIGN_RIGHT_MID, -4, 0);
 
-  // ---- Station logo (216×54, tappable → list) ----
+  // ---- Station logo (216×54, centered, tappable → list) ----
   wi_logo = lv_obj_create(scr_play);
   lv_obj_set_size(wi_logo, 220, 58);
-  lv_obj_align(wi_logo, LV_ALIGN_TOP_MID, 0, 26);
+  lv_obj_align(wi_logo, LV_ALIGN_TOP_MID, 0, 34);
   lv_obj_set_style_bg_opa(wi_logo, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(wi_logo, 0, 0);
   lv_obj_set_style_pad_all(wi_logo, 0, 0);
@@ -503,23 +501,15 @@ static void build_playing_screen() {
   lv_img_set_src(wi_logo_img, STATIONS[0].logo);
   lv_obj_center(wi_logo_img);
 
-  // ---- Station name + song title (combined in title area) ----
-  wi_name = lv_label_create(scr_play);
-  lv_label_set_text(wi_name, STATIONS[0].name);
-  lv_obj_set_style_text_color(wi_name, lv_color_hex(C_TEXT), 0);
-  lv_obj_set_style_text_font(wi_name, &lv_font_jp_16, 0);
-  lv_obj_set_width(wi_name, 300);
-  lv_label_set_long_mode(wi_name, LV_LABEL_LONG_DOT);
-  lv_obj_set_style_text_align(wi_name, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(wi_name, LV_ALIGN_TOP_MID, 0, 88);
-
+  // ---- Play title (station name / program title) ----
   wi_title = lv_label_create(scr_play);
-  lv_label_set_text(wi_title, "---");
+  lv_label_set_text(wi_title, STATIONS[0].name);
   lv_obj_set_style_text_color(wi_title, lv_color_hex(C_DIM), 0);
-  lv_obj_set_style_text_font(wi_title, &lv_font_jp_16, 0);  // Japanese-capable font
-  lv_obj_set_width(wi_title, 290);
+  lv_obj_set_style_text_font(wi_title, &lv_font_jp_16, 0);
+  lv_obj_set_width(wi_title, 300);
   lv_label_set_long_mode(wi_title, LV_LABEL_LONG_DOT);
-  lv_obj_align(wi_title, LV_ALIGN_TOP_MID, 0, 110);
+  lv_obj_set_style_text_align(wi_title, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(wi_title, LV_ALIGN_TOP_MID, 0, 98);
 
   // ---- Volume row ----
   lv_obj_t *vrow = lv_obj_create(scr_play);
