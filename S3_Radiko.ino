@@ -345,12 +345,10 @@ static void do_connect(int idx) {
 
   hide_status();
   isPlaying = true;
-  songTitle = "";  // cleared — will be filled by fetch_program_info
+  songTitle = "";
   s_pending_stn = -1;
   s_pending_connect_ms = 0;
-
-  // Fetch now-playing program info
-  fetch_program_info(STATIONS[idx].id);
+  s_prog_last_fetch = 0;  // trigger fetch on next loop iteration
 }
 
 static void stop_stn() {
@@ -951,8 +949,8 @@ void loop() {
     }
   }
 
-  // Refresh program info every 3 minutes
-  if (isPlaying && millis() - s_prog_last_fetch > 180000) {
+  // Fetch program info: immediately after connect (s_prog_last_fetch==0) then every 3 min
+  if (isPlaying && (s_prog_last_fetch == 0 || millis() - s_prog_last_fetch > 180000)) {
     fetch_program_info(STATIONS[currentStn].id);
     if (wi_title && songTitle.length() > 0)
       lv_label_set_text(wi_title, songTitle.c_str());
