@@ -275,7 +275,7 @@ static void do_connect(int idx) {
 
   hide_status();
   isPlaying = true;
-  songTitle = "";
+  songTitle = STATIONS[idx].name;  // show station name until stream metadata arrives
   s_pending_stn = -1;
   s_pending_connect_ms = 0;
 }
@@ -516,7 +516,7 @@ static void build_playing_screen() {
   wi_title = lv_label_create(scr_play);
   lv_label_set_text(wi_title, "---");
   lv_obj_set_style_text_color(wi_title, lv_color_hex(C_DIM), 0);
-  lv_obj_set_style_text_font(wi_title, &lv_font_montserrat_12, 0);
+  lv_obj_set_style_text_font(wi_title, &lv_font_jp_16, 0);  // Japanese-capable font
   lv_obj_set_width(wi_title, 290);
   lv_label_set_long_mode(wi_title, LV_LABEL_LONG_DOT);
   lv_obj_align(wi_title, LV_ALIGN_TOP_MID, 0, 110);
@@ -844,7 +844,7 @@ void loop() {
 
   // Debounced station connect: 1s after last button press
   if (s_pending_stn >= 0 && s_pending_connect_ms > 0 &&
-      millis() - s_pending_connect_ms >= 1000) {
+      millis() - s_pending_connect_ms >= 1500) {
     do_connect(s_pending_stn);
     refresh_playing();
   }
@@ -861,8 +861,12 @@ void loop() {
     last_sbar = millis();
     if (lv_scr_act() == scr_play) {
       update_status();
-      if (wi_title && songTitle.length() > 0)
-        lv_label_set_text(wi_title, songTitle.c_str());
+      if (wi_title) {
+        if (songTitle.length() > 0)
+          lv_label_set_text(wi_title, songTitle.c_str());
+        else if (isPlaying)
+          lv_label_set_text(wi_title, STATIONS[currentStn].name);
+      }
     }
   }
 }
