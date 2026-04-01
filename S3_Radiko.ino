@@ -248,6 +248,7 @@ static void fetch_program_info(const char* station_id) {
   h.begin("https://radiko.jp/v3/program/now/JP13.xml");
   h.setTimeout(5000);
   h.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  h.addHeader("Accept-Encoding", "identity");  // no gzip
   int code = h.GET();
   if (code != 200) { h.end(); return; }
 
@@ -304,8 +305,8 @@ static void fetch_program_info(const char* station_id) {
     if (s_prog_pfm.length() > 0)
       songTitle += "  " + s_prog_pfm;
   } else {
-    // Debug: show first 80 chars of buffer to check XML format
-    songTitle = buf.substring(0, 80);
+    // Debug: show HTTP code + first 60 chars
+    songTitle = String("H:") + code + " " + buf.substring(0, 60);
   }
 }
 
