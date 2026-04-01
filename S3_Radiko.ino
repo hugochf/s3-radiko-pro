@@ -156,18 +156,24 @@ static int bat_pct() {
 }
 
 static bool bat_is_charging() {
-  // No hardware charge status pin on this board (TP4054 CHRG drives LED only).
-  // Detect charging by voltage trend: if voltage is rising, likely charging.
-  static int prev_mv = 0;
-  static int rising_count = 0;
+  // No hardware charge status pin (TP4054 CHRG drives LED only).
+  // Compare current voltage to 30s ago — if rising, likely charging.
+  static int history[15] = {};  // ~30s of history (called every ~2s)
+  static int idx = 0;
+  static bool filled = false;
   int mv = s_bat_mv_avg;
-  if (prev_mv > 0) {
-    if (mv > prev_mv + 5) rising_count = min(rising_count + 1, 5);  // rising
-    else if (mv < prev_mv - 5) rising_count = max(rising_count - 2, 0);  // falling
-  }
-  prev_mv = mv;
-  // Consider charging if voltage consistently rising AND above 4.0V (to avoid false positives during WiFi load dips)
-  return (rising_count >= 3 && mv > 4000) || mv > 4250;
+
+  // Store current reading
+  history[idx] = mv;
+  idx = (idx + 1) % 15;
+  if (idx == 0) filled = true;
+
+  if (!filled) return mv > 4250;  // not enough history yet
+
+  // Find oldest reading
+  int oldest = history[idx];  // next slot to write = oldest
+  // Charging if voltage rose by >10mV over 30 seconds
+  return (mv > oldest + 10) || mv > 4250;
 }
 
 // ============================================================
