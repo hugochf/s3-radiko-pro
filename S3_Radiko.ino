@@ -382,9 +382,6 @@ static void ev_select_stn(lv_event_t *e) {
 static void refresh_playing() {
   if (!scr_play) return;
   const Station& s = STATIONS[currentStn];
-  lv_color_t col = lv_color_hex(s.color);
-  lv_obj_set_style_bg_color(wi_logo, col, 0);
-  lv_obj_set_style_shadow_color(wi_logo, col, 0);
   if (wi_logo_img && s.logo) lv_img_set_src(wi_logo_img, s.logo);
   lv_label_set_text(wi_name, s.name);
   lv_label_set_text(wi_title, songTitle.isEmpty() ? "---" : songTitle.c_str());
@@ -485,17 +482,14 @@ static void build_playing_screen() {
   lv_obj_set_style_text_font(wi_bat, &lv_font_montserrat_12, 0);
   lv_obj_align(wi_bat, LV_ALIGN_RIGHT_MID, -4, 0);
 
-  // ---- Station logo (80×80 rounded, tappable → list) ----
+  // ---- Station logo (70×70, tappable → list) ----
   wi_logo = lv_obj_create(scr_play);
-  lv_obj_set_size(wi_logo, 80, 80);
+  lv_obj_set_size(wi_logo, 74, 74);
   lv_obj_align(wi_logo, LV_ALIGN_TOP_MID, 0, 28);
-  lv_obj_set_style_bg_color(wi_logo, lv_color_hex(STATIONS[0].color), 0);
-  lv_obj_set_style_bg_opa(wi_logo, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(wi_logo, 14, 0);
+  lv_obj_set_style_bg_opa(wi_logo, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(wi_logo, 0, 0);
-  lv_obj_set_style_shadow_width(wi_logo, 12, 0);
-  lv_obj_set_style_shadow_color(wi_logo, lv_color_hex(STATIONS[0].color), 0);
-  lv_obj_set_style_shadow_opa(wi_logo, LV_OPA_40, 0);
+  lv_obj_set_style_pad_all(wi_logo, 0, 0);
+  lv_obj_set_style_shadow_width(wi_logo, 0, 0);
   lv_obj_clear_flag(wi_logo, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_event_cb(wi_logo, ev_show_list, LV_EVENT_CLICKED, NULL);
 
