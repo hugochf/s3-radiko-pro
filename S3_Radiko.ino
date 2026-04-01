@@ -352,7 +352,8 @@ static void do_connect(int idx) {
 
   hide_status();
   isPlaying = true;
-  songTitle = STATIONS[idx].name;  // show station name until program info available
+  if (songTitle.length() == 0 || songTitle == "Connecting...")
+    songTitle = STATIONS[idx].name;  // fallback only if fetch didn't set it
   refresh_playing();
   s_pending_stn = -1;
   s_pending_connect_ms = 0;
