@@ -87,7 +87,6 @@ i2c_master_dev_handle_t g_es8311_dev = nullptr;
 
 static Audio  audio;
 static String radikoToken  = "";
-static String radikoArea   = "JP13";  // updated by auth2 response
 static int    currentStn   = 0;
 static int    currentVol   = 50;   // 0–100 (ES8311 percentage)
 static bool   isPlaying    = false;
@@ -233,72 +232,10 @@ static bool radiko_auth() {
   h.addHeader("X-Radiko-User",       "dummy_user");
   h.addHeader("X-Radiko-Device",     "pc");
   if (h.GET() != 200) { h.end(); return false; }
-  String auth2body = h.getString();  // e.g. "JP13,東京都,tokyo Japan"
   h.end();
-
-  // Extract area_id from auth2 response (first field before comma)
-  int comma = auth2body.indexOf(',');
-  if (comma > 0) radikoArea = auth2body.substring(0, comma);
-  radikoArea.trim();
 
   radikoToken = tok1;
   return true;
-}
-
-// Fetch current program info from Radiko API
-static String s_prog_title = "";
-static String s_prog_pfm   = "";
-static uint32_t s_prog_last_fetch = 0;
-
-static void fetch_program_info(const char* station_id) {
-  HTTPClient h;
-  String progUrl = "https://radiko.jp/v3/program/now/" + radikoArea + ".xml";
-  h.begin(progUrl);
-  h.setTimeout(5000);
-  h.useHTTP10(true);  // HTTP/1.0: no chunked, no compression
-  h.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  int code = h.GET();
-  if (code != 200) { h.end(); return; }
-
-  // Read small portion with getString — simpler, avoids stream issues
-  String body = h.getString();
-  h.end();
-  s_prog_last_fetch = millis();
-
-  s_prog_title = "";
-  s_prog_pfm = "";
-
-  // Debug: show size + first 50 chars
-  if (body.length() == 0) { return; }
-
-  // Find our station
-  String tag = String("id=\"") + station_id + "\"";
-  int stnPos = body.indexOf(tag);
-  if (stnPos < 0) { return; }
-
-  // Find first <prog> after station
-  int progStart = body.indexOf("<prog ", stnPos);
-  int progEnd = body.indexOf("</prog>", progStart);
-  if (progStart < 0 || progEnd < 0) {
-    songTitle = "no prog block";
-    return;
-  }
-
-  String prog = body.substring(progStart, progEnd);
-  int ts = prog.indexOf("<title>");
-  int te = prog.indexOf("</title>");
-  if (ts >= 0 && te > ts) s_prog_title = prog.substring(ts + 7, te);
-  int ps = prog.indexOf("<pfm>");
-  int pe = prog.indexOf("</pfm>");
-  if (ps >= 0 && pe > ps) s_prog_pfm = prog.substring(ps + 5, pe);
-
-  if (s_prog_title.length() > 0) {
-    songTitle = s_prog_title;
-    if (s_prog_pfm.length() > 0)
-      songTitle += "  " + s_prog_pfm;
-  } else {
-    songTitle = STATIONS[currentStn].name;
-  }
 }
 
 // Forward declarations
@@ -306,7 +243,6 @@ static void show_status(const char* msg);
 static void hide_status();
 static void refresh_playing();
 static lv_obj_t *scr_play  = nullptr;
-static lv_obj_t *wi_name   = nullptr;
 static lv_obj_t *wi_title  = nullptr;
 
 // Debounced station selection
@@ -331,10 +267,6 @@ static void do_connect(int idx) {
   lv_refr_now(NULL);  // force pixels to display before blocking SSL
 
   audio.stopSong();
-
-  // Fetch program info while audio is stopped (SSL reuses session from auth)
-  fetch_program_info(STATIONS[idx].id);
-
   String hdr = "X-Radiko-AuthToken: " + radikoToken + "\r\n";
   audio.setExtraHeaders(hdr.c_str());
   String url = "https://f-radiko.smartstream.ne.jp/";
@@ -344,9 +276,7 @@ static void do_connect(int idx) {
 
   hide_status();
   isPlaying = true;
-  if (songTitle.length() == 0 || songTitle == "Connecting...")
-    songTitle = STATIONS[idx].name;  // fallback only if fetch didn't set it
-  refresh_playing();
+  songTitle = STATIONS[idx].name;  // show station name until stream metadata arrives
   s_pending_stn = -1;
   s_pending_connect_ms = 0;
 }
@@ -464,7 +394,6 @@ static void refresh_playing() {
   if (!scr_play) return;
   const Station& s = STATIONS[currentStn];
   if (wi_logo_img && s.logo) lv_img_set_src(wi_logo_img, s.logo);
-  if (wi_name) lv_label_set_text(wi_name, s.name);
   lv_label_set_text(wi_title, songTitle.isEmpty() ? "---" : songTitle.c_str());
   lv_label_set_text(wi_play, isPlaying ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
   lv_slider_set_value(wi_slider, currentVol, LV_ANIM_OFF);
@@ -578,25 +507,15 @@ static void build_playing_screen() {
   lv_img_set_src(wi_logo_img, STATIONS[0].logo);
   lv_obj_center(wi_logo_img);
 
-  // ---- Station name ----
-  wi_name = lv_label_create(scr_play);
-  lv_label_set_text(wi_name, STATIONS[0].name);
-  lv_obj_set_style_text_color(wi_name, lv_color_hex(C_TEXT), 0);
-  lv_obj_set_style_text_font(wi_name, &lv_font_jp_16, 0);
-  lv_obj_set_width(wi_name, 300);
-  lv_label_set_long_mode(wi_name, LV_LABEL_LONG_DOT);
-  lv_obj_set_style_text_align(wi_name, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(wi_name, LV_ALIGN_TOP_MID, 0, 90);
-
-  // ---- Program title (scrolling) ----
+  // ---- Play title (station name / program title) ----
   wi_title = lv_label_create(scr_play);
-  lv_label_set_text(wi_title, "---");
+  lv_label_set_text(wi_title, STATIONS[0].name);
   lv_obj_set_style_text_color(wi_title, lv_color_hex(C_DIM), 0);
   lv_obj_set_style_text_font(wi_title, &lv_font_jp_16, 0);
   lv_obj_set_width(wi_title, 300);
-  lv_label_set_long_mode(wi_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
-  lv_obj_set_style_anim_speed(wi_title, 30, 0);
-  lv_obj_align(wi_title, LV_ALIGN_TOP_MID, 0, 110);
+  lv_label_set_long_mode(wi_title, LV_LABEL_LONG_DOT);
+  lv_obj_set_style_text_align(wi_title, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(wi_title, LV_ALIGN_TOP_MID, 0, 98);
 
   // ---- Volume row ----
   lv_obj_t *vrow = lv_obj_create(scr_play);
@@ -944,9 +863,12 @@ void loop() {
     last_sbar = millis();
     if (lv_scr_act() == scr_play) {
       update_status();
-      if (wi_title && songTitle.length() > 0)
-        lv_label_set_text(wi_title, songTitle.c_str());
+      if (wi_title) {
+        if (songTitle.length() > 0)
+          lv_label_set_text(wi_title, songTitle.c_str());
+        else if (isPlaying)
+          lv_label_set_text(wi_title, STATIONS[currentStn].name);
+      }
     }
   }
-
 }
