@@ -341,11 +341,11 @@ static void do_connect(int idx) {
 
   hide_status();
   isPlaying = true;
-  songTitle = STATIONS[idx].name;
+  songTitle = "";  // cleared — will be filled by fetch_program_info
   s_pending_stn = -1;
   s_pending_connect_ms = 0;
 
-  // Fetch now-playing program info (non-blocking for UI since audio is already connected)
+  // Fetch now-playing program info
   fetch_program_info(STATIONS[idx].id);
 }
 
