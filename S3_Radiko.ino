@@ -482,10 +482,10 @@ static void build_playing_screen() {
   lv_obj_set_style_text_font(wi_bat, &lv_font_montserrat_12, 0);
   lv_obj_align(wi_bat, LV_ALIGN_RIGHT_MID, -4, 0);
 
-  // ---- Station logo (70×70, tappable → list) ----
+  // ---- Station logo (216×54, tappable → list) ----
   wi_logo = lv_obj_create(scr_play);
-  lv_obj_set_size(wi_logo, 74, 74);
-  lv_obj_align(wi_logo, LV_ALIGN_TOP_MID, 0, 28);
+  lv_obj_set_size(wi_logo, 220, 58);
+  lv_obj_align(wi_logo, LV_ALIGN_TOP_MID, 0, 26);
   lv_obj_set_style_bg_opa(wi_logo, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(wi_logo, 0, 0);
   lv_obj_set_style_pad_all(wi_logo, 0, 0);
@@ -497,7 +497,7 @@ static void build_playing_screen() {
   lv_img_set_src(wi_logo_img, STATIONS[0].logo);
   lv_obj_center(wi_logo_img);
 
-  // ---- Japanese station name ----
+  // ---- Station name + song title (combined in title area) ----
   wi_name = lv_label_create(scr_play);
   lv_label_set_text(wi_name, STATIONS[0].name);
   lv_obj_set_style_text_color(wi_name, lv_color_hex(C_TEXT), 0);
@@ -505,21 +505,20 @@ static void build_playing_screen() {
   lv_obj_set_width(wi_name, 300);
   lv_label_set_long_mode(wi_name, LV_LABEL_LONG_DOT);
   lv_obj_set_style_text_align(wi_name, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(wi_name, LV_ALIGN_TOP_MID, 0, 114);
+  lv_obj_align(wi_name, LV_ALIGN_TOP_MID, 0, 88);
 
-  // ---- Song/program title (auto-scroll) ----
   wi_title = lv_label_create(scr_play);
   lv_label_set_text(wi_title, "---");
   lv_obj_set_style_text_color(wi_title, lv_color_hex(C_DIM), 0);
   lv_obj_set_style_text_font(wi_title, &lv_font_montserrat_12, 0);
   lv_obj_set_width(wi_title, 290);
   lv_label_set_long_mode(wi_title, LV_LABEL_LONG_DOT);
-  lv_obj_align(wi_title, LV_ALIGN_TOP_MID, 0, 137);
+  lv_obj_align(wi_title, LV_ALIGN_TOP_MID, 0, 110);
 
   // ---- Volume row ----
   lv_obj_t *vrow = lv_obj_create(scr_play);
   lv_obj_set_size(vrow, 320, 30);
-  lv_obj_set_pos(vrow, 0, 158);
+  lv_obj_set_pos(vrow, 0, 130);
   lv_obj_set_style_bg_opa(vrow, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(vrow, 0, 0);
   lv_obj_set_style_pad_all(vrow, 0, 0);
@@ -552,7 +551,7 @@ static void build_playing_screen() {
   // ---- Control buttons ----
   lv_obj_t *brow = lv_obj_create(scr_play);
   lv_obj_set_size(brow, 320, 40);
-  lv_obj_set_pos(brow, 0, 191);
+  lv_obj_set_pos(brow, 0, 163);
   lv_obj_set_style_bg_opa(brow, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(brow, 0, 0);
   lv_obj_set_style_pad_all(brow, 0, 0);
@@ -583,7 +582,7 @@ static void build_playing_screen() {
   lv_obj_t *drow = lv_obj_create(scr_play);
   int dot_w = NUM_STATIONS * 8 + (NUM_STATIONS - 1) * 4;  // 8px dot, 4px gap
   lv_obj_set_size(drow, 320, 12);
-  lv_obj_set_pos(drow, 0, 230);
+  lv_obj_set_pos(drow, 0, 206);
   lv_obj_set_style_bg_opa(drow, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(drow, 0, 0);
   lv_obj_set_style_pad_all(drow, 0, 0);

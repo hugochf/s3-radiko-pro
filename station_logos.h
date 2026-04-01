@@ -1,6 +1,9 @@
 #pragma once
 #include <lvgl.h>
 
+#define LOGO_W 216
+#define LOGO_H 54
+
 #ifdef __cplusplus
 extern "C" {
 #endif
