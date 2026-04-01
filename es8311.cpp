@@ -363,9 +363,13 @@ esp_err_t es8311_voice_volume_set(i2c_master_dev_handle_t dev, int volume, int *
 
     int reg32;
     if (volume == 0) {
-        reg32 = 0;
+        reg32 = 0;  // mute
     } else {
-        reg32 = ((volume) * 256 / 100) - 1;
+        // Map slider 1-100 to register 175-255 (~-40dB to 0dB).
+        // Original linear 0-255 spans ~128dB which makes <50% inaudible.
+        // This restricted range makes every slider position audible.
+        reg32 = 175 + (volume * 80 / 100);
+        if (reg32 > 255) reg32 = 255;
     }
 
     // provide user with real volume set
