@@ -24,6 +24,7 @@
 #include "touch.h"
 #include "es8311.h"
 #include "lv_font_jp_16.h"
+#include "station_logos.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
@@ -51,28 +52,29 @@ static const char* RADIKO_AUTH_KEY =
   "bcd151073c03b352e1ef2fd66c32209da9ca0afa";
 
 struct Station {
-  const char* id;
-  const char* name;   // UTF-8 Japanese
-  const char* abbr;   // short label for logo tile
-  uint32_t    color;  // logo background (RGB hex)
+  const char*          id;
+  const char*          name;   // UTF-8 Japanese
+  const char*          abbr;   // short label fallback
+  uint32_t             color;  // logo background (RGB hex)
+  const lv_img_dsc_t*  logo;   // station logo image
 };
 
 static const Station STATIONS[] = {
-  {"TBS",     "TBSラジオ",        "TBS",  0xC62828},
-  {"QRR",     "文化放送",         "文化", 0x1565C0},
-  {"LFR",     "ニッポン放送",     "LFR",  0x2E7D32},
-  {"FMT",     "TOKYO FM",         "FM",   0x6A1B9A},
-  {"FMJ",     "J-WAVE",           "JW",   0x00838F},
-  {"INT",     "interfm",          "INT",  0xE65100},
-  {"JORF",    "ラジオ日本",       "RJ",   0x4E342E},
-  {"BAYFM78", "BAYFM78",          "BAY",  0x00695C},
-  {"NACK5",   "NACK5",            "N5",   0xAD1457},
-  {"YFM",     "FMヨコハマ",       "YFM",  0x283593},
-  {"IBS",     "LuckyFM茨城",      "LFM",  0xBF360C},
-  {"RN1",     "ラジオNIKKEI第1",  "RN1",  0x0277BD},
-  {"RN2",     "ラジオNIKKEI第2",  "RN2",  0x558B2F},
-  {"JOAK",    "NHK第1 東京",      "NHK1", 0x37474F},
-  {"JOAK-FM", "NHK-FM 東京",      "NHKF", 0x00695C},
+  {"TBS",     "TBSラジオ",        "TBS",  0xC62828, &logo_TBS},
+  {"QRR",     "文化放送",         "文化", 0x1565C0, &logo_QRR},
+  {"LFR",     "ニッポン放送",     "LFR",  0x2E7D32, &logo_LFR},
+  {"FMT",     "TOKYO FM",         "FM",   0x6A1B9A, &logo_FMT},
+  {"FMJ",     "J-WAVE",           "JW",   0x00838F, &logo_FMJ},
+  {"INT",     "interfm",          "INT",  0xE65100, &logo_INT},
+  {"JORF",    "ラジオ日本",       "RJ",   0x4E342E, &logo_JORF},
+  {"BAYFM78", "BAYFM78",          "BAY",  0x00695C, &logo_BAYFM78},
+  {"NACK5",   "NACK5",            "N5",   0xAD1457, &logo_NACK5},
+  {"YFM",     "FMヨコハマ",       "YFM",  0x283593, &logo_YFM},
+  {"IBS",     "LuckyFM茨城",      "LFM",  0xBF360C, &logo_IBS},
+  {"RN1",     "ラジオNIKKEI第1",  "RN1",  0x0277BD, &logo_RN1},
+  {"RN2",     "ラジオNIKKEI第2",  "RN2",  0x558B2F, &logo_RN2},
+  {"JOAK",    "NHK第1 東京",      "NHK1", 0x37474F, &logo_JOAK},
+  {"JOAK-FM", "NHK-FM 東京",      "NHKF", 0x00695C, &logo_JOAK_FM},
 };
 #define NUM_STATIONS 15
 
@@ -318,7 +320,7 @@ static lv_obj_t *scr_list  = nullptr;
 static lv_obj_t *wi_wifi   = nullptr;  // status bar: WiFi icon
 static lv_obj_t *wi_bat    = nullptr;  // status bar: battery
 static lv_obj_t *wi_logo   = nullptr;  // station logo box
-static lv_obj_t *wi_abbr   = nullptr;  // abbreviation inside logo
+static lv_obj_t *wi_logo_img = nullptr; // station logo image
 static lv_obj_t *wi_name   = nullptr;  // Japanese station name
 static lv_obj_t *wi_slider = nullptr;  // volume slider
 static lv_obj_t *wi_vol    = nullptr;  // volume value label
@@ -383,7 +385,7 @@ static void refresh_playing() {
   lv_color_t col = lv_color_hex(s.color);
   lv_obj_set_style_bg_color(wi_logo, col, 0);
   lv_obj_set_style_shadow_color(wi_logo, col, 0);
-  lv_label_set_text(wi_abbr, s.abbr);
+  if (wi_logo_img && s.logo) lv_img_set_src(wi_logo_img, s.logo);
   lv_label_set_text(wi_name, s.name);
   lv_label_set_text(wi_title, songTitle.isEmpty() ? "---" : songTitle.c_str());
   lv_label_set_text(wi_play, isPlaying ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
@@ -497,11 +499,9 @@ static void build_playing_screen() {
   lv_obj_clear_flag(wi_logo, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_event_cb(wi_logo, ev_show_list, LV_EVENT_CLICKED, NULL);
 
-  wi_abbr = lv_label_create(wi_logo);
-  lv_label_set_text(wi_abbr, STATIONS[0].abbr);
-  lv_obj_set_style_text_color(wi_abbr, lv_color_white(), 0);
-  lv_obj_set_style_text_font(wi_abbr, &lv_font_montserrat_16, 0);
-  lv_obj_center(wi_abbr);
+  wi_logo_img = lv_img_create(wi_logo);
+  lv_img_set_src(wi_logo_img, STATIONS[0].logo);
+  lv_obj_center(wi_logo_img);
 
   // ---- Japanese station name ----
   wi_name = lv_label_create(scr_play);
@@ -671,20 +671,12 @@ static void build_list_screen() {
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(row, ev_select_stn, LV_EVENT_CLICKED, (void*)(uintptr_t)i);
 
-    // Colored logo tile
-    lv_obj_t *tile = lv_obj_create(row);
+    // Station logo thumbnail
+    lv_obj_t *tile = lv_img_create(row);
+    lv_img_set_src(tile, STATIONS[i].logo);
     lv_obj_set_size(tile, 34, 34);
     lv_obj_set_pos(tile, 0, 0);
-    lv_obj_set_style_bg_color(tile, lv_color_hex(STATIONS[i].color), 0);
-    lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(tile, 6, 0);
-    lv_obj_set_style_border_width(tile, 0, 0);
-    lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_t *tlbl = lv_label_create(tile);
-    lv_label_set_text(tlbl, STATIONS[i].abbr);
-    lv_obj_set_style_text_color(tlbl, lv_color_white(), 0);
-    lv_obj_set_style_text_font(tlbl, &lv_font_montserrat_10, 0);
-    lv_obj_center(tlbl);
+    lv_img_set_zoom(tile, 256 * 34 / 70);  // scale 70px logo to 34px
 
     // Japanese station name
     lv_obj_t *name = lv_label_create(row);
