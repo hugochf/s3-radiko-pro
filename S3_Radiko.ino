@@ -186,19 +186,14 @@ static bool radiko_auth() {
   return true;
 }
 
-// Forward declarations for UI functions and widgets
+// Forward declarations
 static void show_status(const char* msg);
 static void hide_status();
 static void refresh_playing();
-static void update_status();
 static lv_obj_t *scr_play  = nullptr;
 static lv_obj_t *wi_title  = nullptr;
 
-// Mutex to protect Audio library — prevents race between cores
-static SemaphoreHandle_t s_audio_mtx = nullptr;
-
-// Debounced station selection: rapid prev/next updates UI only,
-// actual SSL connection happens 1s after last button press.
+// Debounced station selection
 static uint32_t s_pending_connect_ms = 0;
 static int      s_pending_stn        = -1;
 
@@ -209,14 +204,13 @@ static void play_stn(int idx) {
   s_pending_connect_ms = millis();
 }
 
-// Flag for LVGL task to show/hide connecting popup
-static volatile bool s_show_connecting = false;
-
 static void do_connect(int idx) {
   currentStn = idx;
-  s_show_connecting = true;  // LVGL task shows popup on Core 0
+  songTitle = "Connecting...";
+  refresh_playing();
+  show_status("Connecting...");
+  lv_task_handler();
 
-  xSemaphoreTake(s_audio_mtx, portMAX_DELAY);
   audio.stopSong();
   String hdr = "X-Radiko-AuthToken: " + radikoToken + "\r\n";
   audio.setExtraHeaders(hdr.c_str());
@@ -224,81 +218,19 @@ static void do_connect(int idx) {
   url += STATIONS[idx].id;
   url += "/_definst_/simul-stream.stream/chunklist.m3u8";
   audio.connecttohost(url.c_str());
-  xSemaphoreGive(s_audio_mtx);
 
+  hide_status();
   isPlaying = true;
   songTitle = "";
-  s_show_connecting = false;  // LVGL task hides popup on Core 0
   s_pending_stn = -1;
   s_pending_connect_ms = 0;
 }
 
 static void stop_stn() {
-  xSemaphoreTake(s_audio_mtx, portMAX_DELAY);
   audio.stopSong();
-  xSemaphoreGive(s_audio_mtx);
   isPlaying = false;
   s_pending_stn = -1;
   s_pending_connect_ms = 0;
-}
-
-// Audio task on Core 1 — same core where Audio library works
-static void audio_loop_task(void*) {
-  for (;;) {
-    xSemaphoreTake(s_audio_mtx, portMAX_DELAY);
-    audio.loop();
-    xSemaphoreGive(s_audio_mtx);
-    vTaskDelay(1);
-  }
-}
-
-static volatile bool s_setup_done = false;
-
-// LVGL task on Core 0 — ALL UI updates happen here (LVGL is not thread-safe)
-static void lvgl_task(void*) {
-  // Wait until setup() finishes all LVGL init on Core 1
-  while (!s_setup_done) vTaskDelay(pdMS_TO_TICKS(10));
-
-  static bool was_connecting = false;
-  static int  last_stn = -1;
-  static uint32_t last_sbar = 0;
-  for (;;) {
-    lv_task_handler();
-
-    // Show/hide connecting popup based on flag from Core 1
-    if (s_show_connecting && !was_connecting) {
-      was_connecting = true;
-      show_status("Connecting...");
-    } else if (!s_show_connecting && was_connecting) {
-      was_connecting = false;
-      hide_status();
-      refresh_playing();
-    }
-
-    // Refresh station display when station changes
-    if (currentStn != last_stn) {
-      last_stn = currentStn;
-      refresh_playing();
-    }
-
-    // Periodic status bar + song title (~2s)
-    if (millis() - last_sbar > 2000) {
-      last_sbar = millis();
-      if (lv_scr_act() == scr_play) {
-        update_status();
-        if (wi_title && songTitle.length() > 0)
-          lv_label_set_text(wi_title, songTitle.c_str());
-      }
-    }
-
-    // Screen timeout
-    if (!isDimmed && millis() - lastTouch > TIMEOUT_MS) {
-      isDimmed = true;
-      bl_set(DIM_DUTY);
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(10));
-  }
 }
 
 
@@ -836,35 +768,46 @@ void setup() {
   es8311_voice_volume_set(g_es8311_dev, currentVol, nullptr);
   es8311_voice_mute(g_es8311_dev, false);
 
-  // Create mutex for Audio library thread safety
-  s_audio_mtx = xSemaphoreCreateMutex();
-
   // Build list screen
   build_list_screen();
+
+  // Connect to first station
   hide_status();
   refresh_playing();
-  lv_task_handler();
+  do_connect(currentStn);
+  refresh_playing();
 
   lastTouch = millis();
-
-  // Start tasks — all LVGL init is done
-  s_setup_done = true;
-  xTaskCreatePinnedToCore(audio_loop_task, "aloop", 32768, NULL, 1, NULL, 1);
-  xTaskCreatePinnedToCore(lvgl_task, "lvgl", 16384, NULL, 1, NULL, 0);
-
-  // Trigger initial station connect via debounce (do_connect runs from loop on Core 1)
-  play_stn(currentStn);
-  s_pending_connect_ms = millis() - 2000;  // already expired, connect on first loop
 }
 
 // ============================================================
-// LOOP
+// LOOP (single-core: audio + LVGL on same core)
 // ============================================================
 void loop() {
-  // Debounced station connect (audio calls only, no LVGL)
+  audio.loop();
+  lv_task_handler();
+
+  // Debounced station connect: 1s after last button press
   if (s_pending_stn >= 0 && s_pending_connect_ms > 0 &&
       millis() - s_pending_connect_ms >= 1000) {
     do_connect(s_pending_stn);
+    refresh_playing();
   }
-  delay(50);
+
+  // Screen timeout
+  if (!isDimmed && millis() - lastTouch > TIMEOUT_MS) {
+    isDimmed = true;
+    bl_set(DIM_DUTY);
+  }
+
+  // Periodic status bar + song title (~2s)
+  static uint32_t last_sbar = 0;
+  if (millis() - last_sbar > 2000) {
+    last_sbar = millis();
+    if (lv_scr_act() == scr_play) {
+      update_status();
+      if (wi_title && songTitle.length() > 0)
+        lv_label_set_text(wi_title, songTitle.c_str());
+    }
+  }
 }
