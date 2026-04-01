@@ -238,11 +238,76 @@ static bool radiko_auth() {
   return true;
 }
 
+// Fetch current program info from Radiko API
+static String s_prog_title = "";
+static String s_prog_pfm   = "";
+static uint32_t s_prog_last_fetch = 0;
+
+static void fetch_program_info(const char* station_id) {
+  HTTPClient h;
+  String url = "https://radiko.jp/v3/program/now/JP13.xml";  // Tokyo area
+  h.begin(url);
+  h.setTimeout(5000);
+  int code = h.GET();
+  if (code != 200) { h.end(); return; }
+
+  // Stream through response looking for our station
+  WiFiClient* stream = h.getStreamPtr();
+  String stationTag = String("<station id=\"") + station_id + "\"";
+  bool inStation = false;
+  bool foundProg = false;
+  s_prog_title = "";
+  s_prog_pfm = "";
+
+  String line;
+  while (stream->available() || stream->connected()) {
+    line = stream->readStringUntil('\n');
+    if (!inStation) {
+      if (line.indexOf(stationTag) >= 0) inStation = true;
+      continue;
+    }
+    // Inside our station block
+    if (line.indexOf("</station>") >= 0) break;
+
+    // Find first <prog> block (current program)
+    if (!foundProg && line.indexOf("<prog ") >= 0) foundProg = true;
+    if (foundProg) {
+      // Extract <title>...</title>
+      int ts = line.indexOf("<title>");
+      int te = line.indexOf("</title>");
+      if (ts >= 0 && te > ts) {
+        s_prog_title = line.substring(ts + 7, te);
+        s_prog_title.trim();
+      }
+      // Extract <pfm>...</pfm> (personality)
+      int ps = line.indexOf("<pfm>");
+      int pe = line.indexOf("</pfm>");
+      if (ps >= 0 && pe > ps) {
+        s_prog_pfm = line.substring(ps + 5, pe);
+        s_prog_pfm.trim();
+      }
+      // Stop after first </prog>
+      if (line.indexOf("</prog>") >= 0) break;
+    }
+  }
+  h.end();
+  s_prog_last_fetch = millis();
+
+  // Update song title
+  if (s_prog_title.length() > 0) {
+    songTitle = s_prog_title;
+    if (s_prog_pfm.length() > 0) {
+      songTitle += " / " + s_prog_pfm;
+    }
+  }
+}
+
 // Forward declarations
 static void show_status(const char* msg);
 static void hide_status();
 static void refresh_playing();
 static lv_obj_t *scr_play  = nullptr;
+static lv_obj_t *wi_name   = nullptr;
 static lv_obj_t *wi_title  = nullptr;
 
 // Debounced station selection
@@ -276,9 +341,12 @@ static void do_connect(int idx) {
 
   hide_status();
   isPlaying = true;
-  songTitle = STATIONS[idx].name;  // show station name until stream metadata arrives
+  songTitle = STATIONS[idx].name;
   s_pending_stn = -1;
   s_pending_connect_ms = 0;
+
+  // Fetch now-playing program info (non-blocking for UI since audio is already connected)
+  fetch_program_info(STATIONS[idx].id);
 }
 
 static void stop_stn() {
@@ -394,6 +462,7 @@ static void refresh_playing() {
   if (!scr_play) return;
   const Station& s = STATIONS[currentStn];
   if (wi_logo_img && s.logo) lv_img_set_src(wi_logo_img, s.logo);
+  if (wi_name) lv_label_set_text(wi_name, s.name);
   lv_label_set_text(wi_title, songTitle.isEmpty() ? "---" : songTitle.c_str());
   lv_label_set_text(wi_play, isPlaying ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
   lv_slider_set_value(wi_slider, currentVol, LV_ANIM_OFF);
@@ -507,15 +576,25 @@ static void build_playing_screen() {
   lv_img_set_src(wi_logo_img, STATIONS[0].logo);
   lv_obj_center(wi_logo_img);
 
-  // ---- Play title (station name / program title) ----
+  // ---- Station name ----
+  wi_name = lv_label_create(scr_play);
+  lv_label_set_text(wi_name, STATIONS[0].name);
+  lv_obj_set_style_text_color(wi_name, lv_color_hex(C_TEXT), 0);
+  lv_obj_set_style_text_font(wi_name, &lv_font_jp_16, 0);
+  lv_obj_set_width(wi_name, 300);
+  lv_label_set_long_mode(wi_name, LV_LABEL_LONG_DOT);
+  lv_obj_set_style_text_align(wi_name, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(wi_name, LV_ALIGN_TOP_MID, 0, 90);
+
+  // ---- Program title (scrolling) ----
   wi_title = lv_label_create(scr_play);
-  lv_label_set_text(wi_title, STATIONS[0].name);
+  lv_label_set_text(wi_title, "---");
   lv_obj_set_style_text_color(wi_title, lv_color_hex(C_DIM), 0);
   lv_obj_set_style_text_font(wi_title, &lv_font_jp_16, 0);
   lv_obj_set_width(wi_title, 300);
-  lv_label_set_long_mode(wi_title, LV_LABEL_LONG_DOT);
-  lv_obj_set_style_text_align(wi_title, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(wi_title, LV_ALIGN_TOP_MID, 0, 98);
+  lv_label_set_long_mode(wi_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
+  lv_obj_set_style_anim_speed(wi_title, 30, 0);
+  lv_obj_align(wi_title, LV_ALIGN_TOP_MID, 0, 110);
 
   // ---- Volume row ----
   lv_obj_t *vrow = lv_obj_create(scr_play);
@@ -863,12 +942,15 @@ void loop() {
     last_sbar = millis();
     if (lv_scr_act() == scr_play) {
       update_status();
-      if (wi_title) {
-        if (songTitle.length() > 0)
-          lv_label_set_text(wi_title, songTitle.c_str());
-        else if (isPlaying)
-          lv_label_set_text(wi_title, STATIONS[currentStn].name);
-      }
+      if (wi_title && songTitle.length() > 0)
+        lv_label_set_text(wi_title, songTitle.c_str());
     }
+  }
+
+  // Refresh program info every 3 minutes
+  if (isPlaying && millis() - s_prog_last_fetch > 180000) {
+    fetch_program_info(STATIONS[currentStn].id);
+    if (wi_title && songTitle.length() > 0)
+      lv_label_set_text(wi_title, songTitle.c_str());
   }
 }
