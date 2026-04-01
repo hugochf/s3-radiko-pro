@@ -210,6 +210,7 @@ static void do_connect(int idx) {
   refresh_playing();
   show_status("Connecting...");
   lv_task_handler();
+  lv_refr_now(NULL);  // force pixels to display before blocking SSL
 
   audio.stopSong();
   String hdr = "X-Radiko-AuthToken: " + radikoToken + "\r\n";
