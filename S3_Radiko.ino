@@ -373,6 +373,11 @@ static void ev_show_list(lv_event_t*) {
 }
 static void ev_back(lv_event_t*) {
   lv_scr_load(scr_play);
+  // Resume playing current station if audio was stopped when opening list
+  if (!isPlaying) {
+    play_stn(currentStn);
+    s_pending_connect_ms = millis() - 2000;  // connect immediately
+  }
 }
 static void ev_select_stn(lv_event_t *e) {
   int idx = (int)(uintptr_t)lv_event_get_user_data(e);
