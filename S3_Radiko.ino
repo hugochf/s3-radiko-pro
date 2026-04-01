@@ -25,6 +25,7 @@
 #include "es8311.h"
 #include "lv_font_jp_16.h"
 #include "station_logos.h"
+#include <SD_MMC.h>
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
@@ -87,6 +88,7 @@ i2c_master_bus_handle_t g_i2c_bus    = nullptr;
 i2c_master_dev_handle_t g_es8311_dev = nullptr;
 
 static Audio  audio;
+static lv_font_t* font_jp_full = nullptr;  // loaded from SD card
 static String radikoToken  = "";
 static int    currentStn   = 0;
 static int    currentVol   = 50;   // 0–100 (ES8311 percentage)
@@ -540,7 +542,7 @@ static void build_playing_screen() {
   wi_title = lv_label_create(scr_play);
   lv_label_set_text(wi_title, STATIONS[0].name);
   lv_obj_set_style_text_color(wi_title, lv_color_hex(C_DIM), 0);
-  lv_obj_set_style_text_font(wi_title, &lv_font_jp_16, 0);
+  lv_obj_set_style_text_font(wi_title, font_jp_full ? font_jp_full : &lv_font_jp_16, 0);
   lv_obj_set_width(wi_title, 300);
   lv_label_set_long_mode(wi_title, LV_LABEL_LONG_DOT);
   lv_obj_set_style_text_align(wi_title, LV_TEXT_ALIGN_CENTER, 0);
@@ -803,6 +805,14 @@ void setup() {
   indev_drv.type    = LV_INDEV_TYPE_POINTER;
   indev_drv.read_cb = lv_touch;
   lv_indev_drv_register(&indev_drv);
+
+  // SD card — load Japanese font for program titles
+  SD_MMC.setPins(38, 40, 39);  // CLK, CMD, D0 (1-bit mode)
+  if (SD_MMC.begin("/sdcard", true)) {  // true = 1-bit mode
+    // Load full Japanese font from SD into PSRAM
+    font_jp_full = lv_font_load("S:lv_font_jp_full.bin");
+    if (font_jp_full) Serial.println("JP font loaded from SD");
+  }
 
   // Build UI
   build_playing_screen();
