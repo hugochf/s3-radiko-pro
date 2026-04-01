@@ -280,8 +280,8 @@ static void fetch_program_info(const char* station_id) {
   if (stnPos < 0) {
     // Debug: check if station_id exists at all
     int anyPos = body.indexOf(station_id);
-    songTitle = String("L:") + body.length() + " tag:" + tag
-              + (anyPos >= 0 ? " @" + String(anyPos) : " MISSING");
+    songTitle = String("A:") + radikoArea + " L:" + body.length()
+              + (anyPos >= 0 ? " @" + String(anyPos) : " NO");
     return;
   }
 
