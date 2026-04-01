@@ -1,0 +1,870 @@
+/*
+ * S3 Radiko Internet Radio
+ * ESP32-S3 2.8" IPS Display (ILI9341 + FT6336G touch + ES8311 audio)
+ *
+ * Features:
+ *   - Modern LVGL dark UI with station logos and Japanese text
+ *   - Scrollable station list (15 Kanagawa-area stations)
+ *   - Volume slider (ES8311 codec control)
+ *   - Song/program title from stream metadata
+ *   - Screen auto-dim after 60s, touch to wake
+ *   - Battery level indicator
+ *
+ * Board: esp32:esp32:esp32s3  (ESP32-S3 Dev Module or similar)
+ * Partition: Huge APP (3MB)
+ */
+
+#include <Arduino.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <Audio.h>
+#include <base64.h>
+#include <lvgl.h>
+#include <TFT_eSPI.h>
+#include "touch.h"
+#include "es8311.h"
+#include "lv_font_jp_16.h"
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
+
+// ============================================================
+// CONFIG
+// ============================================================
+#define WIFI_SSID     "ASUKA JP"
+#define WIFI_PASSWORD "SMM27275458"
+
+// ============================================================
+// PINS
+// ============================================================
+#define PIN_BL      45   // LCD backlight (PWM, HIGH=ON)
+#define PIN_AMP_EN   1   // Speaker amp FM8002E (LOW=enable)
+#define PIN_I2S_MCK  4   // I2S Master Clock → ES8311
+#define PIN_I2S_BCK  5   // I2S Bit Clock
+#define PIN_I2S_WS   7   // I2S Word Select (LRC)
+#define PIN_I2S_OUT  8   // I2S Data Out → ES8311 DAC
+
+// ============================================================
+// RADIKO
+// ============================================================
+static const char* RADIKO_AUTH_KEY =
+  "bcd151073c03b352e1ef2fd66c32209da9ca0afa";
+
+struct Station {
+  const char* id;
+  const char* name;   // UTF-8 Japanese
+  const char* abbr;   // short label for logo tile
+  uint32_t    color;  // logo background (RGB hex)
+};
+
+static const Station STATIONS[] = {
+  {"TBS",     "TBSラジオ",        "TBS",  0xC62828},
+  {"QRR",     "文化放送",         "文化", 0x1565C0},
+  {"LFR",     "ニッポン放送",     "LFR",  0x2E7D32},
+  {"FMT",     "TOKYO FM",         "FM",   0x6A1B9A},
+  {"FMJ",     "J-WAVE",           "JW",   0x00838F},
+  {"INT",     "interfm",          "INT",  0xE65100},
+  {"JORF",    "ラジオ日本",       "RJ",   0x4E342E},
+  {"BAYFM78", "BAYFM78",          "BAY",  0x00695C},
+  {"NACK5",   "NACK5",            "N5",   0xAD1457},
+  {"YFM",     "FMヨコハマ",       "YFM",  0x283593},
+  {"IBS",     "LuckyFM茨城",      "LFM",  0xBF360C},
+  {"RN1",     "ラジオNIKKEI第1",  "RN1",  0x0277BD},
+  {"RN2",     "ラジオNIKKEI第2",  "RN2",  0x558B2F},
+  {"JOAK",    "NHK第1 東京",      "NHK1", 0x37474F},
+  {"JOAK-FM", "NHK-FM 東京",      "NHKF", 0x00695C},
+};
+#define NUM_STATIONS 15
+
+// ============================================================
+// STATE
+// ============================================================
+// I2C master bus + device handles (shared between ES8311 and FT6336 via touch.h)
+i2c_master_bus_handle_t g_i2c_bus    = nullptr;
+i2c_master_dev_handle_t g_es8311_dev = nullptr;
+
+static Audio  audio;
+static String radikoToken  = "";
+static int    currentStn   = 0;
+static int    currentVol   = 75;   // 0–100 (ES8311 percentage)
+static bool   isPlaying    = false;
+static String songTitle    = "";
+
+// ============================================================
+// BACKLIGHT / SCREEN TIMEOUT
+// ============================================================
+#define TIMEOUT_MS   60000UL  // 60 s → dim screen
+#define DIM_DUTY     18       // ~7% brightness when dimmed (0–255)
+static unsigned long lastTouch  = 0;
+static bool          isDimmed   = false;
+
+static void bl_set(int duty) { ledcWrite(PIN_BL, duty); }
+
+// ============================================================
+// BATTERY ADC (ADC1_CHANNEL_8 = GPIO9, voltage divider ×2)
+// ============================================================
+static adc_oneshot_unit_handle_t s_adc  = nullptr;
+static adc_cali_handle_t         s_cali = nullptr;
+
+static void bat_init() {
+  adc_oneshot_unit_init_cfg_t u = {.unit_id = ADC_UNIT_1};
+  adc_oneshot_new_unit(&u, &s_adc);
+  adc_oneshot_chan_cfg_t c = {.atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_12};
+  adc_oneshot_config_channel(s_adc, ADC_CHANNEL_8, &c);
+  adc_cali_curve_fitting_config_t k = {
+    .unit_id = ADC_UNIT_1, .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_12};
+  adc_cali_create_scheme_curve_fitting(&k, &s_cali);
+}
+
+static int bat_pct() {
+  if (!s_adc) return -1;
+  int raw = 0, mv = 0;
+  if (adc_oneshot_read(s_adc, ADC_CHANNEL_8, &raw) != ESP_OK) return -1;
+  if (!s_cali || adc_cali_raw_to_voltage(s_cali, raw, &mv) != ESP_OK) return -1;
+  int vbat = mv * 2;  // voltage divider
+  if (vbat <= 3000) return 0;
+  if (vbat >= 4200) return 100;
+  return (vbat - 3000) * 100 / 1200;
+}
+
+// ============================================================
+// LVGL – display + touch drivers
+// ============================================================
+static TFT_eSPI           tft;
+static lv_disp_draw_buf_t lv_draw_buf;
+static lv_color_t*        lv_px_buf = nullptr;  // allocated in PSRAM to save internal RAM for SSL
+
+static void lv_flush(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *px) {
+  uint32_t w = area->x2 - area->x1 + 1;
+  uint32_t h = area->y2 - area->y1 + 1;
+  tft.setAddrWindow(area->x1, area->y1, w, h);
+  tft.pushColors((uint16_t*)&px->full, w * h, true);
+  lv_disp_flush_ready(drv);
+}
+
+static void lv_touch(lv_indev_drv_t *, lv_indev_data_t *data) {
+  if (touch_touched()) {
+    data->state   = LV_INDEV_STATE_PR;
+    data->point.x = touch_last_x;
+    data->point.y = touch_last_y;
+    lastTouch     = millis();
+    if (isDimmed) { isDimmed = false; bl_set(255); }
+  } else {
+    data->state = LV_INDEV_STATE_REL;
+  }
+}
+
+// ============================================================
+// RADIKO AUTH + PLAY
+// ============================================================
+static bool radiko_auth() {
+  HTTPClient h;
+  h.begin("https://radiko.jp/v2/api/auth1");
+  h.addHeader("X-Radiko-App",         "pc_html5");
+  h.addHeader("X-Radiko-App-Version", "0.0.1");
+  h.addHeader("X-Radiko-User",        "dummy_user");
+  h.addHeader("X-Radiko-Device",      "pc");
+  // Must call collectHeaders() before GET() to capture response headers
+  const char* keys[] = {"X-Radiko-AuthToken", "X-Radiko-KeyLength", "X-Radiko-KeyOffset"};
+  h.collectHeaders(keys, 3);
+  if (h.GET() != 200) { h.end(); return false; }
+  String tok1 = h.header("X-Radiko-AuthToken");
+  int klen    = h.header("X-Radiko-KeyLength").toInt();
+  int koff    = h.header("X-Radiko-KeyOffset").toInt();
+  h.end();
+
+  String pk = base64::encode((const uint8_t*)RADIKO_AUTH_KEY + koff, klen);
+  h.begin("https://radiko.jp/v2/api/auth2");
+  h.addHeader("X-Radiko-AuthToken",  tok1);
+  h.addHeader("X-Radiko-PartialKey", pk);
+  h.addHeader("X-Radiko-User",       "dummy_user");
+  h.addHeader("X-Radiko-Device",     "pc");
+  if (h.GET() != 200) { h.end(); return false; }
+  h.end();
+
+  radikoToken = tok1;
+  return true;
+}
+
+// Forward declarations for UI functions and widgets
+static void show_status(const char* msg);
+static void hide_status();
+static void refresh_playing();
+static void update_status();
+static lv_obj_t *scr_play  = nullptr;
+static lv_obj_t *wi_title  = nullptr;
+
+// Mutex to protect Audio library — prevents race between cores
+static SemaphoreHandle_t s_audio_mtx = nullptr;
+
+// Debounced station selection: rapid prev/next updates UI only,
+// actual SSL connection happens 1s after last button press.
+static uint32_t s_pending_connect_ms = 0;
+static int      s_pending_stn        = -1;
+
+static void play_stn(int idx) {
+  currentStn = idx;
+  songTitle = STATIONS[idx].name;
+  s_pending_stn = idx;
+  s_pending_connect_ms = millis();
+}
+
+// Flag for LVGL task to show/hide connecting popup
+static volatile bool s_show_connecting = false;
+
+static void do_connect(int idx) {
+  currentStn = idx;
+  s_show_connecting = true;  // LVGL task shows popup on Core 0
+
+  xSemaphoreTake(s_audio_mtx, portMAX_DELAY);
+  audio.stopSong();
+  String hdr = "X-Radiko-AuthToken: " + radikoToken + "\r\n";
+  audio.setExtraHeaders(hdr.c_str());
+  String url = "https://f-radiko.smartstream.ne.jp/";
+  url += STATIONS[idx].id;
+  url += "/_definst_/simul-stream.stream/chunklist.m3u8";
+  audio.connecttohost(url.c_str());
+  xSemaphoreGive(s_audio_mtx);
+
+  isPlaying = true;
+  songTitle = "";
+  s_show_connecting = false;  // LVGL task hides popup on Core 0
+  s_pending_stn = -1;
+  s_pending_connect_ms = 0;
+}
+
+static void stop_stn() {
+  xSemaphoreTake(s_audio_mtx, portMAX_DELAY);
+  audio.stopSong();
+  xSemaphoreGive(s_audio_mtx);
+  isPlaying = false;
+  s_pending_stn = -1;
+  s_pending_connect_ms = 0;
+}
+
+// Audio task on Core 1 — same core where Audio library works
+static void audio_loop_task(void*) {
+  for (;;) {
+    xSemaphoreTake(s_audio_mtx, portMAX_DELAY);
+    audio.loop();
+    xSemaphoreGive(s_audio_mtx);
+    vTaskDelay(1);
+  }
+}
+
+static volatile bool s_setup_done = false;
+
+// LVGL task on Core 0 — ALL UI updates happen here (LVGL is not thread-safe)
+static void lvgl_task(void*) {
+  // Wait until setup() finishes all LVGL init on Core 1
+  while (!s_setup_done) vTaskDelay(pdMS_TO_TICKS(10));
+
+  static bool was_connecting = false;
+  static int  last_stn = -1;
+  static uint32_t last_sbar = 0;
+  for (;;) {
+    lv_task_handler();
+
+    // Show/hide connecting popup based on flag from Core 1
+    if (s_show_connecting && !was_connecting) {
+      was_connecting = true;
+      show_status("Connecting...");
+    } else if (!s_show_connecting && was_connecting) {
+      was_connecting = false;
+      hide_status();
+      refresh_playing();
+    }
+
+    // Refresh station display when station changes
+    if (currentStn != last_stn) {
+      last_stn = currentStn;
+      refresh_playing();
+    }
+
+    // Periodic status bar + song title (~2s)
+    if (millis() - last_sbar > 2000) {
+      last_sbar = millis();
+      if (lv_scr_act() == scr_play) {
+        update_status();
+        if (wi_title && songTitle.length() > 0)
+          lv_label_set_text(wi_title, songTitle.c_str());
+      }
+    }
+
+    // Screen timeout
+    if (!isDimmed && millis() - lastTouch > TIMEOUT_MS) {
+      isDimmed = true;
+      bl_set(DIM_DUTY);
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+}
+
+
+// Audio info message from library → main loop for display
+static volatile bool     s_audio_msg_fresh = false;
+static char              s_audio_msg[128]  = {};
+
+// ESP32-audioI2S weak-function callbacks
+void audio_info(const char* info) {
+  Serial.printf("[audio] %s\n", info);
+  // Mirror every message to screen so we can see what the library reports
+  strncpy(s_audio_msg, info, sizeof(s_audio_msg) - 1);
+  s_audio_msg[sizeof(s_audio_msg) - 1] = '\0';
+  s_audio_msg_fresh = true;
+
+  String s(info);
+  int colon = s.indexOf(':');
+  if (colon < 0) return;
+  String key = s.substring(0, colon);
+  String val = s.substring(colon + 1); val.trim();
+  if (key == "StreamTitle" || key == "Title" || key == "icy-name") {
+    songTitle = val;
+  }
+}
+void audio_showstation(const char* info)    { Serial.printf("[station] %s\n", info); }
+void audio_showstreamtitle(const char* info){ Serial.printf("[title] %s\n", info); }
+void audio_eof_stream(const char* info)     { Serial.printf("[eof] %s\n", info); }
+
+// ============================================================
+// LVGL UI – widget handles
+// ============================================================
+static lv_obj_t *scr_list  = nullptr;
+
+// Playing screen widgets
+static lv_obj_t *wi_wifi   = nullptr;  // status bar: WiFi icon
+static lv_obj_t *wi_bat    = nullptr;  // status bar: battery
+static lv_obj_t *wi_logo   = nullptr;  // station logo box
+static lv_obj_t *wi_abbr   = nullptr;  // abbreviation inside logo
+static lv_obj_t *wi_name   = nullptr;  // Japanese station name
+static lv_obj_t *wi_slider = nullptr;  // volume slider
+static lv_obj_t *wi_vol    = nullptr;  // volume value label
+static lv_obj_t *wi_play   = nullptr;  // play/pause button label
+static lv_obj_t *wi_dots[NUM_STATIONS] = {};
+
+// Colour palette (dark modern)
+#define C_BG        0x1A1A2E
+#define C_PANEL     0x16213E
+#define C_ACCENT    0x0F3460
+#define C_HL        0xE94560
+#define C_TEXT      0xEAEAEA
+#define C_DIM       0x8888AA
+#define C_TRACK     0x2E2E5E
+
+// ============================================================
+// EVENT CALLBACKS
+// ============================================================
+static void refresh_playing();
+
+static void ev_prev(lv_event_t*) {
+  currentStn = (currentStn + NUM_STATIONS - 1) % NUM_STATIONS;
+  play_stn(currentStn);
+  refresh_playing();
+}
+static void ev_next(lv_event_t*) {
+  currentStn = (currentStn + 1) % NUM_STATIONS;
+  play_stn(currentStn);
+  refresh_playing();
+}
+static void ev_play(lv_event_t*) {
+  if (isPlaying) stop_stn();
+  else           play_stn(currentStn);
+  lv_label_set_text(wi_play, isPlaying ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+}
+static void ev_vol_changed(lv_event_t*) {
+  currentVol = (int)lv_slider_get_value(wi_slider);
+  char b[8]; snprintf(b, sizeof b, "%d", currentVol);
+  lv_label_set_text(wi_vol, b);
+  es8311_voice_volume_set(g_es8311_dev, currentVol, nullptr);
+}
+static void ev_show_list(lv_event_t*) {
+  lv_scr_load(scr_list);
+}
+static void ev_back(lv_event_t*) {
+  lv_scr_load(scr_play);
+}
+static void ev_select_stn(lv_event_t *e) {
+  int idx = (int)(uintptr_t)lv_event_get_user_data(e);
+  currentStn = idx;
+  play_stn(idx);
+  refresh_playing();
+  lv_scr_load(scr_play);
+}
+
+// ============================================================
+// REFRESH PLAYING SCREEN
+// ============================================================
+static void refresh_playing() {
+  if (!scr_play) return;
+  const Station& s = STATIONS[currentStn];
+  lv_color_t col = lv_color_hex(s.color);
+  lv_obj_set_style_bg_color(wi_logo, col, 0);
+  lv_obj_set_style_shadow_color(wi_logo, col, 0);
+  lv_label_set_text(wi_abbr, s.abbr);
+  lv_label_set_text(wi_name, s.name);
+  lv_label_set_text(wi_title, songTitle.isEmpty() ? "---" : songTitle.c_str());
+  lv_label_set_text(wi_play, isPlaying ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+  lv_slider_set_value(wi_slider, currentVol, LV_ANIM_OFF);
+  char b[8]; snprintf(b, sizeof b, "%d", currentVol);
+  lv_label_set_text(wi_vol, b);
+  for (int i = 0; i < NUM_STATIONS; i++) {
+    lv_obj_set_style_bg_color(wi_dots[i],
+      (i == currentStn) ? lv_color_hex(C_HL) : lv_color_hex(0x3A3A5A), 0);
+  }
+}
+
+static void update_status() {
+  if (!wi_wifi) return;
+  lv_label_set_text(wi_wifi,
+    WiFi.status() == WL_CONNECTED ? LV_SYMBOL_WIFI : LV_SYMBOL_WARNING);
+  int pct = bat_pct();
+  if (pct >= 0) {
+    const char* icon = pct > 75 ? LV_SYMBOL_BATTERY_FULL :
+                       pct > 50 ? LV_SYMBOL_BATTERY_3    :
+                       pct > 25 ? LV_SYMBOL_BATTERY_2    :
+                                  LV_SYMBOL_BATTERY_EMPTY;
+    char b[16]; snprintf(b, sizeof b, "%s%d%%", icon, pct);
+    lv_label_set_text(wi_bat, b);
+  }
+}
+
+// ============================================================
+// LVGL – status popup (shown during init)
+// ============================================================
+static lv_obj_t *popup     = nullptr;
+static lv_obj_t *popup_lbl = nullptr;
+
+static void show_status(const char* msg) {
+  if (!popup) {
+    popup = lv_obj_create(scr_play);
+    lv_obj_set_size(popup, 250, 44);
+    lv_obj_align(popup, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(popup, lv_color_hex(C_ACCENT), 0);
+    lv_obj_set_style_radius(popup, 10, 0);
+    lv_obj_set_style_border_width(popup, 0, 0);
+    lv_obj_clear_flag(popup, LV_OBJ_FLAG_SCROLLABLE);
+    popup_lbl = lv_label_create(popup);
+    lv_obj_set_style_text_color(popup_lbl, lv_color_hex(C_TEXT), 0);
+    lv_obj_center(popup_lbl);
+  }
+  lv_label_set_text(popup_lbl, msg);
+  lv_obj_move_foreground(popup);
+  lv_task_handler();
+}
+
+static void hide_status() {
+  if (popup) { lv_obj_del(popup); popup = nullptr; popup_lbl = nullptr; }
+}
+
+// ============================================================
+// BUILD PLAYING SCREEN
+// ============================================================
+static void build_playing_screen() {
+  scr_play = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(scr_play, lv_color_hex(C_BG), 0);
+  lv_obj_set_style_bg_opa(scr_play, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(scr_play, LV_OBJ_FLAG_SCROLLABLE);
+
+  // ---- Status bar ----
+  lv_obj_t *bar = lv_obj_create(scr_play);
+  lv_obj_set_size(bar, 320, 24);
+  lv_obj_set_pos(bar, 0, 0);
+  lv_obj_set_style_bg_color(bar, lv_color_hex(C_PANEL), 0);
+  lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(bar, 0, 0);
+  lv_obj_set_style_radius(bar, 0, 0);
+  lv_obj_set_style_pad_all(bar, 2, 0);
+  lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+
+  wi_wifi = lv_label_create(bar);
+  lv_label_set_text(wi_wifi, LV_SYMBOL_WIFI);
+  lv_obj_set_style_text_color(wi_wifi, lv_color_hex(C_TEXT), 0);
+  lv_obj_set_style_text_font(wi_wifi, &lv_font_montserrat_12, 0);
+  lv_obj_align(wi_wifi, LV_ALIGN_LEFT_MID, 4, 0);
+
+  lv_obj_t *hdr_lbl = lv_label_create(bar);
+  lv_label_set_text(hdr_lbl, "Radiko Radio");
+  lv_obj_set_style_text_color(hdr_lbl, lv_color_hex(C_TEXT), 0);
+  lv_obj_set_style_text_font(hdr_lbl, &lv_font_montserrat_12, 0);
+  lv_obj_align(hdr_lbl, LV_ALIGN_CENTER, 0, 0);
+
+  wi_bat = lv_label_create(bar);
+  lv_label_set_text(wi_bat, LV_SYMBOL_BATTERY_FULL);
+  lv_obj_set_style_text_color(wi_bat, lv_color_hex(C_TEXT), 0);
+  lv_obj_set_style_text_font(wi_bat, &lv_font_montserrat_12, 0);
+  lv_obj_align(wi_bat, LV_ALIGN_RIGHT_MID, -4, 0);
+
+  // ---- Station logo (80×80 rounded, tappable → list) ----
+  wi_logo = lv_obj_create(scr_play);
+  lv_obj_set_size(wi_logo, 80, 80);
+  lv_obj_align(wi_logo, LV_ALIGN_TOP_MID, 0, 28);
+  lv_obj_set_style_bg_color(wi_logo, lv_color_hex(STATIONS[0].color), 0);
+  lv_obj_set_style_bg_opa(wi_logo, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(wi_logo, 14, 0);
+  lv_obj_set_style_border_width(wi_logo, 0, 0);
+  lv_obj_set_style_shadow_width(wi_logo, 12, 0);
+  lv_obj_set_style_shadow_color(wi_logo, lv_color_hex(STATIONS[0].color), 0);
+  lv_obj_set_style_shadow_opa(wi_logo, LV_OPA_40, 0);
+  lv_obj_clear_flag(wi_logo, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_event_cb(wi_logo, ev_show_list, LV_EVENT_CLICKED, NULL);
+
+  wi_abbr = lv_label_create(wi_logo);
+  lv_label_set_text(wi_abbr, STATIONS[0].abbr);
+  lv_obj_set_style_text_color(wi_abbr, lv_color_white(), 0);
+  lv_obj_set_style_text_font(wi_abbr, &lv_font_montserrat_16, 0);
+  lv_obj_center(wi_abbr);
+
+  // ---- Japanese station name ----
+  wi_name = lv_label_create(scr_play);
+  lv_label_set_text(wi_name, STATIONS[0].name);
+  lv_obj_set_style_text_color(wi_name, lv_color_hex(C_TEXT), 0);
+  lv_obj_set_style_text_font(wi_name, &lv_font_jp_16, 0);
+  lv_obj_set_width(wi_name, 300);
+  lv_label_set_long_mode(wi_name, LV_LABEL_LONG_DOT);
+  lv_obj_set_style_text_align(wi_name, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(wi_name, LV_ALIGN_TOP_MID, 0, 114);
+
+  // ---- Song/program title (auto-scroll) ----
+  wi_title = lv_label_create(scr_play);
+  lv_label_set_text(wi_title, "---");
+  lv_obj_set_style_text_color(wi_title, lv_color_hex(C_DIM), 0);
+  lv_obj_set_style_text_font(wi_title, &lv_font_montserrat_12, 0);
+  lv_obj_set_width(wi_title, 290);
+  lv_label_set_long_mode(wi_title, LV_LABEL_LONG_DOT);
+  lv_obj_align(wi_title, LV_ALIGN_TOP_MID, 0, 137);
+
+  // ---- Volume row ----
+  lv_obj_t *vrow = lv_obj_create(scr_play);
+  lv_obj_set_size(vrow, 320, 30);
+  lv_obj_set_pos(vrow, 0, 158);
+  lv_obj_set_style_bg_opa(vrow, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(vrow, 0, 0);
+  lv_obj_set_style_pad_all(vrow, 0, 0);
+  lv_obj_clear_flag(vrow, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t *vlbl = lv_label_create(vrow);
+  lv_label_set_text(vlbl, "VOL");
+  lv_obj_set_style_text_color(vlbl, lv_color_hex(C_DIM), 0);
+  lv_obj_set_style_text_font(vlbl, &lv_font_montserrat_12, 0);
+  lv_obj_align(vlbl, LV_ALIGN_LEFT_MID, 8, 0);
+
+  wi_slider = lv_slider_create(vrow);
+  lv_obj_set_size(wi_slider, 214, 8);
+  lv_obj_align(wi_slider, LV_ALIGN_LEFT_MID, 46, 0);
+  lv_slider_set_range(wi_slider, 0, 100);
+  lv_slider_set_value(wi_slider, currentVol, LV_ANIM_OFF);
+  lv_obj_set_style_bg_color(wi_slider, lv_color_hex(C_TRACK),   LV_PART_MAIN);
+  lv_obj_set_style_bg_color(wi_slider, lv_color_hex(C_HL),      LV_PART_INDICATOR);
+  lv_obj_set_style_bg_color(wi_slider, lv_color_hex(C_HL),      LV_PART_KNOB);
+  lv_obj_set_style_pad_all (wi_slider, 6,                       LV_PART_KNOB);
+  lv_obj_add_event_cb(wi_slider, ev_vol_changed, LV_EVENT_VALUE_CHANGED, NULL);
+
+  wi_vol = lv_label_create(vrow);
+  char vb[8]; snprintf(vb, sizeof vb, "%d", currentVol);
+  lv_label_set_text(wi_vol, vb);
+  lv_obj_set_style_text_color(wi_vol, lv_color_hex(C_TEXT), 0);
+  lv_obj_set_style_text_font(wi_vol, &lv_font_montserrat_12, 0);
+  lv_obj_align(wi_vol, LV_ALIGN_RIGHT_MID, -8, 0);
+
+  // ---- Control buttons ----
+  lv_obj_t *brow = lv_obj_create(scr_play);
+  lv_obj_set_size(brow, 320, 40);
+  lv_obj_set_pos(brow, 0, 191);
+  lv_obj_set_style_bg_opa(brow, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(brow, 0, 0);
+  lv_obj_set_style_pad_all(brow, 0, 0);
+  lv_obj_clear_flag(brow, LV_OBJ_FLAG_SCROLLABLE);
+
+  struct { const char* sym; lv_event_cb_t cb; lv_align_t al; int xo; } btns[] = {
+    {LV_SYMBOL_PREV,  ev_prev, LV_ALIGN_LEFT_MID,   10},
+    {LV_SYMBOL_PLAY,  ev_play, LV_ALIGN_CENTER,       0},
+    {LV_SYMBOL_NEXT,  ev_next, LV_ALIGN_RIGHT_MID, -10},
+  };
+  for (int i = 0; i < 3; i++) {
+    lv_obj_t *btn = lv_btn_create(brow);
+    lv_obj_set_size(btn, 90, 36);
+    lv_obj_align(btn, btns[i].al, btns[i].xo, 0);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(C_ACCENT), LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(C_HL),     LV_STATE_PRESSED);
+    lv_obj_set_style_radius(btn, 8, 0);
+    lv_obj_set_style_shadow_width(btn, 0, 0);
+    lv_obj_add_event_cb(btn, btns[i].cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl = lv_label_create(btn);
+    lv_label_set_text(lbl, btns[i].sym);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(C_TEXT), 0);
+    lv_obj_center(lbl);
+    if (i == 1) wi_play = lbl;  // keep handle to PLAY label
+  }
+
+  // ---- Station position dots ----
+  lv_obj_t *drow = lv_obj_create(scr_play);
+  int dot_w = NUM_STATIONS * 8 + (NUM_STATIONS - 1) * 4;  // 8px dot, 4px gap
+  lv_obj_set_size(drow, 320, 12);
+  lv_obj_set_pos(drow, 0, 230);
+  lv_obj_set_style_bg_opa(drow, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(drow, 0, 0);
+  lv_obj_set_style_pad_all(drow, 0, 0);
+  lv_obj_clear_flag(drow, LV_OBJ_FLAG_SCROLLABLE);
+  int dx = (320 - dot_w) / 2;
+  for (int i = 0; i < NUM_STATIONS; i++) {
+    wi_dots[i] = lv_obj_create(drow);
+    lv_obj_set_size(wi_dots[i], 8, 8);
+    lv_obj_set_pos(wi_dots[i], dx + i * 12, 2);
+    lv_obj_set_style_radius(wi_dots[i], 4, 0);
+    lv_obj_set_style_bg_color(wi_dots[i],
+      (i == 0) ? lv_color_hex(C_HL) : lv_color_hex(0x3A3A5A), 0);
+    lv_obj_set_style_bg_opa(wi_dots[i], LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(wi_dots[i], 0, 0);
+  }
+}
+
+// ============================================================
+// BUILD STATION LIST SCREEN
+// ============================================================
+static void build_list_screen() {
+  scr_list = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(scr_list, lv_color_hex(C_BG), 0);
+  lv_obj_set_style_bg_opa(scr_list, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(scr_list, LV_OBJ_FLAG_SCROLLABLE);
+
+  // Header bar
+  lv_obj_t *hdr = lv_obj_create(scr_list);
+  lv_obj_set_size(hdr, 320, 30);
+  lv_obj_set_pos(hdr, 0, 0);
+  lv_obj_set_style_bg_color(hdr, lv_color_hex(C_PANEL), 0);
+  lv_obj_set_style_border_width(hdr, 0, 0);
+  lv_obj_set_style_radius(hdr, 0, 0);
+  lv_obj_set_style_pad_all(hdr, 4, 0);
+  lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t *back = lv_btn_create(hdr);
+  lv_obj_set_size(back, 60, 22);
+  lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
+  lv_obj_set_style_bg_color(back, lv_color_hex(C_ACCENT), 0);
+  lv_obj_set_style_radius(back, 6, 0);
+  lv_obj_set_style_shadow_width(back, 0, 0);
+  lv_obj_add_event_cb(back, ev_back, LV_EVENT_CLICKED, NULL);
+  lv_obj_t *blbl = lv_label_create(back);
+  lv_label_set_text(blbl, LV_SYMBOL_LEFT " Back");
+  lv_obj_set_style_text_color(blbl, lv_color_hex(C_TEXT), 0);
+  lv_obj_set_style_text_font(blbl, &lv_font_montserrat_12, 0);
+  lv_obj_center(blbl);
+
+  lv_obj_t *ttl = lv_label_create(hdr);
+  lv_label_set_text(ttl, "Select Station");
+  lv_obj_set_style_text_color(ttl, lv_color_hex(C_TEXT), 0);
+  lv_obj_set_style_text_font(ttl, &lv_font_montserrat_14, 0);
+  lv_obj_align(ttl, LV_ALIGN_CENTER, 24, 0);
+
+  // Scrollable list container
+  lv_obj_t *cont = lv_obj_create(scr_list);
+  lv_obj_set_size(cont, 320, 210);
+  lv_obj_set_pos(cont, 0, 30);
+  lv_obj_set_style_bg_color(cont, lv_color_hex(C_BG), 0);
+  lv_obj_set_style_bg_opa(cont, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(cont, 0, 0);
+  lv_obj_set_style_radius(cont, 0, 0);
+  lv_obj_set_style_pad_row(cont, 0, 0);
+  lv_obj_set_style_pad_column(cont, 0, 0);
+  lv_obj_set_style_pad_all(cont, 0, 0);
+  lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
+
+  for (int i = 0; i < NUM_STATIONS; i++) {
+    lv_obj_t *row = lv_obj_create(cont);
+    lv_obj_set_size(row, 320, 42);
+    lv_obj_set_style_bg_color(row,
+      (i % 2 == 0) ? lv_color_hex(C_BG) : lv_color_hex(C_PANEL), 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_radius(row, 0, 0);
+    lv_obj_set_style_pad_top(row, 4, 0);
+    lv_obj_set_style_pad_left(row, 6, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(row, ev_select_stn, LV_EVENT_CLICKED, (void*)(uintptr_t)i);
+
+    // Colored logo tile
+    lv_obj_t *tile = lv_obj_create(row);
+    lv_obj_set_size(tile, 34, 34);
+    lv_obj_set_pos(tile, 0, 0);
+    lv_obj_set_style_bg_color(tile, lv_color_hex(STATIONS[i].color), 0);
+    lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(tile, 6, 0);
+    lv_obj_set_style_border_width(tile, 0, 0);
+    lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *tlbl = lv_label_create(tile);
+    lv_label_set_text(tlbl, STATIONS[i].abbr);
+    lv_obj_set_style_text_color(tlbl, lv_color_white(), 0);
+    lv_obj_set_style_text_font(tlbl, &lv_font_montserrat_10, 0);
+    lv_obj_center(tlbl);
+
+    // Japanese station name
+    lv_obj_t *name = lv_label_create(row);
+    lv_label_set_text(name, STATIONS[i].name);
+    lv_obj_set_style_text_color(name, lv_color_hex(C_TEXT), 0);
+    lv_obj_set_style_text_font(name, &lv_font_jp_16, 0);
+    lv_obj_set_width(name, 210);
+    lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+    lv_obj_set_pos(name, 42, 2);
+
+    // Station ID
+    lv_obj_t *id = lv_label_create(row);
+    lv_label_set_text(id, STATIONS[i].id);
+    lv_obj_set_style_text_color(id, lv_color_hex(C_DIM), 0);
+    lv_obj_set_style_text_font(id, &lv_font_montserrat_10, 0);
+    lv_obj_set_pos(id, 42, 22);
+  }
+}
+
+// ============================================================
+// SETUP
+// ============================================================
+void setup() {
+  Serial.begin(115200);
+
+  // I2C master bus for ES8311 + FT6336G (shared bus, SDA=16, SCL=15)
+  {
+    i2c_master_bus_config_t bus_cfg = {};
+    bus_cfg.i2c_port              = I2C_NUM_0;
+    bus_cfg.sda_io_num            = (gpio_num_t)16;
+    bus_cfg.scl_io_num            = (gpio_num_t)15;
+    bus_cfg.clk_source            = I2C_CLK_SRC_DEFAULT;
+    bus_cfg.glitch_ignore_cnt     = 7;
+    bus_cfg.flags.enable_internal_pullup = true;
+    ESP_ERROR_CHECK(i2c_new_master_bus(&bus_cfg, &g_i2c_bus));
+
+    i2c_device_config_t es_cfg = {};
+    es_cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+    es_cfg.device_address  = ES8311_ADDRESS_0;
+    es_cfg.scl_speed_hz    = 400000;
+    ESP_ERROR_CHECK(i2c_master_bus_add_device(g_i2c_bus, &es_cfg, &g_es8311_dev));
+  }
+
+  // TFT display – init BEFORE ledcAttach so tft.init()'s pinMode(TFT_BL)
+  // does not detach the LEDC channel we attach right after.
+  tft.init();
+  tft.setRotation(1);
+  tft.fillScreen(TFT_BLACK);
+
+  // Backlight PWM – attach AFTER tft.init() which calls pinMode(TFT_BL)
+  ledcAttach(PIN_BL, 5000, 8);
+  bl_set(255);
+
+  // Capacitive touch
+  touch_init(tft.width(), tft.height(), tft.getRotation());
+
+  // Speaker amplifier ON
+  pinMode(PIN_AMP_EN, OUTPUT);
+  digitalWrite(PIN_AMP_EN, LOW);
+
+  // ES8311 codec – first pass (MCLK not yet running; sets up registers)
+  // Audio library outputs at 48 kHz → MCLK = 256 × 48000 = 12,288,000 Hz
+  {
+    es8311_clock_config_t clk = {};
+    clk.mclk_from_mclk_pin = true;
+    clk.mclk_frequency     = 12288000;  // 256 * 48000 Hz
+    clk.sample_frequency   = 48000;
+    es8311_init(g_es8311_dev, &clk, ES8311_RESOLUTION_16, ES8311_RESOLUTION_16);
+  }
+  es8311_voice_volume_set(g_es8311_dev, currentVol, nullptr);
+  es8311_voice_mute(g_es8311_dev, false);  // explicit DAC unmute
+
+  // Battery ADC
+  bat_init();
+
+  // LVGL — display buffer in PSRAM to keep internal RAM free for SSL
+  lv_px_buf = (lv_color_t*)ps_malloc(320 * 30 * sizeof(lv_color_t));
+  lv_init();
+  lv_disp_draw_buf_init(&lv_draw_buf, lv_px_buf, NULL, 320 * 30);
+
+  static lv_disp_drv_t disp_drv;
+  lv_disp_drv_init(&disp_drv);
+  disp_drv.hor_res  = 320;
+  disp_drv.ver_res  = 240;
+  disp_drv.flush_cb = lv_flush;
+  disp_drv.draw_buf = &lv_draw_buf;
+  lv_disp_drv_register(&disp_drv);
+
+  static lv_indev_drv_t indev_drv;
+  lv_indev_drv_init(&indev_drv);
+  indev_drv.type    = LV_INDEV_TYPE_POINTER;
+  indev_drv.read_cb = lv_touch;
+  lv_indev_drv_register(&indev_drv);
+
+  // Build UI
+  build_playing_screen();
+  lv_scr_load(scr_play);
+  lv_task_handler();
+
+  // WiFi
+  show_status("Connecting WiFi...");
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  uint32_t t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000) {
+    lv_task_handler(); delay(100);
+  }
+  if (WiFi.status() != WL_CONNECTED) { show_status("WiFi failed!"); return; }
+
+  // Radiko auth
+  show_status("Authenticating Radiko...");
+  lv_task_handler();
+  if (!radiko_auth()) { show_status("Auth failed!"); return; }
+
+  // ESP32-audioI2S setup – PSRAM is mandatory for this library.
+  // In Arduino IDE: Tools → PSRAM → "OPI PSRAM"  (for ESP32-S3 with 8MB OPI PSRAM)
+  if (!psramFound()) {
+    show_status("No PSRAM! Tools->PSRAM->OPI PSRAM");
+    for (;;) { lv_task_handler(); delay(10); }
+  }
+  audio.setPinout(PIN_I2S_BCK, PIN_I2S_WS, PIN_I2S_OUT, PIN_I2S_MCK);
+  audio.setVolume(21);           // max soft vol; ES8311 handles actual level
+  audio.setOutput48KHz(true);    // lock I2S at 48 kHz so MCLK stays 12,288,000 Hz
+  audio.setConnectionTimeout(250, 10000); // 10s SSL timeout (ESP32-S3 SSL is slow)
+  audio.setAudioTaskCore(1);     // PeriodicTask on Core 1 (same as audio.loop task)
+
+  // ES8311 second pass – MCLK is now running at 12,288,000 Hz (256×48000);
+  // re-init so the clock state machine locks to the actual MCLK signal.
+  delay(50);
+
+  {
+    es8311_clock_config_t clk = {};
+    clk.mclk_from_mclk_pin = true;
+    clk.mclk_frequency     = 12288000;  // 256 * 48000 Hz
+    clk.sample_frequency   = 48000;
+    es8311_init(g_es8311_dev, &clk, ES8311_RESOLUTION_16, ES8311_RESOLUTION_16);
+  }
+  es8311_voice_volume_set(g_es8311_dev, currentVol, nullptr);
+  es8311_voice_mute(g_es8311_dev, false);
+
+  // Create mutex for Audio library thread safety
+  s_audio_mtx = xSemaphoreCreateMutex();
+
+  // Build list screen
+  build_list_screen();
+  hide_status();
+  refresh_playing();
+  lv_task_handler();
+
+  lastTouch = millis();
+
+  // Start tasks — all LVGL init is done
+  s_setup_done = true;
+  xTaskCreatePinnedToCore(audio_loop_task, "aloop", 32768, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(lvgl_task, "lvgl", 16384, NULL, 1, NULL, 0);
+
+  // Trigger initial station connect via debounce (do_connect runs from loop on Core 1)
+  play_stn(currentStn);
+  s_pending_connect_ms = millis() - 2000;  // already expired, connect on first loop
+}
+
+// ============================================================
+// LOOP
+// ============================================================
+void loop() {
+  // Debounced station connect (audio calls only, no LVGL)
+  if (s_pending_stn >= 0 && s_pending_connect_ms > 0 &&
+      millis() - s_pending_connect_ms >= 1000) {
+    do_connect(s_pending_stn);
+  }
+  delay(50);
+}
