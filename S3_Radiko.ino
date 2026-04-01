@@ -44,6 +44,7 @@
 #define PIN_I2S_BCK  5   // I2S Bit Clock
 #define PIN_I2S_WS   7   // I2S Word Select (LRC)
 #define PIN_I2S_OUT  8   // I2S Data Out → ES8311 DAC
+#define PIN_RGB_LED 42   // WS2812B RGB LED
 
 // ============================================================
 // RADIKO
@@ -102,6 +103,34 @@ static unsigned long lastTouch  = 0;
 static uint8_t       screenState = 0;  // 0=on, 1=dimmed, 2=off
 
 static void bl_set(int duty) { ledcWrite(PIN_BL, duty); }
+
+// ============================================================
+// RGB LED (WS2812B on GPIO42) — rainbow effect
+// ============================================================
+static void hsv_to_rgb(uint16_t h, uint8_t s, uint8_t v, uint8_t* r, uint8_t* g, uint8_t* b) {
+  uint8_t region = h / 60;
+  uint8_t rem = (h - region * 60) * 255 / 60;
+  uint8_t p = (uint16_t)v * (255 - s) / 255;
+  uint8_t q = (uint16_t)v * (255 - ((uint16_t)s * rem / 255)) / 255;
+  uint8_t t = (uint16_t)v * (255 - ((uint16_t)s * (255 - rem) / 255)) / 255;
+  switch (region) {
+    case 0: *r=v; *g=t; *b=p; break;
+    case 1: *r=q; *g=v; *b=p; break;
+    case 2: *r=p; *g=v; *b=t; break;
+    case 3: *r=p; *g=q; *b=v; break;
+    case 4: *r=t; *g=p; *b=v; break;
+    default:*r=v; *g=p; *b=q; break;
+  }
+}
+
+static void rgb_update() {
+  static uint16_t hue = 0;
+  uint8_t r, g, b;
+  hsv_to_rgb(hue % 360, 255, 40, &r, &g, &b);  // low brightness
+  neopixelWrite(PIN_RGB_LED, r, g, b);
+  hue += 1;
+  if (hue >= 360) hue = 0;
+}
 
 // ============================================================
 // BATTERY ADC (ADC1_CHANNEL_8 = GPIO9, voltage divider ×2)
@@ -855,6 +884,13 @@ void loop() {
   } else if (screenState == 1 && idle > OFF_TIMEOUT_MS) {
     screenState = 2;
     bl_set(0);
+  }
+
+  // Rainbow RGB LED
+  static uint32_t last_rgb = 0;
+  if (millis() - last_rgb > 30) {  // ~33 updates/sec for smooth rainbow
+    last_rgb = millis();
+    rgb_update();
   }
 
   // Periodic status bar + song title (~2s)
