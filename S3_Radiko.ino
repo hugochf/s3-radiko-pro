@@ -304,8 +304,8 @@ static void fetch_program_info(const char* station_id) {
     if (s_prog_pfm.length() > 0)
       songTitle += "  " + s_prog_pfm;
   } else {
-    // Debug: show what happened
-    songTitle = inStation ? "found stn, no title" : "stn not found";
+    // Debug: show first 80 chars of buffer to check XML format
+    songTitle = buf.substring(0, 80);
   }
 }
 
