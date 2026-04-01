@@ -72,7 +72,7 @@ static const Station STATIONS[] = {
   {"BAYFM78", "BAYFM78",              "BAY",  0x00695C, &logo_BAYFM78},
   {"NACK5",   "NACK5",                "N5",   0xAD1457, &logo_NACK5},
   {"YFM",     "FMヨコハマ",            "YFM",  0x283593, &logo_YFM},
-  {"IBS",     "LuckyFM 茨城放送",     "LFM",  0xBF360C, &logo_IBS},
+  {"IBS",     "LuckyFM\n茨城放送",    "LFM",  0xBF360C, &logo_IBS},
   {"JOAK",    "NHK AM(東京)",         "NHK1", 0x37474F, &logo_JOAK},
   {"JOAK-FM", "NHK FM(東京)",         "NHKF", 0x00695C, &logo_JOAK_FM},
 };
@@ -686,7 +686,7 @@ static void build_list_screen() {
     lv_obj_t *logo = lv_img_create(row);
     lv_img_set_src(logo, STATIONS[i].logo);
     lv_img_set_zoom(logo, 200);  // scale 216x54 → ~169x42
-    lv_obj_align(logo, LV_ALIGN_LEFT_MID, 4, 0);
+    lv_obj_align(logo, LV_ALIGN_LEFT_MID, -4, 0);
 
     // Station full name, right-aligned
     lv_obj_t *name = lv_label_create(row);
