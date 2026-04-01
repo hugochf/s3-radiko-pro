@@ -245,53 +245,56 @@ static uint32_t s_prog_last_fetch = 0;
 
 static void fetch_program_info(const char* station_id) {
   HTTPClient h;
-  // "now" area endpoint — small response, only current programs
   h.begin("https://radiko.jp/v3/program/now/JP13.xml");
-  h.setTimeout(8000);
+  h.setTimeout(5000);
   h.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   int code = h.GET();
   if (code != 200) { h.end(); return; }
 
-  // Find our station's current program in the response
-  // Search for station block, then extract title and pfm
   WiFiClient* stream = h.getStreamPtr();
-  String stationTag = String("id=\"") + station_id + "\"";
-  bool found = false;
+  String tag = String("id=\"") + station_id + "\"";
+  bool inStation = false;
   s_prog_title = "";
   s_prog_pfm = "";
 
-  // Read in chunks, search for our station's prog block
-  String buf = "";
-  uint32_t start = millis();
-  while ((stream->available() || stream->connected()) && millis() - start < 6000) {
-    if (!stream->available()) { delay(1); continue; }
-    char c = stream->read();
-    buf += c;
+  // Read in larger chunks for speed
+  String buf;
+  buf.reserve(4096);
+  uint32_t t0 = millis();
+  while (stream->connected() && millis() - t0 < 5000) {
+    int avail = stream->available();
+    if (avail == 0) { delay(5); continue; }
+    // Read a chunk
+    char tmp[512];
+    int n = stream->readBytes(tmp, min(avail, 511));
+    tmp[n] = 0;
+    buf += tmp;
 
-    // Keep buffer manageable — only need to find our station
-    if (buf.length() > 2000) {
-      if (!found) buf = buf.substring(1000);  // slide window
-      else break;  // got enough
+    // Searching for our station
+    if (!inStation) {
+      int pos = buf.indexOf(tag);
+      if (pos >= 0) {
+        inStation = true;
+        buf = buf.substring(pos);  // keep from station tag onward
+      } else if (buf.length() > 4000) {
+        buf = buf.substring(buf.length() - 500);  // keep tail
+      }
+      continue;
     }
 
-    if (!found && buf.indexOf(stationTag) >= 0) {
-      found = true;
-      buf = "";  // reset, collect prog data
-    }
-
-    if (found && buf.indexOf("</prog>") >= 0) {
-      // Extract title
-      int ts = buf.indexOf("<title>");
-      int te = buf.indexOf("</title>");
-      if (ts >= 0 && te > ts)
-        s_prog_title = buf.substring(ts + 7, te);
-      // Extract personality
-      int ps = buf.indexOf("<pfm>");
-      int pe = buf.indexOf("</pfm>");
-      if (ps >= 0 && pe > ps)
-        s_prog_pfm = buf.substring(ps + 5, pe);
+    // In our station — look for first </prog>
+    int progEnd = buf.indexOf("</prog>");
+    if (progEnd >= 0) {
+      String prog = buf.substring(0, progEnd);
+      int ts = prog.indexOf("<title>");
+      int te = prog.indexOf("</title>");
+      if (ts >= 0 && te > ts) s_prog_title = prog.substring(ts + 7, te);
+      int ps = prog.indexOf("<pfm>");
+      int pe = prog.indexOf("</pfm>");
+      if (ps >= 0 && pe > ps) s_prog_pfm = prog.substring(ps + 5, pe);
       break;
     }
+    if (buf.indexOf("</station>") >= 0) break;  // past our station
   }
   h.end();
   s_prog_last_fetch = millis();
@@ -334,8 +337,8 @@ static void do_connect(int idx) {
 
   audio.stopSong();
 
-  // TODO: program info fetch disabled — SSL overhead too slow
-  // fetch_program_info(STATIONS[idx].id);
+  // Fetch program info while audio is stopped (SSL reuses session from auth)
+  fetch_program_info(STATIONS[idx].id);
 
   String hdr = "X-Radiko-AuthToken: " + radikoToken + "\r\n";
   audio.setExtraHeaders(hdr.c_str());
