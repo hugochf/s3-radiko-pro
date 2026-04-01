@@ -667,30 +667,28 @@ static void build_list_screen() {
 
   for (int i = 0; i < NUM_STATIONS; i++) {
     lv_obj_t *row = lv_obj_create(cont);
-    lv_obj_set_size(row, 320, 42);
+    lv_obj_set_size(row, 320, 54);
     lv_obj_set_style_bg_color(row,
       (i % 2 == 0) ? lv_color_hex(C_BG) : lv_color_hex(C_PANEL), 0);
     lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(row, 0, 0);
     lv_obj_set_style_radius(row, 0, 0);
-    lv_obj_set_style_pad_top(row, 4, 0);
-    lv_obj_set_style_pad_left(row, 6, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(row, ev_select_stn, LV_EVENT_CLICKED, (void*)(uintptr_t)i);
 
-    // Station logo (scaled down)
+    // Station logo (scaled to fit row)
     lv_obj_t *logo = lv_img_create(row);
     lv_img_set_src(logo, STATIONS[i].logo);
-    lv_img_set_zoom(logo, 142);  // scale 216x54 → ~120x30
-    lv_obj_set_pos(logo, 0, 0);
-    lv_obj_set_size(logo, 120, 30);
+    lv_img_set_zoom(logo, 200);  // scale 216x54 → ~169x42
+    lv_obj_align(logo, LV_ALIGN_LEFT_MID, 4, 0);
 
-    // Station ID
+    // Station ID on the right
     lv_obj_t *id = lv_label_create(row);
     lv_label_set_text(id, STATIONS[i].id);
     lv_obj_set_style_text_color(id, lv_color_hex(C_DIM), 0);
-    lv_obj_set_style_text_font(id, &lv_font_montserrat_10, 0);
-    lv_obj_set_pos(id, 130, 10);
+    lv_obj_set_style_text_font(id, &lv_font_montserrat_12, 0);
+    lv_obj_align(id, LV_ALIGN_RIGHT_MID, -10, 0);
   }
 }
 
