@@ -692,8 +692,8 @@ static void build_list_screen() {
     lv_obj_t *name = lv_label_create(row);
     lv_label_set_text(name, STATIONS[i].name);
     lv_obj_set_style_text_color(name, lv_color_hex(C_TEXT), 0);
-    lv_obj_set_style_text_font(name, &lv_font_jp_16, 0);
-    lv_obj_set_width(name, 140);
+    lv_obj_set_style_text_font(name, &lv_font_montserrat_12, 0);
+    lv_obj_set_width(name, 130);
     lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
     lv_obj_align(name, LV_ALIGN_RIGHT_MID, -8, 0);
   }
