@@ -126,7 +126,7 @@ static void hsv_to_rgb(uint16_t h, uint8_t s, uint8_t v, uint8_t* r, uint8_t* g,
 static void rgb_update() {
   static uint16_t hue = 0;
   uint8_t r, g, b;
-  hsv_to_rgb(hue % 360, 255, 40, &r, &g, &b);  // low brightness
+  hsv_to_rgb(hue % 360, 255, 255, &r, &g, &b);  // full brightness
   neopixelWrite(PIN_RGB_LED, r, g, b);
   hue += 1;
   if (hue >= 360) hue = 0;
