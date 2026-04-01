@@ -305,8 +305,13 @@ static void fetch_program_info(const char* station_id) {
     if (s_prog_pfm.length() > 0)
       songTitle += "  " + s_prog_pfm;
   } else {
-    // Debug: show HTTP code + first 60 chars
-    songTitle = String("H:") + code + " " + buf.substring(0, 60);
+    // Debug: show HTTP code + first 20 bytes as hex
+    String dbg = String("H:") + code + " ";
+    for (int i = 0; i < 20 && i < (int)buf.length(); i++) {
+      char hx[4]; snprintf(hx, sizeof hx, "%02X ", (uint8_t)buf[i]);
+      dbg += hx;
+    }
+    songTitle = dbg;
   }
 }
 
