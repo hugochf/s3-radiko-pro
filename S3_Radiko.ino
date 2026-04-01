@@ -247,8 +247,8 @@ static void fetch_program_info(const char* station_id) {
   HTTPClient h;
   h.begin("https://radiko.jp/v3/program/now/JP13.xml");
   h.setTimeout(5000);
+  h.useHTTP10(true);  // HTTP/1.0: no chunked, no compression
   h.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  h.addHeader("Accept-Encoding", "identity");  // no gzip
   int code = h.GET();
   if (code != 200) { h.end(); return; }
 
