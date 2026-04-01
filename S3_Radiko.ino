@@ -116,15 +116,49 @@ static void bat_init() {
   adc_cali_create_scheme_curve_fitting(&k, &s_cali);
 }
 
-static int bat_pct() {
+// Smoothed battery reading with exponential moving average
+static int s_bat_mv_avg = 0;  // smoothed battery voltage in mV
+
+static int bat_read_mv() {
   if (!s_adc) return -1;
-  int raw = 0, mv = 0;
-  if (adc_oneshot_read(s_adc, ADC_CHANNEL_8, &raw) != ESP_OK) return -1;
-  if (!s_cali || adc_cali_raw_to_voltage(s_cali, raw, &mv) != ESP_OK) return -1;
-  int vbat = mv * 2;  // voltage divider
-  if (vbat <= 3000) return 0;
-  if (vbat >= 4200) return 100;
-  return (vbat - 3000) * 100 / 1200;
+  // Average 8 ADC samples to reduce noise
+  long sum = 0;
+  int good = 0;
+  for (int i = 0; i < 8; i++) {
+    int raw = 0, mv = 0;
+    if (adc_oneshot_read(s_adc, ADC_CHANNEL_8, &raw) == ESP_OK &&
+        s_cali && adc_cali_raw_to_voltage(s_cali, raw, &mv) == ESP_OK) {
+      sum += mv;
+      good++;
+    }
+  }
+  if (good == 0) return -1;
+  int mv_now = (int)(sum / good) * 2;  // voltage divider ×2
+
+  // Exponential moving average (alpha ~0.1) to smooth across calls
+  if (s_bat_mv_avg == 0) s_bat_mv_avg = mv_now;  // first reading
+  else s_bat_mv_avg = (s_bat_mv_avg * 9 + mv_now) / 10;
+  return s_bat_mv_avg;
+}
+
+static int bat_pct() {
+  int mv = bat_read_mv();
+  if (mv < 0) return -1;
+  // Li-ion discharge curve (approximate):
+  // 4200mV=100%, 3900mV~75%, 3700mV~50%, 3550mV~25%, 3300mV~5%, 3000mV=0%
+  if (mv >= 4200) return 100;
+  if (mv >= 3900) return 75 + (mv - 3900) * 25 / 300;
+  if (mv >= 3700) return 50 + (mv - 3700) * 25 / 200;
+  if (mv >= 3550) return 25 + (mv - 3550) * 25 / 150;
+  if (mv >= 3300) return 5  + (mv - 3300) * 20 / 250;
+  if (mv >= 3000) return mv > 3000 ? (mv - 3000) * 5 / 300 : 0;
+  return 0;
+}
+
+static bool bat_is_charging() {
+  // Charging detection: voltage > 4200mV suggests USB power / charging
+  int mv = s_bat_mv_avg;
+  return mv > 4250;
 }
 
 // ============================================================
@@ -353,11 +387,17 @@ static void update_status() {
     WiFi.status() == WL_CONNECTED ? LV_SYMBOL_WIFI : LV_SYMBOL_WARNING);
   int pct = bat_pct();
   if (pct >= 0) {
-    const char* icon = pct > 75 ? LV_SYMBOL_BATTERY_FULL :
-                       pct > 50 ? LV_SYMBOL_BATTERY_3    :
-                       pct > 25 ? LV_SYMBOL_BATTERY_2    :
-                                  LV_SYMBOL_BATTERY_EMPTY;
-    char b[16]; snprintf(b, sizeof b, "%s%d%%", icon, pct);
+    bool charging = bat_is_charging();
+    const char* icon;
+    if (charging) {
+      icon = LV_SYMBOL_CHARGE;
+    } else {
+      icon = pct > 75 ? LV_SYMBOL_BATTERY_FULL :
+             pct > 50 ? LV_SYMBOL_BATTERY_3    :
+             pct > 25 ? LV_SYMBOL_BATTERY_2    :
+                        LV_SYMBOL_BATTERY_EMPTY;
+    }
+    char b[16]; snprintf(b, sizeof b, "%s%d%%", icon, pct > 100 ? 100 : pct);
     lv_label_set_text(wi_bat, b);
   }
 }
