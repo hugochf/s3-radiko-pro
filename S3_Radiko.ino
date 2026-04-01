@@ -334,8 +334,8 @@ static void do_connect(int idx) {
 
   audio.stopSong();
 
-  // Fetch program info NOW while audio is stopped (no conflict)
-  fetch_program_info(STATIONS[idx].id);
+  // TODO: program info fetch disabled — SSL overhead too slow
+  // fetch_program_info(STATIONS[idx].id);
 
   String hdr = "X-Radiko-AuthToken: " + radikoToken + "\r\n";
   audio.setExtraHeaders(hdr.c_str());
