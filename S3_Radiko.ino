@@ -664,12 +664,20 @@ static void build_list_screen() {
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(row, ev_select_stn, LV_EVENT_CLICKED, (void*)(uintptr_t)i);
 
-    // Station logo thumbnail
-    lv_obj_t *tile = lv_img_create(row);
-    lv_img_set_src(tile, STATIONS[i].logo);
+    // Station color tile
+    lv_obj_t *tile = lv_obj_create(row);
     lv_obj_set_size(tile, 34, 34);
     lv_obj_set_pos(tile, 0, 0);
-    lv_img_set_zoom(tile, 256 * 34 / 70);  // scale 70px logo to 34px
+    lv_obj_set_style_bg_color(tile, lv_color_hex(STATIONS[i].color), 0);
+    lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(tile, 6, 0);
+    lv_obj_set_style_border_width(tile, 0, 0);
+    lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *tlbl = lv_label_create(tile);
+    lv_label_set_text(tlbl, STATIONS[i].abbr);
+    lv_obj_set_style_text_color(tlbl, lv_color_white(), 0);
+    lv_obj_set_style_text_font(tlbl, &lv_font_montserrat_10, 0);
+    lv_obj_center(tlbl);
 
     // Japanese station name
     lv_obj_t *name = lv_label_create(row);
