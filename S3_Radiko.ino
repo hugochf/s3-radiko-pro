@@ -692,7 +692,7 @@ static void build_playing_screen() {
   lv_obj_set_width(wi_name, 300);
   lv_label_set_long_mode(wi_name, LV_LABEL_LONG_DOT);
   lv_obj_set_style_text_align(wi_name, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(wi_name, LV_ALIGN_TOP_MID, 0, 90);
+  lv_obj_align(wi_name, LV_ALIGN_TOP_MID, 0, 88);
 
   // ---- Program title (grey, scrolling) ----
   wi_title = lv_label_create(scr_play);
@@ -703,12 +703,12 @@ static void build_playing_screen() {
   lv_label_set_long_mode(wi_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
   lv_obj_set_style_anim_speed(wi_title, 8, 0);  // very slow = tiny jumps during audio blocks
   lv_obj_set_style_text_align(wi_title, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(wi_title, LV_ALIGN_TOP_MID, 0, 110);
+  lv_obj_align(wi_title, LV_ALIGN_TOP_MID, 0, 106);
 
   // ---- Volume row ----
   lv_obj_t *vrow = lv_obj_create(scr_play);
   lv_obj_set_size(vrow, 320, 30);
-  lv_obj_set_pos(vrow, 0, 130);
+  lv_obj_set_pos(vrow, 0, 134);
   lv_obj_set_style_bg_opa(vrow, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(vrow, 0, 0);
   lv_obj_set_style_pad_all(vrow, 0, 0);
@@ -739,7 +739,7 @@ static void build_playing_screen() {
   lv_obj_align(wi_vol, LV_ALIGN_RIGHT_MID, -8, 0);
 
   // ---- Circle control buttons ----
-  int btn_y = 170;  // vertical center for buttons
+  int btn_y = 176;  // vertical center for buttons
 
   // Prev (small circle)
   lv_obj_t *btn_prev = lv_btn_create(scr_play);
@@ -788,7 +788,7 @@ static void build_playing_screen() {
   lv_obj_t *drow = lv_obj_create(scr_play);
   int dot_w = NUM_STATIONS * 8 + (NUM_STATIONS - 1) * 4;
   lv_obj_set_size(drow, 320, 12);
-  lv_obj_set_pos(drow, 0, 224);
+  lv_obj_set_pos(drow, 0, 228);
   lv_obj_set_style_bg_opa(drow, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(drow, 0, 0);
   lv_obj_set_style_pad_all(drow, 0, 0);
