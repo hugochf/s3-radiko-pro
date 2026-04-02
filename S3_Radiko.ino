@@ -25,7 +25,8 @@
 #include "es8311.h"
 #include "lv_font_jp_16.h"
 #include "station_logos.h"
-#include <SPIFFS.h>
+// Full Japanese font compiled in flash
+LV_FONT_DECLARE(lv_font_jp_full);
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
@@ -88,7 +89,7 @@ i2c_master_bus_handle_t g_i2c_bus    = nullptr;
 i2c_master_dev_handle_t g_es8311_dev = nullptr;
 
 static Audio  audio;
-static lv_font_t* font_jp_full = nullptr;  // loaded from SD card
+static const lv_font_t* font_jp_full = &lv_font_jp_full;  // compiled-in JP font
 static String radikoToken  = "";
 static String radikoArea   = "JP14";
 static int    currentStn   = 0;
@@ -321,7 +322,7 @@ static void fetch_program_info(const char* station_id) {
   if (ps >= 0 && pe > ps) pfm = prog.substring(ps + 5, pe);
 
   if (title.length() > 0) {
-    songTitle = (font_jp_full ? "[F] " : "[X] ") + title;
+    songTitle = String(isXml ? "[xml]" : "[bin]") + title;
     if (pfm.length() > 0) songTitle += "  " + pfm;
   }
 }
@@ -604,7 +605,7 @@ static void build_playing_screen() {
   wi_title = lv_label_create(scr_play);
   lv_label_set_text(wi_title, STATIONS[0].name);
   lv_obj_set_style_text_color(wi_title, lv_color_hex(C_DIM), 0);
-  lv_obj_set_style_text_font(wi_title, font_jp_full ? font_jp_full : &lv_font_jp_16, 0);
+  lv_obj_set_style_text_font(wi_title, &lv_font_jp_full, 0);
   lv_obj_set_width(wi_title, 300);
   lv_label_set_long_mode(wi_title, LV_LABEL_LONG_DOT);
   lv_obj_set_style_text_align(wi_title, LV_TEXT_ALIGN_CENTER, 0);
@@ -890,16 +891,6 @@ void setup() {
   lv_task_handler();
   if (!radiko_auth()) { show_status("Auth failed!"); return; }
 
-  // Load Japanese font from SPIFFS (1MB partition in huge_app scheme)
-  if (SPIFFS.begin(true)) {
-    if (SPIFFS.exists("/lv_font_jp_full.bin")) {
-      font_jp_full = lv_font_load("S:lv_font_jp_full.bin");
-    }
-    show_status(font_jp_full ? "Font: OK" : "Font: FAIL");
-    lv_task_handler();
-    delay(1500);
-    hide_status();
-  }
 
   // ESP32-audioI2S setup – PSRAM is mandatory for this library.
   // In Arduino IDE: Tools → PSRAM → "OPI PSRAM"  (for ESP32-S3 with 8MB OPI PSRAM)
