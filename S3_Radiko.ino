@@ -877,18 +877,6 @@ void setup() {
   lv_scr_load(scr_play);
   lv_task_handler();
 
-  // Show SD/font status briefly
-  {
-    char msg[64];
-    snprintf(msg, sizeof msg, "SD:%s Font:%s",
-             sd_ok ? "OK" : "FAIL",
-             font_jp_full ? "OK" : (sd_ok ? "LOAD ERR" : "NO SD"));
-    show_status(msg);
-    lv_task_handler();
-    delay(1500);
-    hide_status();
-  }
-
   // WiFi
   show_status("Connecting WiFi...");
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
