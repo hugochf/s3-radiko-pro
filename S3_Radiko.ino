@@ -687,9 +687,8 @@ static void build_playing_screen() {
   wi_title = lv_label_create(scr_play);
   lv_label_set_text(wi_title, STATIONS[0].name);
   lv_obj_set_style_text_color(wi_title, lv_color_hex(C_DIM), 0);
-  // Original 16px 4bpp font for common chars, full 16px 1bpp fallback for kanji
-  ((lv_font_t*)&lv_font_jp_16)->fallback = &lv_font_jp_full;
-  lv_obj_set_style_text_font(wi_title, &lv_font_jp_16, 0);
+  // Full 16px font for program title (covers all kanji)
+  lv_obj_set_style_text_font(wi_title, &lv_font_jp_full, 0);
   lv_obj_set_width(wi_title, 300);
   lv_label_set_long_mode(wi_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
   lv_obj_set_style_anim_speed(wi_title, 30, 0);
