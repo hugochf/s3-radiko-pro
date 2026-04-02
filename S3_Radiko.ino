@@ -303,16 +303,16 @@ static void fetch_program_info(const char* station_id) {
            "Connection: close\r\n"
            "\r\n");
 
-  // Read entire response (headers + body) with timeout
-  String raw;
-  raw.reserve(24000);
+  // Read response into PSRAM buffer
+  size_t rawCap = 24000;
+  char* raw = (char*)ps_malloc(rawCap);
+  if (!raw) { tc.stop(); return; }
+  size_t rawLen = 0;
   uint32_t t0 = millis();
-  while (millis() - t0 < 8000) {
+  while (millis() - t0 < 8000 && rawLen < rawCap - 1) {
     if (tc.available()) {
-      char buf[1024];
-      int n = tc.readBytes(buf, min((int)tc.available(), (int)sizeof(buf)));
-      raw.concat(buf, n);
-      if (raw.length() > 100000) break;
+      int n = tc.readBytes(raw + rawLen, min((int)tc.available(), (int)(rawCap - 1 - rawLen)));
+      rawLen += n;
       t0 = millis();
     } else if (!tc.connected()) {
       break;
@@ -321,81 +321,78 @@ static void fetch_program_info(const char* station_id) {
     }
   }
   tc.stop();
+  raw[rawLen] = 0;
 
-  // Split headers from body at \r\n\r\n
-  int hdrEnd = raw.indexOf("\r\n\r\n");
-  if (hdrEnd < 0) return;
-  String hdr = raw.substring(0, hdrEnd);
-  String body = raw.substring(hdrEnd + 4);
-  hdr.toLowerCase();
-  bool isGzip = hdr.indexOf("gzip") >= 0;
+  // Split headers from body
+  char* bodyPtr = strstr(raw, "\r\n\r\n");
+  if (!bodyPtr) { free(raw); return; }
+  *bodyPtr = 0;  // null-terminate headers
+  bodyPtr += 4;
+  size_t bodyLen = rawLen - (bodyPtr - raw);
 
-  if (body.length() == 0) { songTitle = "ERR:empty"; return; }
-
-  // Decompress if gzip (header or magic bytes)
-  if (!isGzip && body.length() > 2 && (uint8_t)body[0] == 0x1F && (uint8_t)body[1] == 0x8B)
+  // Check gzip in headers (case-insensitive)
+  for (char* p = raw; *p; p++) *p = tolower(*p);
+  bool isGzip = strstr(raw, "gzip") != NULL;
+  // Also check magic bytes
+  if (!isGzip && bodyLen > 2 && (uint8_t)bodyPtr[0] == 0x1F && (uint8_t)bodyPtr[1] == 0x8B)
     isGzip = true;
-  if (isGzip && body.length() > 10) {
-    // Skip gzip header (10 bytes minimum)
+
+  if (bodyLen == 0) { free(raw); return; }
+
+  // Decompress gzip into PSRAM
+  char* xml = NULL;
+  size_t xmlLen = 0;
+  if (isGzip && bodyLen > 10) {
     size_t hdr = 10;
-    uint8_t flags = (uint8_t)body[3];
-    if (flags & 0x04) hdr += 2 + (uint8_t)body[hdr] + ((uint8_t)body[hdr+1] << 8);  // FEXTRA
-    if (flags & 0x08) { while (hdr < body.length() && body[hdr]) hdr++; hdr++; }      // FNAME
-    if (flags & 0x10) { while (hdr < body.length() && body[hdr]) hdr++; hdr++; }      // FCOMMENT
-    if (flags & 0x02) hdr += 2;  // FHCRC
+    uint8_t flags = (uint8_t)bodyPtr[3];
+    if (flags & 0x04) hdr += 2 + (uint8_t)bodyPtr[hdr] + ((uint8_t)bodyPtr[hdr+1] << 8);
+    if (flags & 0x08) { while (hdr < bodyLen && bodyPtr[hdr]) hdr++; hdr++; }
+    if (flags & 0x10) { while (hdr < bodyLen && bodyPtr[hdr]) hdr++; hdr++; }
+    if (flags & 0x02) hdr += 2;
 
-    size_t alloc = body.length() * 8;
-    char* out = (char*)ps_malloc(alloc);
-    if (out) {
-      size_t src_len = body.length() - hdr - 8;
-      size_t got = tinfl_decompress_mem_to_mem(out, alloc,
-                     body.c_str() + hdr, src_len, 0);
-      if (got != TINFL_DECOMPRESS_MEM_TO_MEM_FAILED) {
-        body = String(out, got);
-      } else {
-        songTitle = String("gz:fail h:") + hdr + " s:" + src_len + " a:" + alloc;
-        free(out);
-        return;
-      }
-      free(out);
+    size_t alloc = 120000;  // decompressed XML ~80-100KB
+    xml = (char*)ps_malloc(alloc);
+    if (xml) {
+      xmlLen = tinfl_decompress_mem_to_mem(xml, alloc, bodyPtr + hdr, bodyLen - hdr - 8, 0);
+      if (xmlLen == TINFL_DECOMPRESS_MEM_TO_MEM_FAILED) { free(xml); xml = NULL; }
+      else xml[xmlLen] = 0;
+    }
+  } else {
+    // Not gzip — body is already XML
+    xml = (char*)ps_malloc(bodyLen + 1);
+    if (xml) { memcpy(xml, bodyPtr, bodyLen); xml[bodyLen] = 0; xmlLen = bodyLen; }
+  }
+  free(raw);  // done with raw response
+  if (!xml) return;
+
+  // Search for station and extract program info (all in PSRAM)
+  char tag[32];
+  snprintf(tag, sizeof tag, "id=\"%s\"", station_id);
+  char* stn = strstr(xml, tag);
+  if (!stn) { free(xml); return; }
+
+  char* prog = strstr(stn, "<prog ");
+  char* progEnd = prog ? strstr(prog, "</prog>") : NULL;
+  if (!prog || !progEnd) { free(xml); return; }
+  *progEnd = 0;  // null-terminate prog block
+
+  char* ts = strstr(prog, "<title>");
+  char* te = strstr(prog, "</title>");
+  char* ps = strstr(prog, "<pfm>");
+  char* pe = strstr(prog, "</pfm>");
+
+  if (ts && te && te > ts) {
+    ts += 7;
+    *te = 0;
+    songTitle = ts;
+    if (ps && pe && pe > ps) {
+      ps += 5;
+      *pe = 0;
+      songTitle += "  ";
+      songTitle += ps;
     }
   }
-
-  bool isXml = body.startsWith("<?xml") || body.startsWith("<radiko");
-
-  String tag = String("id=\"") + station_id + "\"";
-  int stnPos = body.indexOf(tag);
-  if (stnPos < 0) {
-    // Debug: show first 6 bytes hex when parsing fails
-    String dbg = String(isGzip ? "gz" : (isXml ? "xml" : "?")) + " L:" + body.length() + " ";
-    for (int i = 0; i < 6 && i < (int)body.length(); i++) {
-      char hx[4]; snprintf(hx, sizeof hx, "%02X ", (uint8_t)body[i]);
-      dbg += hx;
-    }
-    songTitle = dbg;
-    return;
-    return;
-  }
-
-  int progStart = body.indexOf("<prog ", stnPos);
-  int progEnd = body.indexOf("</prog>", progStart);
-  if (progStart < 0 || progEnd < 0) return;
-
-  String prog = body.substring(progStart, progEnd);
-  String title = "", pfm = "";
-
-  int ts = prog.indexOf("<title>");
-  int te = prog.indexOf("</title>");
-  if (ts >= 0 && te > ts) title = prog.substring(ts + 7, te);
-
-  int ps = prog.indexOf("<pfm>");
-  int pe = prog.indexOf("</pfm>");
-  if (ps >= 0 && pe > ps) pfm = prog.substring(ps + 5, pe);
-
-  if (title.length() > 0) {
-    songTitle = title;
-    if (pfm.length() > 0) songTitle += "  " + pfm;
-  }
+  free(xml);
 }
 
 // Forward declarations
