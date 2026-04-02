@@ -143,7 +143,7 @@ static void rgb_update() {
   // Rainbow + breathing: color cycles while brightness pulses
   uint16_t hue = (phase * 3) % 360;  // slow color cycle
   float breath = (1.0f - cosf(phase * 2.0f * M_PI / 256.0f)) / 2.0f;  // ~8s breath
-  uint8_t v = 5 + (uint8_t)(breath * 250);  // brightness 5-255, deeper dim
+  uint8_t v = (uint8_t)(breath * 255);  // full range 0-255
   uint8_t r, g, b;
   hsv_to_rgb(hue, 255, v, &r, &g, &b);
   neopixelWrite(PIN_RGB_LED, r, g, b);
