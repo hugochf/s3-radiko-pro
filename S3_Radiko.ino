@@ -121,14 +121,33 @@ static void bl_set(int duty) { ledcWrite(PIN_BL, duty); }
 // ============================================================
 // RGB LED (WS2812B on GPIO42) — breathing effect
 // ============================================================
+static void hsv_to_rgb(uint16_t h, uint8_t s, uint8_t v, uint8_t* r, uint8_t* g, uint8_t* b) {
+  uint8_t region = h / 60;
+  uint8_t rem = (h - region * 60) * 255 / 60;
+  uint8_t p = (uint16_t)v * (255 - s) / 255;
+  uint8_t q = (uint16_t)v * (255 - ((uint16_t)s * rem / 255)) / 255;
+  uint8_t t = (uint16_t)v * (255 - ((uint16_t)s * (255 - rem) / 255)) / 255;
+  switch (region) {
+    case 0: *r=v; *g=t; *b=p; break;
+    case 1: *r=q; *g=v; *b=p; break;
+    case 2: *r=p; *g=v; *b=t; break;
+    case 3: *r=p; *g=q; *b=v; break;
+    case 4: *r=t; *g=p; *b=v; break;
+    default:*r=v; *g=p; *b=q; break;
+  }
+}
+
 static void rgb_update() {
   if (!ledOn) { neopixelWrite(PIN_RGB_LED, 0, 0, 0); return; }
   static uint16_t phase = 0;
-  // Sine-wave breathing: 0→255→0 over ~4 seconds (256 steps at 30ms each)
-  float t = (1.0f - cosf(phase * 2.0f * M_PI / 256.0f)) / 2.0f;  // 0.0 → 1.0 → 0.0
-  uint8_t v = (uint8_t)(t * 255);
-  neopixelWrite(PIN_RGB_LED, 0, 0, v);  // blue breathing
-  phase = (phase + 1) % 256;
+  // Rainbow + breathing: color cycles while brightness pulses
+  uint16_t hue = (phase * 3) % 360;  // slow color cycle
+  float breath = (1.0f - cosf(phase * 2.0f * M_PI / 128.0f)) / 2.0f;  // ~4s breath
+  uint8_t v = 30 + (uint8_t)(breath * 225);  // brightness 30-255
+  uint8_t r, g, b;
+  hsv_to_rgb(hue, 255, v, &r, &g, &b);
+  neopixelWrite(PIN_RGB_LED, r, g, b);
+  phase = (phase + 1) % 1024;
 }
 
 // ============================================================
@@ -741,7 +760,7 @@ static void build_playing_screen() {
   // Prev (small circle)
   lv_obj_t *btn_prev = lv_btn_create(scr_play);
   lv_obj_set_size(btn_prev, 44, 44);
-  lv_obj_set_pos(btn_prev, 50, btn_y);
+  lv_obj_set_pos(btn_prev, 30, btn_y);
   lv_obj_set_style_radius(btn_prev, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_bg_color(btn_prev, lv_color_hex(C_ACCENT), LV_STATE_DEFAULT);
   lv_obj_set_style_bg_color(btn_prev, lv_color_hex(C_HL), LV_STATE_PRESSED);
@@ -755,7 +774,7 @@ static void build_playing_screen() {
   // Play/Pause (big circle)
   lv_obj_t *btn_play = lv_btn_create(scr_play);
   lv_obj_set_size(btn_play, 56, 56);
-  lv_obj_set_pos(btn_play, 132, btn_y - 6);
+  lv_obj_set_pos(btn_play, 112, btn_y - 6);
   lv_obj_set_style_radius(btn_play, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_bg_color(btn_play, lv_color_hex(C_HL), LV_STATE_DEFAULT);
   lv_obj_set_style_bg_color(btn_play, lv_color_hex(0xC03050), LV_STATE_PRESSED);
@@ -770,7 +789,7 @@ static void build_playing_screen() {
   // Next (small circle)
   lv_obj_t *btn_next = lv_btn_create(scr_play);
   lv_obj_set_size(btn_next, 44, 44);
-  lv_obj_set_pos(btn_next, 226, btn_y);
+  lv_obj_set_pos(btn_next, 196, btn_y);
   lv_obj_set_style_radius(btn_next, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_bg_color(btn_next, lv_color_hex(C_ACCENT), LV_STATE_DEFAULT);
   lv_obj_set_style_bg_color(btn_next, lv_color_hex(C_HL), LV_STATE_PRESSED);
