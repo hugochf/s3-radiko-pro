@@ -287,14 +287,22 @@ static void fetch_program_info(const char* station_id) {
   h.useHTTP10(true);
   h.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   int code = h.GET();
-  if (code != 200) { h.end(); return; }
+  if (code != 200) { h.end(); songTitle = String("H:") + code; return; }
 
   String body = h.getString();
   h.end();
 
+  if (body.length() == 0) { songTitle = "empty body"; return; }
+
+  // Check if body starts with XML
+  bool isXml = body.startsWith("<?xml") || body.startsWith("<radiko");
+
   String tag = String("id=\"") + station_id + "\"";
   int stnPos = body.indexOf(tag);
-  if (stnPos < 0) return;
+  if (stnPos < 0) {
+    songTitle = String("A:") + radikoArea + (isXml ? " xml" : " bin") + " L:" + body.length() + " no:" + station_id;
+    return;
+  }
 
   int progStart = body.indexOf("<prog ", stnPos);
   int progEnd = body.indexOf("</prog>", progStart);
