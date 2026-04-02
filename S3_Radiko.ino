@@ -28,6 +28,12 @@
 #include "station_logos.h"
 // Full Japanese font compiled in flash
 LV_FONT_DECLARE(lv_font_jp_full);
+// Gzip decompression via ESP ROM tinfl
+extern "C" {
+  size_t tinfl_decompress_mem_to_mem(void *pOut, size_t out_len, const void *pSrc, size_t src_len, int flags);
+}
+#define TINFL_FLAG_PARSE_ZLIB_HEADER 1
+#define TINFL_DECOMPRESS_MEM_TO_MEM_FAILED ((size_t)(-1))
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
@@ -94,7 +100,7 @@ static const lv_font_t* font_jp_full = &lv_font_jp_full;  // compiled-in JP font
 static String radikoToken  = "";
 static String radikoArea   = "JP14";
 static int    currentStn   = 0;
-static int    currentVol   = 50;   // 0–100 (ES8311 percentage)
+static int    currentVol   = 20;   // 0–100 (ES8311 percentage) — temp low for testing
 static bool   isPlaying    = false;
 static String songTitle    = "";
 
@@ -317,6 +323,28 @@ static void fetch_program_info(const char* station_id) {
   tc.stop();
 
   if (body.length() == 0) { songTitle = "ERR:empty"; return; }
+
+  // Decompress if gzip (starts with 0x1F 0x8B)
+  if (body.length() > 10 && (uint8_t)body[0] == 0x1F && (uint8_t)body[1] == 0x8B) {
+    // Skip gzip header (10 bytes minimum)
+    size_t hdr = 10;
+    uint8_t flags = (uint8_t)body[3];
+    if (flags & 0x04) hdr += 2 + (uint8_t)body[hdr] + ((uint8_t)body[hdr+1] << 8);  // FEXTRA
+    if (flags & 0x08) { while (hdr < body.length() && body[hdr]) hdr++; hdr++; }      // FNAME
+    if (flags & 0x10) { while (hdr < body.length() && body[hdr]) hdr++; hdr++; }      // FCOMMENT
+    if (flags & 0x02) hdr += 2;  // FHCRC
+
+    size_t alloc = body.length() * 8;
+    char* out = (char*)ps_malloc(alloc);
+    if (out) {
+      size_t got = tinfl_decompress_mem_to_mem(out, alloc,
+                     body.c_str() + hdr, body.length() - hdr - 8, 0);
+      if (got != TINFL_DECOMPRESS_MEM_TO_MEM_FAILED) {
+        body = String(out, got);
+      }
+      free(out);
+    }
+  }
 
   bool isXml = body.startsWith("<?xml") || body.startsWith("<radiko");
 
