@@ -382,7 +382,22 @@ static void fetch_program_info(const char* station_id) {
   char tag[32];
   snprintf(tag, sizeof tag, "id=\"%s\"", station_id);
   char* stn = strstr(xml, tag);
-  if (!stn) { free(xml); return; }
+  if (!stn) {
+    // Debug: show all station IDs in the XML
+    String ids = "IDs:";
+    char* p = xml;
+    while ((p = strstr(p, "id=\"")) != NULL) {
+      p += 4;
+      char* end = strchr(p, '"');
+      if (end && end - p < 20) {
+        ids += " ";
+        ids += String(p, end - p);
+      }
+      if (ids.length() > 120) break;
+    }
+    songTitle = ids;
+    free(xml); return;
+  }
 
   char* prog = strstr(stn, "<prog ");
   char* progEnd = prog ? strstr(prog, "</prog>") : NULL;
