@@ -25,8 +25,7 @@
 #include "es8311.h"
 #include "lv_font_jp_16.h"
 #include "station_logos.h"
-#include <SD.h>
-#include <SPI.h>
+#include <SPIFFS.h>
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
@@ -892,21 +891,14 @@ void setup() {
   lv_task_handler();
   if (!radiko_auth()) { show_status("Auth failed!"); return; }
 
-  // SD card via SPI (CLK=38, MISO=D0=39, MOSI=CMD=40, CS=D3=47)
-  {
-    static SPIClass sdSPI(HSPI);
-    sdSPI.begin(38, 39, 40, 47);
-    bool sd_ok = SD.begin(47, sdSPI, 4000000, "/sdcard");
-    if (sd_ok && SD.exists("/lv_font_jp_full.bin")) {
+  // Load Japanese font from SPIFFS (1MB partition in huge_app scheme)
+  if (SPIFFS.begin(true)) {
+    if (SPIFFS.exists("/lv_font_jp_full.bin")) {
       font_jp_full = lv_font_load("S:lv_font_jp_full.bin");
     }
-    char msg[48];
-    snprintf(msg, sizeof msg, "SD:%s Font:%s",
-             sd_ok ? "OK" : "FAIL",
-             font_jp_full ? "OK" : "---");
-    show_status(msg);
+    show_status(font_jp_full ? "Font: OK" : "Font: not found");
     lv_task_handler();
-    delay(1500);
+    delay(1000);
     hide_status();
   }
 
