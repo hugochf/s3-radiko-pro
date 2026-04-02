@@ -90,6 +90,7 @@ i2c_master_dev_handle_t g_es8311_dev = nullptr;
 static Audio  audio;
 static lv_font_t* font_jp_full = nullptr;  // loaded from SD card
 static String radikoToken  = "";
+static String radikoArea   = "JP14";
 static int    currentStn   = 0;
 static int    currentVol   = 50;   // 0–100 (ES8311 percentage)
 static bool   isPlaying    = false;
