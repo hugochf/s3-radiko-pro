@@ -141,7 +141,7 @@ static void rgb_update() {
   if (!ledOn) { neopixelWrite(PIN_RGB_LED, 0, 0, 0); return; }
   static uint16_t phase = 0;
   // Rainbow + breathing: color cycles while brightness pulses
-  uint16_t hue = (phase * 3) % 360;  // slow color cycle
+  uint16_t hue = (phase / 3) % 360;  // very slow color cycle
   float breath = (1.0f - cosf(phase * 2.0f * M_PI / 256.0f)) / 2.0f;  // ~8s breath
   uint8_t v = (uint8_t)(breath * 255);  // full range 0-255
   uint8_t r, g, b;
