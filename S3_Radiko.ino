@@ -100,7 +100,7 @@ static const lv_font_t* font_jp_full = &lv_font_jp_full;  // compiled-in JP font
 static String radikoToken  = "";
 static String radikoArea   = "JP14";
 static int    currentStn   = 0;
-static int    currentVol   = 50;   // 0–100 (ES8311 percentage)
+static int    currentVol   = 20;   // 0–100 (ES8311 percentage)
 static bool   isPlaying    = false;
 static String songTitle    = "";
 
@@ -687,7 +687,9 @@ static void build_playing_screen() {
   wi_title = lv_label_create(scr_play);
   lv_label_set_text(wi_title, STATIONS[0].name);
   lv_obj_set_style_text_color(wi_title, lv_color_hex(C_DIM), 0);
-  lv_obj_set_style_text_font(wi_title, &lv_font_jp_full, 0);
+  // Use original font with full kanji fallback for characters it doesn't have
+  ((lv_font_t*)&lv_font_jp_16)->fallback = &lv_font_jp_full;
+  lv_obj_set_style_text_font(wi_title, &lv_font_jp_16, 0);
   lv_obj_set_width(wi_title, 300);
   lv_label_set_long_mode(wi_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
   lv_obj_set_style_anim_speed(wi_title, 30, 0);
