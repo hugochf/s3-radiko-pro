@@ -309,15 +309,21 @@ static void fetch_program_info(const char* station_id) {
     if (line == "\r" || line.length() == 0) break;
   }
 
-  // Read body
+  // Read body with timeout
   String body;
-  body.reserve(20000);
-  while (tc.available() || tc.connected()) {
+  body.reserve(24000);
+  uint32_t t0 = millis();
+  while (millis() - t0 < 8000) {
     if (tc.available()) {
-      char buf[512];
-      int n = tc.readBytes(buf, sizeof(buf));
+      char buf[1024];
+      int n = tc.readBytes(buf, min((int)tc.available(), (int)sizeof(buf)));
       body.concat(buf, n);
-      if (body.length() > 50000) break;  // safety limit
+      if (body.length() > 50000) break;
+      t0 = millis();  // reset timeout on data received
+    } else if (!tc.connected()) {
+      break;
+    } else {
+      delay(10);  // wait for data
     }
   }
   tc.stop();
@@ -337,10 +343,15 @@ static void fetch_program_info(const char* station_id) {
     size_t alloc = body.length() * 8;
     char* out = (char*)ps_malloc(alloc);
     if (out) {
+      size_t src_len = body.length() - hdr - 8;
       size_t got = tinfl_decompress_mem_to_mem(out, alloc,
-                     body.c_str() + hdr, body.length() - hdr - 8, 0);
+                     body.c_str() + hdr, src_len, 0);
       if (got != TINFL_DECOMPRESS_MEM_TO_MEM_FAILED) {
         body = String(out, got);
+      } else {
+        songTitle = String("gz:fail h:") + hdr + " s:" + src_len + " a:" + alloc;
+        free(out);
+        return;
       }
       free(out);
     }
