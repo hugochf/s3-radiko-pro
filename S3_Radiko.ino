@@ -1079,7 +1079,7 @@ void loop() {
   static uint32_t last_fetch = 0;
   static bool fetch_running = false;
   // Trigger: new station connect OR every 5 minutes
-  if (s_fetch_station >= 0 || (isPlaying && !fetch_running && millis() - last_fetch > 300000)) {
+  if (s_fetch_station >= 0 || (isPlaying && !fetch_running && millis() - last_fetch > 180000)) {
     int idx = (s_fetch_station >= 0) ? s_fetch_station : currentStn;
     s_fetch_station = -1;
     last_fetch = millis();
