@@ -142,7 +142,7 @@ static void rgb_update() {
   static uint16_t phase = 0;
   // Rainbow + breathing: color cycles while brightness pulses
   uint16_t hue = (phase * 3) % 360;  // slow color cycle
-  float breath = (1.0f - cosf(phase * 2.0f * M_PI / 128.0f)) / 2.0f;  // ~4s breath
+  float breath = (1.0f - cosf(phase * 2.0f * M_PI / 256.0f)) / 2.0f;  // ~8s breath
   uint8_t v = 30 + (uint8_t)(breath * 225);  // brightness 30-255
   uint8_t r, g, b;
   hsv_to_rgb(hue, 255, v, &r, &g, &b);
