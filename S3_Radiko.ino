@@ -284,9 +284,8 @@ static void fetch_program_info(const char* station_id) {
   String url = "https://radiko.jp/v3/program/now/" + radikoArea + ".xml";
   h.begin(url);
   h.setTimeout(5000);
-  h.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  h.addHeader("Accept-Encoding", "identity");
-  h.setUserAgent("ESP32");
+  h.useHTTP10(true);  // avoid chunked encoding
+  h.addHeader("Accept-Encoding", "identity");  // no gzip
   int code = h.GET();
   if (code != 200) { h.end(); songTitle = String("H:") + code; return; }
 
@@ -896,9 +895,9 @@ void setup() {
     if (SPIFFS.exists("/lv_font_jp_full.bin")) {
       font_jp_full = lv_font_load("S:lv_font_jp_full.bin");
     }
-    show_status(font_jp_full ? "Font: OK" : "Font: not found");
+    show_status(font_jp_full ? "Font: OK" : "Font: FAIL");
     lv_task_handler();
-    delay(1000);
+    delay(1500);
     hide_status();
   }
 
