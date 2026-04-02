@@ -17,6 +17,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <NetworkClientSecure.h>
 #include <Audio.h>
 #include <base64.h>
 #include <lvgl.h>
@@ -281,19 +282,38 @@ static bool radiko_auth() {
 static String s_prog_title = "";
 
 static void fetch_program_info(const char* station_id) {
-  HTTPClient h;
-  String url = "https://radiko.jp/v3/program/now/" + radikoArea + ".xml";
-  h.begin(url);
-  h.setTimeout(5000);
-  h.useHTTP10(true);  // avoid chunked encoding
-  h.addHeader("Accept-Encoding", "identity");  // no gzip
-  int code = h.GET();
-  if (code != 200) { h.end(); songTitle = String("H:") + code; return; }
+  // Raw HTTPS request — full control, no gzip
+  NetworkClientSecure tc;
+  tc.setInsecure();
+  tc.setTimeout(5);
+  if (!tc.connect("radiko.jp", 443)) return;
 
-  String body = h.getString();
-  h.end();
+  String path = "/v3/program/now/" + radikoArea + ".xml";
+  tc.print("GET " + path + " HTTP/1.0\r\n"
+           "Host: radiko.jp\r\n"
+           "Connection: close\r\n"
+           "\r\n");
 
-  if (body.length() == 0) { songTitle = "empty body"; return; }
+  // Skip HTTP headers
+  while (tc.connected()) {
+    String line = tc.readStringUntil('\n');
+    if (line == "\r" || line.length() == 0) break;
+  }
+
+  // Read body
+  String body;
+  body.reserve(20000);
+  while (tc.available() || tc.connected()) {
+    if (tc.available()) {
+      char buf[512];
+      int n = tc.readBytes(buf, sizeof(buf));
+      body.concat(buf, n);
+      if (body.length() > 50000) break;  // safety limit
+    }
+  }
+  tc.stop();
+
+  if (body.length() == 0) return;
 
   // Check if body starts with XML
   bool isXml = body.startsWith("<?xml") || body.startsWith("<radiko");
