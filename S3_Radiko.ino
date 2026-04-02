@@ -284,8 +284,9 @@ static void fetch_program_info(const char* station_id) {
   String url = "https://radiko.jp/v3/program/now/" + radikoArea + ".xml";
   h.begin(url);
   h.setTimeout(5000);
-  h.useHTTP10(true);
   h.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  h.addHeader("Accept-Encoding", "identity");
+  h.setUserAgent("ESP32");
   int code = h.GET();
   if (code != 200) { h.end(); songTitle = String("H:") + code; return; }
 
