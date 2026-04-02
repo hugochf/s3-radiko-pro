@@ -420,6 +420,7 @@ static lv_obj_t *wi_title  = nullptr;
 // Debounced station selection
 static uint32_t s_pending_connect_ms = 0;
 static int      s_pending_stn        = -1;
+static int      s_fetch_station      = -1;  // station to fetch program info for
 
 static void play_stn(int idx) {
   audio.stopSong();  // stop immediately for smooth UI navigation
@@ -440,9 +441,7 @@ static void do_connect(int idx) {
 
   audio.stopSong();
 
-  // Fetch program info while audio is stopped (reuses SSL session from auth)
-  fetch_program_info(STATIONS[idx].id);
-
+  // Connect audio first — user hears radio quickly
   String hdr = "X-Radiko-AuthToken: " + radikoToken + "\r\n";
   audio.setExtraHeaders(hdr.c_str());
   String url = "https://f-radiko.smartstream.ne.jp/";
@@ -452,10 +451,10 @@ static void do_connect(int idx) {
 
   hide_status();
   isPlaying = true;
-  if (songTitle == "Connecting..." || songTitle.length() == 0)
-    songTitle = STATIONS[idx].name;  // fallback if fetch failed
+  songTitle = STATIONS[idx].name;
   s_pending_stn = -1;
   s_pending_connect_ms = 0;
+  s_fetch_station = idx;  // signal loop to fetch program info
 }
 
 static void stop_stn() {
@@ -1039,7 +1038,17 @@ void loop() {
     refresh_playing();
   }
 
-  // Screen timeout
+  // Background program info fetch (runs in separate task, doesn't block audio)
+  if (s_fetch_station >= 0) {
+    int idx = s_fetch_station;
+    s_fetch_station = -1;
+    xTaskCreatePinnedToCore([](void* p) {
+      int i = (int)(intptr_t)p;
+      fetch_program_info(STATIONS[i].id);
+      vTaskDelete(NULL);
+    }, "fetch", 8192, (void*)(intptr_t)idx, 1, NULL, 0);  // Core 0, won't block audio
+  }
+
   // Screen timeout: 5min→dim, 10min→off
   uint32_t idle = millis() - lastTouch;
   if (screenState == 0 && idle > DIM_TIMEOUT_MS) {
