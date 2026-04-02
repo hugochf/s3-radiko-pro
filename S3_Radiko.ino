@@ -387,19 +387,11 @@ static void fetch_program_info(const char* station_id) {
   snprintf(tag, sizeof tag, "id=\"%s\"", station_id);
   char* stn = strstr(xml, tag);
   if (!stn) {
-    // Debug: show all station IDs in the XML
-    String ids = "IDs:";
+    // Debug: show decompress stats
+    int nStations = 0;
     char* p = xml;
-    while ((p = strstr(p, "<station id=\"")) != NULL) {
-      p += 13;
-      char* end = strchr(p, '"');
-      if (end && end - p < 20) {
-        ids += " ";
-        ids += String(p, end - p);
-      }
-      if (ids.length() > 200) break;
-    }
-    songTitle = ids;
+    while ((p = strstr(p, "<station ")) != NULL) { nStations++; p += 9; }
+    songTitle = String("xml:") + xmlLen + "b " + nStations + "stn no:" + station_id;
     free(xml); return;
   }
 
