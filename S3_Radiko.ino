@@ -287,8 +287,8 @@ static void fetch_program_info(const char* station_id) {
   tc.setInsecure();
   tc.setTimeout(10);
   if (!tc.connect("radiko.jp", 443)) {
-    delay(500);  // retry once
-    if (!tc.connect("radiko.jp", 443)) return;
+    delay(500);
+    if (!tc.connect("radiko.jp", 443)) { songTitle = "ERR:conn"; return; }
   }
 
   String path = "/v3/program/now/" + radikoArea + ".xml";
@@ -316,15 +316,14 @@ static void fetch_program_info(const char* station_id) {
   }
   tc.stop();
 
-  if (body.length() == 0) return;
+  if (body.length() == 0) { songTitle = "ERR:empty"; return; }
 
-  // Check if body starts with XML
   bool isXml = body.startsWith("<?xml") || body.startsWith("<radiko");
 
   String tag = String("id=\"") + station_id + "\"";
   int stnPos = body.indexOf(tag);
   if (stnPos < 0) {
-    return;  // station not found in response
+    songTitle = String(isXml ? "xml" : "bin") + " L:" + body.length() + " no:" + station_id;
     return;
   }
 
