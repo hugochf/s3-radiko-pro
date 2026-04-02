@@ -263,10 +263,57 @@ static bool radiko_auth() {
   h.addHeader("X-Radiko-User",       "dummy_user");
   h.addHeader("X-Radiko-Device",     "pc");
   if (h.GET() != 200) { h.end(); return false; }
+  String auth2body = h.getString();
   h.end();
+
+  // Extract area from auth2 response (e.g. "JP14,神奈川県,kanagawa Japan")
+  int comma = auth2body.indexOf(',');
+  if (comma > 0) radikoArea = auth2body.substring(0, comma);
+  radikoArea.trim();
 
   radikoToken = tok1;
   return true;
+}
+
+// Fetch current program info from Radiko API
+static String s_prog_title = "";
+
+static void fetch_program_info(const char* station_id) {
+  HTTPClient h;
+  String url = "https://radiko.jp/v3/program/now/" + radikoArea + ".xml";
+  h.begin(url);
+  h.setTimeout(5000);
+  h.useHTTP10(true);
+  h.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  int code = h.GET();
+  if (code != 200) { h.end(); return; }
+
+  String body = h.getString();
+  h.end();
+
+  String tag = String("id=\"") + station_id + "\"";
+  int stnPos = body.indexOf(tag);
+  if (stnPos < 0) return;
+
+  int progStart = body.indexOf("<prog ", stnPos);
+  int progEnd = body.indexOf("</prog>", progStart);
+  if (progStart < 0 || progEnd < 0) return;
+
+  String prog = body.substring(progStart, progEnd);
+  String title = "", pfm = "";
+
+  int ts = prog.indexOf("<title>");
+  int te = prog.indexOf("</title>");
+  if (ts >= 0 && te > ts) title = prog.substring(ts + 7, te);
+
+  int ps = prog.indexOf("<pfm>");
+  int pe = prog.indexOf("</pfm>");
+  if (ps >= 0 && pe > ps) pfm = prog.substring(ps + 5, pe);
+
+  if (title.length() > 0) {
+    songTitle = title;
+    if (pfm.length() > 0) songTitle += "  " + pfm;
+  }
 }
 
 // Forward declarations
@@ -298,6 +345,10 @@ static void do_connect(int idx) {
   lv_refr_now(NULL);  // force pixels to display before blocking SSL
 
   audio.stopSong();
+
+  // Fetch program info while audio is stopped (reuses SSL session from auth)
+  fetch_program_info(STATIONS[idx].id);
+
   String hdr = "X-Radiko-AuthToken: " + radikoToken + "\r\n";
   audio.setExtraHeaders(hdr.c_str());
   String url = "https://f-radiko.smartstream.ne.jp/";
@@ -307,7 +358,8 @@ static void do_connect(int idx) {
 
   hide_status();
   isPlaying = true;
-  songTitle = STATIONS[idx].name;  // show station name until stream metadata arrives
+  if (songTitle == "Connecting..." || songTitle.length() == 0)
+    songTitle = STATIONS[idx].name;  // fallback if fetch failed
   s_pending_stn = -1;
   s_pending_connect_ms = 0;
 }
