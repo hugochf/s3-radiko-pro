@@ -700,8 +700,7 @@ static void build_playing_screen() {
   lv_obj_set_style_text_color(wi_title, lv_color_hex(C_DIM), 0);
   lv_obj_set_style_text_font(wi_title, &lv_font_jp_full, 0);
   lv_obj_set_width(wi_title, 300);
-  lv_label_set_long_mode(wi_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
-  lv_obj_set_style_anim_speed(wi_title, 15, 0);  // slower = less visible stutter
+  lv_label_set_long_mode(wi_title, LV_LABEL_LONG_DOT);  // clean truncation, no stutter
   lv_obj_set_style_text_align(wi_title, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_align(wi_title, LV_ALIGN_TOP_MID, 0, 110);
 
