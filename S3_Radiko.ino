@@ -309,7 +309,8 @@ static void fetch_program_info(const char* station_id) {
     String line = tc.readStringUntil('\n');
     line.trim();
     if (line.length() == 0) break;
-    if (line.startsWith("Content-Encoding") && line.indexOf("gzip") > 0) isGzip = true;
+    String lower = line; lower.toLowerCase();
+    if (lower.startsWith("content-encoding") && lower.indexOf("gzip") > 0) isGzip = true;
   }
 
   // Read body with timeout
@@ -333,7 +334,9 @@ static void fetch_program_info(const char* station_id) {
 
   if (body.length() == 0) { songTitle = "ERR:empty"; return; }
 
-  // Decompress if gzip
+  // Decompress if gzip (header or magic bytes)
+  if (!isGzip && body.length() > 2 && (uint8_t)body[0] == 0x1F && (uint8_t)body[1] == 0x8B)
+    isGzip = true;
   if (isGzip && body.length() > 10) {
     // Skip gzip header (10 bytes minimum)
     size_t hdr = 10;
