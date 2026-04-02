@@ -1075,15 +1075,21 @@ void loop() {
     refresh_playing();
   }
 
-  // Background program info fetch (runs in separate task, doesn't block audio)
-  if (s_fetch_station >= 0) {
-    int idx = s_fetch_station;
+  // Background program info fetch (runs in separate task on Core 0)
+  static uint32_t last_fetch = 0;
+  static bool fetch_running = false;
+  // Trigger: new station connect OR every 5 minutes
+  if (s_fetch_station >= 0 || (isPlaying && !fetch_running && millis() - last_fetch > 300000)) {
+    int idx = (s_fetch_station >= 0) ? s_fetch_station : currentStn;
     s_fetch_station = -1;
+    last_fetch = millis();
+    fetch_running = true;
     xTaskCreatePinnedToCore([](void* p) {
       int i = (int)(intptr_t)p;
       fetch_program_info(STATIONS[i].id);
+      fetch_running = false;
       vTaskDelete(NULL);
-    }, "fetch", 8192, (void*)(intptr_t)idx, 1, NULL, 0);  // Core 0, won't block audio
+    }, "fetch", 8192, (void*)(intptr_t)idx, 1, NULL, 0);
   }
 
   // Screen timeout: 5min→dim, 10min→off
