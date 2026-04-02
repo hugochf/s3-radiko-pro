@@ -303,34 +303,32 @@ static void fetch_program_info(const char* station_id) {
            "Connection: close\r\n"
            "\r\n");
 
-  // Read HTTP headers, detect gzip
-  bool isGzip = false;
-  while (tc.connected()) {
-    String line = tc.readStringUntil('\n');
-    line.trim();
-    if (line.length() == 0) break;
-    String lower = line; lower.toLowerCase();
-    if (lower.startsWith("content-encoding") && lower.indexOf("gzip") > 0) isGzip = true;
-  }
-
-  // Read body with timeout
-  String body;
-  body.reserve(24000);
+  // Read entire response (headers + body) with timeout
+  String raw;
+  raw.reserve(24000);
   uint32_t t0 = millis();
   while (millis() - t0 < 8000) {
     if (tc.available()) {
       char buf[1024];
       int n = tc.readBytes(buf, min((int)tc.available(), (int)sizeof(buf)));
-      body.concat(buf, n);
-      if (body.length() > 50000) break;
-      t0 = millis();  // reset timeout on data received
+      raw.concat(buf, n);
+      if (raw.length() > 100000) break;
+      t0 = millis();
     } else if (!tc.connected()) {
       break;
     } else {
-      delay(10);  // wait for data
+      delay(10);
     }
   }
   tc.stop();
+
+  // Split headers from body at \r\n\r\n
+  int hdrEnd = raw.indexOf("\r\n\r\n");
+  if (hdrEnd < 0) return;
+  String hdr = raw.substring(0, hdrEnd);
+  String body = raw.substring(hdrEnd + 4);
+  hdr.toLowerCase();
+  bool isGzip = hdr.indexOf("gzip") >= 0;
 
   if (body.length() == 0) { songTitle = "ERR:empty"; return; }
 
