@@ -19,6 +19,7 @@
 #include <HTTPClient.h>
 #include <NetworkClientSecure.h>
 #include <Audio.h>
+#include <SD_MMC.h>
 #include <base64.h>
 #include <lvgl.h>
 #include <TFT_eSPI.h>
@@ -27,7 +28,7 @@
 #include "lv_font_jp_16.h"
 #include "station_logos.h"
 // Full Japanese font compiled in flash
-LV_FONT_DECLARE(lv_font_jp_full);
+// Full JP font loaded from SD card at runtime
 // Gzip decompression via ESP ROM tinfl
 extern "C" {
   size_t tinfl_decompress_mem_to_mem(void *pOut, size_t out_len, const void *pSrc, size_t src_len, int flags);
@@ -96,7 +97,7 @@ i2c_master_bus_handle_t g_i2c_bus    = nullptr;
 i2c_master_dev_handle_t g_es8311_dev = nullptr;
 
 static Audio  audio;
-static const lv_font_t* font_jp_full = &lv_font_jp_full;  // compiled-in JP font
+static lv_font_t* font_jp_full = nullptr;  // loaded from SD at runtime
 static String radikoToken  = "";
 static String radikoArea   = "JP14";
 static int    currentStn   = 0;
@@ -687,8 +688,7 @@ static void build_playing_screen() {
   wi_title = lv_label_create(scr_play);
   lv_label_set_text(wi_title, STATIONS[0].name);
   lv_obj_set_style_text_color(wi_title, lv_color_hex(C_DIM), 0);
-  // Use original font with full kanji fallback for characters it doesn't have
-  ((lv_font_t*)&lv_font_jp_16)->fallback = &lv_font_jp_full;
+  // Original font with SD kanji fallback (set after SD loads in setup)
   lv_obj_set_style_text_font(wi_title, &lv_font_jp_16, 0);
   lv_obj_set_width(wi_title, 300);
   lv_label_set_long_mode(wi_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
@@ -976,6 +976,22 @@ void setup() {
   lv_task_handler();
   if (!radiko_auth()) { show_status("Auth failed!"); return; }
 
+  // Load full Japanese font from SD card
+  SD_MMC.setPins(38, 40, 39);  // CLK, CMD, D0
+  if (SD_MMC.begin("/sdcard", true)) {  // 1-bit SDIO
+    if (SD_MMC.exists("/lv_font_jp_full.bin")) {
+      font_jp_full = lv_font_load("S:lv_font_jp_full.bin");
+    }
+    show_status(font_jp_full ? "SD Font: OK" : "SD Font: FAIL");
+    if (font_jp_full) {
+      ((lv_font_t*)&lv_font_jp_16)->fallback = font_jp_full;
+    }
+  } else {
+    show_status("No SD card");
+  }
+  lv_task_handler();
+  delay(1000);
+  hide_status();
 
   // ESP32-audioI2S setup – PSRAM is mandatory for this library.
   // In Arduino IDE: Tools → PSRAM → "OPI PSRAM"  (for ESP32-S3 with 8MB OPI PSRAM)
