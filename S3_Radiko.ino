@@ -368,7 +368,14 @@ static void fetch_program_info(const char* station_id) {
   String tag = String("id=\"") + station_id + "\"";
   int stnPos = body.indexOf(tag);
   if (stnPos < 0) {
-    songTitle = String(isXml ? "xml" : "bin") + " L:" + body.length() + " no:" + station_id;
+    // Debug: show first 6 bytes hex when parsing fails
+    String dbg = String(isGzip ? "gz" : (isXml ? "xml" : "?")) + " L:" + body.length() + " ";
+    for (int i = 0; i < 6 && i < (int)body.length(); i++) {
+      char hx[4]; snprintf(hx, sizeof hx, "%02X ", (uint8_t)body[i]);
+      dbg += hx;
+    }
+    songTitle = dbg;
+    return;
     return;
   }
 
