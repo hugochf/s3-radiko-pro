@@ -25,7 +25,8 @@
 #include "es8311.h"
 #include "lv_font_jp_16.h"
 #include "station_logos.h"
-#include <SD_MMC.h>
+#include <SD.h>
+#include <SPI.h>
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
@@ -891,13 +892,12 @@ void setup() {
   lv_task_handler();
   if (!radiko_auth()) { show_status("Auth failed!"); return; }
 
-  // SD card — load Japanese font (after WiFi/auth to avoid boot conflicts)
+  // SD card via SPI (CLK=38, MISO=D0=39, MOSI=CMD=40, CS=D3=47)
   {
-    bool sd_ok = false;
-    SD_MMC.setPins(38, 40, 39);  // CLK, CMD, D0
-    delay(100);
-    sd_ok = SD_MMC.begin("/sdcard", true);  // 1-bit mode
-    if (sd_ok && SD_MMC.exists("/lv_font_jp_full.bin")) {
+    static SPIClass sdSPI(HSPI);
+    sdSPI.begin(38, 39, 40, 47);
+    bool sd_ok = SD.begin(47, sdSPI, 4000000, "/sdcard");
+    if (sd_ok && SD.exists("/lv_font_jp_full.bin")) {
       font_jp_full = lv_font_load("S:lv_font_jp_full.bin");
     }
     char msg[48];
