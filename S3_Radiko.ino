@@ -285,8 +285,11 @@ static void fetch_program_info(const char* station_id) {
   // Raw HTTPS request — full control, no gzip
   NetworkClientSecure tc;
   tc.setInsecure();
-  tc.setTimeout(5);
-  if (!tc.connect("radiko.jp", 443)) return;
+  tc.setTimeout(10);
+  if (!tc.connect("radiko.jp", 443)) {
+    delay(500);  // retry once
+    if (!tc.connect("radiko.jp", 443)) return;
+  }
 
   String path = "/v3/program/now/" + radikoArea + ".xml";
   tc.print("GET " + path + " HTTP/1.0\r\n"
