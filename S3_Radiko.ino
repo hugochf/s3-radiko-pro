@@ -25,8 +25,7 @@
 #include "es8311.h"
 #include "lv_font_jp_16.h"
 #include "station_logos.h"
-#include <SD.h>
-#include <SPI.h>
+#include <SD_MMC.h>
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
@@ -870,16 +869,7 @@ void setup() {
   indev_drv.read_cb = lv_touch;
   lv_indev_drv_register(&indev_drv);
 
-  // SD card via SPI mode (SDIO CLK=38 as SCK, D0=39 as MISO, CMD=40 as MOSI, CS=41)
-  static SPIClass sdSPI(HSPI);
-  sdSPI.begin(38, 39, 40, 41);  // SCK, MISO, MOSI, SS
-  bool sd_ok = SD.begin(41, sdSPI, 4000000, "/sdcard");
-  if (sd_ok) {
-    bool fileExists = SD.exists("/lv_font_jp_full.bin");
-    if (fileExists) {
-      font_jp_full = lv_font_load("S:lv_font_jp_full.bin");
-    }
-  }
+  // SD card init moved after WiFi — see below
   // SD status shown via songTitle after UI builds
 
   // Build UI
@@ -912,6 +902,25 @@ void setup() {
   show_status("Authenticating Radiko...");
   lv_task_handler();
   if (!radiko_auth()) { show_status("Auth failed!"); return; }
+
+  // SD card — load Japanese font (after WiFi/auth to avoid boot conflicts)
+  {
+    bool sd_ok = false;
+    SD_MMC.setPins(38, 40, 39);  // CLK, CMD, D0
+    delay(100);
+    sd_ok = SD_MMC.begin("/sdcard", true);  // 1-bit mode
+    if (sd_ok && SD_MMC.exists("/lv_font_jp_full.bin")) {
+      font_jp_full = lv_font_load("S:lv_font_jp_full.bin");
+    }
+    char msg[48];
+    snprintf(msg, sizeof msg, "SD:%s Font:%s",
+             sd_ok ? "OK" : "FAIL",
+             font_jp_full ? "OK" : "---");
+    show_status(msg);
+    lv_task_handler();
+    delay(1500);
+    hide_status();
+  }
 
   // ESP32-audioI2S setup – PSRAM is mandatory for this library.
   // In Arduino IDE: Tools → PSRAM → "OPI PSRAM"  (for ESP32-S3 with 8MB OPI PSRAM)
