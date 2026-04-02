@@ -300,6 +300,7 @@ static void fetch_program_info(const char* station_id) {
   String path = "/v3/program/now/" + radikoArea + ".xml";
   tc.print("GET " + path + " HTTP/1.0\r\n"
            "Host: radiko.jp\r\n"
+           "Accept-Encoding: identity\r\n"
            "Connection: close\r\n"
            "\r\n");
 
@@ -350,10 +351,22 @@ static void fetch_program_info(const char* station_id) {
     if (flags & 0x10) { while (hdr < bodyLen && bodyPtr[hdr]) hdr++; hdr++; }
     if (flags & 0x02) hdr += 2;
 
-    size_t alloc = 120000;  // decompressed XML ~80-100KB
+    size_t alloc = 120000;
     xml = (char*)ps_malloc(alloc);
     if (xml) {
-      xmlLen = tinfl_decompress_mem_to_mem(xml, alloc, bodyPtr + hdr, bodyLen - hdr - 8, 0);
+      // Run decompression in a task with large stack (tinfl needs ~32KB stack)
+      struct { char* out; size_t outCap; const char* in; size_t inLen; size_t result; } dctx;
+      dctx.out = xml; dctx.outCap = alloc;
+      dctx.in = bodyPtr + hdr; dctx.inLen = bodyLen - hdr - 8;
+      dctx.result = TINFL_DECOMPRESS_MEM_TO_MEM_FAILED;
+      TaskHandle_t th = NULL;
+      xTaskCreatePinnedToCore([](void* p) {
+        auto* d = (decltype(dctx)*)p;
+        d->result = tinfl_decompress_mem_to_mem(d->out, d->outCap, d->in, d->inLen, 0);
+        vTaskDelete(NULL);
+      }, "gunzip", 40960, &dctx, 1, &th, 1);
+      while (eTaskGetState(th) != eDeleted) delay(10);
+      xmlLen = dctx.result;
       if (xmlLen == TINFL_DECOMPRESS_MEM_TO_MEM_FAILED) { free(xml); xml = NULL; }
       else xml[xmlLen] = 0;
     }
