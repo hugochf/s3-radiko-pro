@@ -301,7 +301,8 @@ static void fetch_program_info(const char* station_id) {
   String tag = String("id=\"") + station_id + "\"";
   int stnPos = body.indexOf(tag);
   if (stnPos < 0) {
-    songTitle = String("A:") + radikoArea + (isXml ? " xml" : " bin") + " L:" + body.length() + " no:" + station_id;
+    songTitle = String("A:") + radikoArea + (isXml ? " xml" : " bin") + " L:" + body.length()
+              + (font_jp_full ? " F:OK" : " F:NO");
     return;
   }
 
@@ -321,7 +322,7 @@ static void fetch_program_info(const char* station_id) {
   if (ps >= 0 && pe > ps) pfm = prog.substring(ps + 5, pe);
 
   if (title.length() > 0) {
-    songTitle = title;
+    songTitle = (font_jp_full ? "[F] " : "[X] ") + title;
     if (pfm.length() > 0) songTitle += "  " + pfm;
   }
 }
