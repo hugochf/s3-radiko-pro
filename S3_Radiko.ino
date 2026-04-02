@@ -880,7 +880,6 @@ void setup() {
 
     if (fileExists) {
       font_jp_full = lv_font_load("S:lv_font_jp_full.bin");
-      Serial.printf("Font load: %s\n", font_jp_full ? "OK" : "FAILED");
     }
   } else {
     Serial.println("SD mount failed");
