@@ -386,14 +386,14 @@ static void fetch_program_info(const char* station_id) {
     // Debug: show all station IDs in the XML
     String ids = "IDs:";
     char* p = xml;
-    while ((p = strstr(p, "id=\"")) != NULL) {
-      p += 4;
+    while ((p = strstr(p, "<station id=\"")) != NULL) {
+      p += 13;
       char* end = strchr(p, '"');
       if (end && end - p < 20) {
         ids += " ";
         ids += String(p, end - p);
       }
-      if (ids.length() > 120) break;
+      if (ids.length() > 200) break;
     }
     songTitle = ids;
     free(xml); return;
