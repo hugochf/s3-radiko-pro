@@ -351,7 +351,7 @@ static void fetch_program_info(const char* station_id) {
     if (flags & 0x10) { while (hdr < bodyLen && bodyPtr[hdr]) hdr++; hdr++; }
     if (flags & 0x02) hdr += 2;
 
-    size_t alloc = 120000;
+    size_t alloc = 250000;  // decompressed XML ~150KB+
     xml = (char*)ps_malloc(alloc);
     if (xml) {
       // Run decompression in a task with large stack (tinfl needs ~32KB stack)
