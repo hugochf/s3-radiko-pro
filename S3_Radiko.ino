@@ -286,7 +286,7 @@ static void fetch_program_info(const char* station_id) {
   NetworkClientSecure tc;
   tc.setInsecure();
   tc.setTimeout(5);
-  if (!tc.connect("radiko.jp", 443)) return;
+  if (!tc.connect("radiko.jp", 443)) { songTitle = "fetch:conn fail"; return; }
 
   String path = "/v3/program/now/" + radikoArea + ".xml";
   tc.print("GET " + path + " HTTP/1.0\r\n"
@@ -313,7 +313,7 @@ static void fetch_program_info(const char* station_id) {
   }
   tc.stop();
 
-  if (body.length() == 0) return;
+  if (body.length() == 0) { songTitle = "fetch:empty"; return; }
 
   // Check if body starts with XML
   bool isXml = body.startsWith("<?xml") || body.startsWith("<radiko");
