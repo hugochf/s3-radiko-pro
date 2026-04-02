@@ -300,7 +300,7 @@ static void fetch_program_info(const char* station_id) {
   String path = "/v3/program/now/" + radikoArea + ".xml";
   tc.print("GET " + path + " HTTP/1.0\r\n"
            "Host: radiko.jp\r\n"
-           "Accept-Encoding: identity\r\n"
+           "Accept-Encoding: gzip\r\n"
            "Connection: close\r\n"
            "\r\n");
 
