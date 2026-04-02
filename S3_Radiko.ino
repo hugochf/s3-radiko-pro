@@ -304,32 +304,16 @@ static void fetch_program_info(const char* station_id) {
            "Connection: close\r\n"
            "\r\n");
 
-  // Read headers, extract Content-Length and gzip flag
-  bool isGzip = false;
-  int contentLen = 0;
-  while (tc.connected()) {
-    String line = tc.readStringUntil('\n');
-    line.trim();
-    if (line.length() == 0) break;
-    String lw = line; lw.toLowerCase();
-    if (lw.indexOf("gzip") >= 0) isGzip = true;
-    if (lw.startsWith("content-length")) {
-      int col = lw.indexOf(':');
-      if (col > 0) contentLen = lw.substring(col + 1).toInt();
-    }
-  }
-
-  // Read body into PSRAM — exact Content-Length or up to 30KB
-  size_t toRead = contentLen > 0 ? contentLen : 80000;  // gzip can be 40-60KB
-  char* bodyPtr = (char*)ps_malloc(toRead + 1);
-  if (!bodyPtr) { tc.stop(); return; }
-  size_t bodyLen = 0;
+  // Read entire response into PSRAM, then split headers/body
+  size_t bufCap = 80000;
+  char* buf = (char*)ps_malloc(bufCap);
+  if (!buf) { tc.stop(); return; }
+  size_t bufLen = 0;
   uint32_t t0 = millis();
-  while (millis() - t0 < 10000 && bodyLen < toRead) {
+  while (millis() - t0 < 10000 && bufLen < bufCap - 1) {
     if (tc.available()) {
-      int want = min((int)(toRead - bodyLen), (int)tc.available());
-      int n = tc.readBytes(bodyPtr + bodyLen, want);
-      bodyLen += n;
+      int n = tc.readBytes(buf + bufLen, min((int)tc.available(), (int)(bufCap - 1 - bufLen)));
+      bufLen += n;
       t0 = millis();
     } else if (!tc.connected()) {
       break;
@@ -338,11 +322,22 @@ static void fetch_program_info(const char* station_id) {
     }
   }
   tc.stop();
-  bodyPtr[bodyLen] = 0;
+  buf[bufLen] = 0;
 
+  // Find header/body boundary
+  char* bodyPtr = (char*)memmem(buf, bufLen, "\r\n\r\n", 4);
+  if (!bodyPtr) { free(buf); return; }
+  *bodyPtr = 0;  // null-terminate headers for searching
+  bodyPtr += 4;
+  size_t bodyLen = bufLen - (bodyPtr - buf);
+
+  // Check gzip from headers (case-insensitive search in header area)
+  for (char* p = buf; *p; p++) *p = tolower(*p);
+  bool isGzip = strstr(buf, "gzip") != NULL;
   if (!isGzip && bodyLen > 2 && (uint8_t)bodyPtr[0] == 0x1F && (uint8_t)bodyPtr[1] == 0x8B)
     isGzip = true;
-  if (bodyLen == 0) { free(bodyPtr); return; }
+  if (bodyLen == 0) { free(buf); return; }
+  int contentLen = 0;  // for debug
 
   // Decompress gzip into PSRAM
   char* xml = NULL;
@@ -379,7 +374,7 @@ static void fetch_program_info(const char* station_id) {
     xml = (char*)ps_malloc(bodyLen + 1);
     if (xml) { memcpy(xml, bodyPtr, bodyLen); xml[bodyLen] = 0; xmlLen = bodyLen; }
   }
-  free(bodyPtr);  // done with compressed data
+  free(buf);  // done with response data
   if (!xml) return;
 
   // Search for station and extract program info (all in PSRAM)
