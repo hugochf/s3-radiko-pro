@@ -100,7 +100,7 @@ static const lv_font_t* font_jp_full = &lv_font_jp_full;  // compiled-in JP font
 static String radikoToken  = "";
 static String radikoArea   = "JP14";
 static int    currentStn   = 0;
-static int    currentVol   = 20;   // 0–100 (ES8311 percentage) — temp low for testing
+static int    currentVol   = 50;   // 0–100 (ES8311 percentage)
 static bool   isPlaying    = false;
 static String songTitle    = "";
 
@@ -382,19 +382,6 @@ static void fetch_program_info(const char* station_id) {
   snprintf(tag, sizeof tag, "id=\"%s\"", station_id);
   char* stn = strstr(xml, tag);
   if (!stn) {
-    // Debug: show decompress stats
-    int nStations = 0;
-    char* p = xml;
-    while ((p = strstr(p, "<station ")) != NULL) { nStations++; p += 9; }
-    // Show all station IDs
-    String ids = String(nStations) + "stn:";
-    char* q = xml;
-    while ((q = strstr(q, "<station id=\"")) != NULL) {
-      q += 13; char* e = strchr(q, '"');
-      if (e && e - q < 20) { ids += " "; ids += String(q, e - q); }
-      if (ids.length() > 180) break;
-    }
-    songTitle = ids;
     free(xml); return;
   }
 
