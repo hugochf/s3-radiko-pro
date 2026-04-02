@@ -320,7 +320,7 @@ static void fetch_program_info(const char* station_id) {
   }
 
   // Read body into PSRAM — exact Content-Length or up to 30KB
-  size_t toRead = contentLen > 0 ? contentLen : 30000;
+  size_t toRead = contentLen > 0 ? contentLen : 80000;  // gzip can be 40-60KB
   char* bodyPtr = (char*)ps_malloc(toRead + 1);
   if (!bodyPtr) { tc.stop(); return; }
   size_t bodyLen = 0;
