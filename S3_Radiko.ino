@@ -871,10 +871,30 @@ void setup() {
 
   // SD card — load Japanese font for program titles
   SD_MMC.setPins(38, 40, 39);  // CLK, CMD, D0 (1-bit mode)
-  if (SD_MMC.begin("/sdcard", true)) {  // true = 1-bit mode
-    // Load full Japanese font from SD into PSRAM
-    font_jp_full = lv_font_load("S:lv_font_jp_full.bin");
-    if (font_jp_full) Serial.println("JP font loaded from SD");
+  bool sd_ok = SD_MMC.begin("/sdcard", true);  // 1-bit SDIO mode
+  if (sd_ok) {
+    // Check if font file exists
+    bool fileExists = SD_MMC.exists("/lv_font_jp_full.bin");
+    uint64_t sdSize = SD_MMC.cardSize() / (1024 * 1024);
+    Serial.printf("SD: %lluMB, font file: %s\n", sdSize, fileExists ? "YES" : "NO");
+
+    if (fileExists) {
+      font_jp_full = lv_font_load("S:lv_font_jp_full.bin");
+      Serial.printf("Font load: %s\n", font_jp_full ? "OK" : "FAILED");
+    }
+  } else {
+    Serial.println("SD mount failed");
+  }
+  // Show SD status on screen
+  {
+    char msg[64];
+    snprintf(msg, sizeof msg, "SD:%s Font:%s",
+             sd_ok ? "OK" : "FAIL",
+             font_jp_full ? "OK" : (sd_ok ? "LOAD ERR" : "NO SD"));
+    show_status(msg);
+    lv_task_handler();
+    delay(2000);
+    hide_status();
   }
 
   // Build UI
