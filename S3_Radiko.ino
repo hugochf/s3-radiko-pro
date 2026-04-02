@@ -19,6 +19,7 @@
 #include <HTTPClient.h>
 #include <NetworkClientSecure.h>
 #include <Audio.h>
+#include <Preferences.h>
 #include <base64.h>
 #include <lvgl.h>
 #include <TFT_eSPI.h>
@@ -102,6 +103,8 @@ static String radikoArea   = "JP14";
 static int    currentStn   = 0;
 static int    currentVol   = 20;   // 0–100 (ES8311 percentage)
 static bool   isPlaying    = false;
+static bool   ledOn        = true;  // RGB LED state
+static Preferences prefs;
 static String songTitle    = "";
 
 // ============================================================
@@ -116,31 +119,16 @@ static uint8_t       screenState = 0;  // 0=on, 1=dimmed, 2=off
 static void bl_set(int duty) { ledcWrite(PIN_BL, duty); }
 
 // ============================================================
-// RGB LED (WS2812B on GPIO42) — rainbow effect
+// RGB LED (WS2812B on GPIO42) — breathing effect
 // ============================================================
-static void hsv_to_rgb(uint16_t h, uint8_t s, uint8_t v, uint8_t* r, uint8_t* g, uint8_t* b) {
-  uint8_t region = h / 60;
-  uint8_t rem = (h - region * 60) * 255 / 60;
-  uint8_t p = (uint16_t)v * (255 - s) / 255;
-  uint8_t q = (uint16_t)v * (255 - ((uint16_t)s * rem / 255)) / 255;
-  uint8_t t = (uint16_t)v * (255 - ((uint16_t)s * (255 - rem) / 255)) / 255;
-  switch (region) {
-    case 0: *r=v; *g=t; *b=p; break;
-    case 1: *r=q; *g=v; *b=p; break;
-    case 2: *r=p; *g=v; *b=t; break;
-    case 3: *r=p; *g=q; *b=v; break;
-    case 4: *r=t; *g=p; *b=v; break;
-    default:*r=v; *g=p; *b=q; break;
-  }
-}
-
 static void rgb_update() {
-  static uint16_t hue = 0;
-  uint8_t r, g, b;
-  hsv_to_rgb(hue % 360, 255, 255, &r, &g, &b);  // full brightness
-  neopixelWrite(PIN_RGB_LED, r, g, b);
-  hue += 1;
-  if (hue >= 360) hue = 0;
+  if (!ledOn) { neopixelWrite(PIN_RGB_LED, 0, 0, 0); return; }
+  static uint16_t phase = 0;
+  // Sine-wave breathing: 0→255→0 over ~4 seconds (256 steps at 30ms each)
+  float t = (1.0f - cosf(phase * 2.0f * M_PI / 256.0f)) / 2.0f;  // 0.0 → 1.0 → 0.0
+  uint8_t v = (uint8_t)(t * 255);
+  neopixelWrite(PIN_RGB_LED, 0, 0, v);  // blue breathing
+  phase = (phase + 1) % 256;
 }
 
 // ============================================================
@@ -455,6 +443,7 @@ static void do_connect(int idx) {
   s_pending_stn = -1;
   s_pending_connect_ms = 0;
   s_fetch_station = idx;  // signal loop to fetch program info
+  prefs.putInt("stn", idx);
 }
 
 static void stop_stn() {
@@ -503,6 +492,7 @@ static lv_obj_t *wi_logo_img = nullptr; // station logo image
 static lv_obj_t *wi_slider = nullptr;  // volume slider
 static lv_obj_t *wi_vol    = nullptr;  // volume value label
 static lv_obj_t *wi_play   = nullptr;  // play/pause button label
+static lv_obj_t *wi_led_btn = nullptr; // LED toggle button label
 static lv_obj_t *wi_dots[NUM_STATIONS] = {};
 
 // Colour palette (dark modern)
@@ -539,6 +529,13 @@ static void ev_vol_changed(lv_event_t*) {
   char b[8]; snprintf(b, sizeof b, "%d", currentVol);
   lv_label_set_text(wi_vol, b);
   es8311_voice_volume_set(g_es8311_dev, currentVol, nullptr);
+  prefs.putInt("vol", currentVol);
+}
+static void ev_led_toggle(lv_event_t*) {
+  ledOn = !ledOn;
+  if (!ledOn) neopixelWrite(PIN_RGB_LED, 0, 0, 0);
+  lv_label_set_text(wi_led_btn, ledOn ? LV_SYMBOL_EYE_OPEN : LV_SYMBOL_EYE_CLOSE);
+  prefs.putBool("led", ledOn);
 }
 static void ev_show_list(lv_event_t*) {
   audio.stopSong();
@@ -692,7 +689,7 @@ static void build_playing_screen() {
   lv_obj_set_width(wi_name, 300);
   lv_label_set_long_mode(wi_name, LV_LABEL_LONG_DOT);
   lv_obj_set_style_text_align(wi_name, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(wi_name, LV_ALIGN_TOP_MID, 0, 88);
+  lv_obj_align(wi_name, LV_ALIGN_TOP_MID, 0, 91);
 
   // ---- Program title (grey, scrolling) ----
   wi_title = lv_label_create(scr_play);
@@ -703,7 +700,7 @@ static void build_playing_screen() {
   lv_label_set_long_mode(wi_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
   lv_obj_set_style_anim_speed(wi_title, 8, 0);  // very slow = tiny jumps during audio blocks
   lv_obj_set_style_text_align(wi_title, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(wi_title, LV_ALIGN_TOP_MID, 0, 106);
+  lv_obj_align(wi_title, LV_ALIGN_TOP_MID, 0, 109);
 
   // ---- Volume row ----
   lv_obj_t *vrow = lv_obj_create(scr_play);
@@ -783,6 +780,20 @@ static void build_playing_screen() {
   lv_label_set_text(lbl_next, LV_SYMBOL_NEXT);
   lv_obj_set_style_text_color(lbl_next, lv_color_hex(C_TEXT), 0);
   lv_obj_center(lbl_next);
+
+  // LED toggle (small circle, right side)
+  lv_obj_t *btn_led = lv_btn_create(scr_play);
+  lv_obj_set_size(btn_led, 34, 34);
+  lv_obj_set_pos(btn_led, 280, btn_y + 5);
+  lv_obj_set_style_radius(btn_led, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(btn_led, lv_color_hex(C_ACCENT), LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_color(btn_led, lv_color_hex(C_HL), LV_STATE_PRESSED);
+  lv_obj_set_style_shadow_width(btn_led, 0, 0);
+  lv_obj_add_event_cb(btn_led, ev_led_toggle, LV_EVENT_CLICKED, NULL);
+  wi_led_btn = lv_label_create(btn_led);
+  lv_label_set_text(wi_led_btn, ledOn ? LV_SYMBOL_EYE_OPEN : LV_SYMBOL_EYE_CLOSE);
+  lv_obj_set_style_text_color(wi_led_btn, lv_color_hex(C_TEXT), 0);
+  lv_obj_center(wi_led_btn);
 
   // ---- Station position dots ----
   lv_obj_t *drow = lv_obj_create(scr_play);
@@ -893,6 +904,13 @@ static void build_list_screen() {
 // ============================================================
 void setup() {
   Serial.begin(115200);
+
+  // Load saved settings
+  prefs.begin("radiko", false);
+  currentStn = prefs.getInt("stn", 0);
+  currentVol = prefs.getInt("vol", 20);
+  ledOn = prefs.getBool("led", true);
+  if (currentStn >= NUM_STATIONS) currentStn = 0;
 
   // I2C master bus for ES8311 + FT6336G (shared bus, SDA=16, SCL=15)
   {
