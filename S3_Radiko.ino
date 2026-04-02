@@ -989,6 +989,7 @@ void setup() {
   } else {
     show_status("No SD card");
   }
+  SD_MMC.end();  // release SDIO pins after font is in PSRAM
   lv_task_handler();
   delay(1000);
   hide_status();
