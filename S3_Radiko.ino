@@ -885,7 +885,14 @@ void setup() {
   } else {
     Serial.println("SD mount failed");
   }
-  // Show SD status on screen
+  // SD status shown via songTitle after UI builds
+
+  // Build UI
+  build_playing_screen();
+  lv_scr_load(scr_play);
+  lv_task_handler();
+
+  // Show SD/font status briefly
   {
     char msg[64];
     snprintf(msg, sizeof msg, "SD:%s Font:%s",
@@ -893,14 +900,9 @@ void setup() {
              font_jp_full ? "OK" : (sd_ok ? "LOAD ERR" : "NO SD"));
     show_status(msg);
     lv_task_handler();
-    delay(2000);
+    delay(1500);
     hide_status();
   }
-
-  // Build UI
-  build_playing_screen();
-  lv_scr_load(scr_play);
-  lv_task_handler();
 
   // WiFi
   show_status("Connecting WiFi...");
