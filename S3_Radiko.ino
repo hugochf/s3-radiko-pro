@@ -25,7 +25,8 @@
 #include "es8311.h"
 #include "lv_font_jp_16.h"
 #include "station_logos.h"
-#include <SD_MMC.h>
+#include <SD.h>
+#include <SPI.h>
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
@@ -869,20 +870,15 @@ void setup() {
   indev_drv.read_cb = lv_touch;
   lv_indev_drv_register(&indev_drv);
 
-  // SD card — load Japanese font for program titles
-  SD_MMC.setPins(38, 40, 39);  // CLK, CMD, D0 (1-bit mode)
-  bool sd_ok = SD_MMC.begin("/sdcard", true);  // 1-bit SDIO mode
+  // SD card via SPI mode (SDIO CLK=38 as SCK, D0=39 as MISO, CMD=40 as MOSI, CS=41)
+  static SPIClass sdSPI(HSPI);
+  sdSPI.begin(38, 39, 40, 41);  // SCK, MISO, MOSI, SS
+  bool sd_ok = SD.begin(41, sdSPI, 4000000, "/sdcard");
   if (sd_ok) {
-    // Check if font file exists
-    bool fileExists = SD_MMC.exists("/lv_font_jp_full.bin");
-    uint64_t sdSize = SD_MMC.cardSize() / (1024 * 1024);
-    Serial.printf("SD: %lluMB, font file: %s\n", sdSize, fileExists ? "YES" : "NO");
-
+    bool fileExists = SD.exists("/lv_font_jp_full.bin");
     if (fileExists) {
       font_jp_full = lv_font_load("S:lv_font_jp_full.bin");
     }
-  } else {
-    Serial.println("SD mount failed");
   }
   // SD status shown via songTitle after UI builds
 
