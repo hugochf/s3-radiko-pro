@@ -386,7 +386,15 @@ static void fetch_program_info(const char* station_id) {
     int nStations = 0;
     char* p = xml;
     while ((p = strstr(p, "<station ")) != NULL) { nStations++; p += 9; }
-    songTitle = String("x:") + xmlLen + " s:" + nStations + " cl:" + contentLen + " rd:" + bodyLen + " " + station_id;
+    // Show all station IDs
+    String ids = String(nStations) + "stn:";
+    char* q = xml;
+    while ((q = strstr(q, "<station id=\"")) != NULL) {
+      q += 13; char* e = strchr(q, '"');
+      if (e && e - q < 20) { ids += " "; ids += String(q, e - q); }
+      if (ids.length() > 180) break;
+    }
+    songTitle = ids;
     free(xml); return;
   }
 
