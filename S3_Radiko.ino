@@ -700,7 +700,8 @@ static void build_playing_screen() {
   lv_obj_set_style_text_color(wi_title, lv_color_hex(C_DIM), 0);
   lv_obj_set_style_text_font(wi_title, &lv_font_jp_full, 0);
   lv_obj_set_width(wi_title, 300);
-  lv_label_set_long_mode(wi_title, LV_LABEL_LONG_DOT);  // clean truncation, no stutter
+  lv_label_set_long_mode(wi_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
+  lv_obj_set_style_anim_speed(wi_title, 8, 0);  // very slow = tiny jumps during audio blocks
   lv_obj_set_style_text_align(wi_title, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_align(wi_title, LV_ALIGN_TOP_MID, 0, 110);
 
@@ -1027,8 +1028,8 @@ void setup() {
 // LOOP (single-core: audio + LVGL on same core)
 // ============================================================
 void loop() {
-  audio.loop();
   lv_task_handler();
+  audio.loop();
 
   // Debounced station connect: 1s after last button press
   if (s_pending_stn >= 0 && s_pending_connect_ms > 0 &&
