@@ -746,7 +746,7 @@ static void build_playing_screen() {
 
   // Battery + brightness control (tap to cycle brightness)
   lv_obj_t *bat_btn = lv_btn_create(bar);
-  lv_obj_set_size(bat_btn, 60, 20);
+  lv_obj_set_size(bat_btn, 76, 24);
   lv_obj_align(bat_btn, LV_ALIGN_RIGHT_MID, 0, 0);
   lv_obj_set_style_bg_opa(bat_btn, LV_OPA_TRANSP, LV_STATE_DEFAULT);
   lv_obj_set_style_shadow_width(bat_btn, 0, 0);
@@ -756,7 +756,7 @@ static void build_playing_screen() {
     const uint8_t levels[] = {30, 80, 160, 255};
     const char* names[] = {"Low", "Mid", "High", "Full"};
     bl_set(levels[bl_level]);
-    char b[16]; snprintf(b, sizeof b, LV_SYMBOL_IMAGE "%s", names[bl_level]);
+    char b[16]; snprintf(b, sizeof b, "BL:%s", names[bl_level]);
     lv_label_set_text(wi_bat, b);
     screenState = 0;
     lastTouch = millis();
@@ -775,7 +775,7 @@ static void build_playing_screen() {
   lv_obj_set_style_border_width(swipe_zone, 0, 0);
   lv_obj_set_style_pad_all(swipe_zone, 0, 0);
   lv_obj_clear_flag(swipe_zone, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_add_event_cb(swipe_zone, ev_show_list, LV_EVENT_CLICKED, NULL);
+  lv_obj_clear_flag(swipe_zone, LV_OBJ_FLAG_CLICKABLE);  // gestures only, no click
   lv_obj_add_event_cb(swipe_zone, [](lv_event_t* e) {
     lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
     if (dir == LV_DIR_LEFT) { ev_next(e); refresh_playing(); }
@@ -791,6 +791,7 @@ static void build_playing_screen() {
   lv_obj_set_style_pad_all(wi_logo, 0, 0);
   lv_obj_set_style_shadow_width(wi_logo, 0, 0);
   lv_obj_clear_flag(wi_logo, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_event_cb(wi_logo, ev_show_list, LV_EVENT_CLICKED, NULL);
 
   wi_logo_img = lv_img_create(wi_logo);
   lv_img_set_src(wi_logo_img, STATIONS[0].logo);
