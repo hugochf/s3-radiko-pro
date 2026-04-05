@@ -671,11 +671,32 @@ static void build_playing_screen() {
   lv_obj_set_style_pad_all(bar, 2, 0);
   lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
 
-  wi_wifi = lv_label_create(bar);
+  // WiFi icon — tappable to open WiFi settings
+  lv_obj_t *wifi_btn = lv_btn_create(bar);
+  lv_obj_set_size(wifi_btn, 30, 20);
+  lv_obj_align(wifi_btn, LV_ALIGN_LEFT_MID, 0, 0);
+  lv_obj_set_style_bg_opa(wifi_btn, LV_OPA_TRANSP, LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_color(wifi_btn, lv_color_hex(C_HL), LV_STATE_PRESSED);
+  lv_obj_set_style_shadow_width(wifi_btn, 0, 0);
+  lv_obj_set_style_radius(wifi_btn, 4, 0);
+  lv_obj_add_event_cb(wifi_btn, [](lv_event_t*) {
+    // Stop audio, show WiFi setup, reconnect after
+    audio.stopSong();
+    isPlaying = false;
+    WiFi.disconnect();
+    if (scr_wifi) { lv_obj_del(scr_wifi); scr_wifi = nullptr; }
+    build_wifi_screen();
+    lv_scr_load(scr_wifi);
+    wifi_setup_done = false;
+    // wifi_setup_done will be set by keyboard callback
+    // Main loop will handle reconnection — set flag
+    wifiSSID = "";  // force setup flow
+  }, LV_EVENT_CLICKED, NULL);
+  wi_wifi = lv_label_create(wifi_btn);
   lv_label_set_text(wi_wifi, LV_SYMBOL_WIFI);
   lv_obj_set_style_text_color(wi_wifi, lv_color_hex(C_TEXT), 0);
   lv_obj_set_style_text_font(wi_wifi, &lv_font_montserrat_12, 0);
-  lv_obj_align(wi_wifi, LV_ALIGN_LEFT_MID, 4, 0);
+  lv_obj_center(wi_wifi);
 
   lv_obj_t *hdr_lbl = lv_label_create(bar);
   lv_label_set_text(hdr_lbl, "Radiko Radio");
@@ -1199,6 +1220,41 @@ void setup() {
 void loop() {
   lv_task_handler();
   audio.loop();
+
+  // WiFi setup triggered from player (wifi icon tap)
+  if (scr_wifi && lv_scr_act() == scr_wifi && wifi_setup_done) {
+    wifi_setup_done = false;
+    lv_scr_load(scr_play);
+    show_status(("Connecting: " + wifiSSID).c_str());
+    lv_task_handler();
+    WiFi.disconnect();
+    delay(200);
+    WiFi.begin(wifiSSID.c_str(), wifiPass.c_str());
+    uint32_t t0 = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - t0 < 12000) {
+      lv_task_handler(); delay(100);
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+      prefs.putString("ssid", wifiSSID);
+      prefs.putString("pass", wifiPass);
+      hide_status();
+      // Re-auth Radiko with new connection
+      show_status("Authenticating Radiko...");
+      lv_task_handler();
+      radiko_auth();
+      hide_status();
+      play_stn(currentStn);
+      s_pending_connect_ms = millis() - 2000;  // connect immediately
+    } else {
+      show_status("Failed!");
+      lv_task_handler(); delay(1500);
+      hide_status();
+      // Go back to WiFi setup
+      if (scr_wifi) { lv_obj_del(scr_wifi); scr_wifi = nullptr; }
+      build_wifi_screen();
+      lv_scr_load(scr_wifi);
+    }
+  }
 
   // Debounced station connect: 1s after last button press
   if (s_pending_stn >= 0 && s_pending_connect_ms > 0 &&
