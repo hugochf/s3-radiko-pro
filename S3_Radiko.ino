@@ -677,8 +677,8 @@ static void build_playing_screen() {
 
   // WiFi icon — tappable to open WiFi settings
   lv_obj_t *wifi_btn = lv_btn_create(bar);
-  lv_obj_set_size(wifi_btn, 30, 20);
-  lv_obj_align(wifi_btn, LV_ALIGN_LEFT_MID, 0, 0);
+  lv_obj_set_size(wifi_btn, 50, 24);
+  lv_obj_align(wifi_btn, LV_ALIGN_LEFT_MID, -4, 0);
   lv_obj_set_style_bg_opa(wifi_btn, LV_OPA_TRANSP, LV_STATE_DEFAULT);
   lv_obj_set_style_bg_color(wifi_btn, lv_color_hex(C_HL), LV_STATE_PRESSED);
   lv_obj_set_style_shadow_width(wifi_btn, 0, 0);
