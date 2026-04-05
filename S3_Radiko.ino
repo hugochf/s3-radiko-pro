@@ -686,7 +686,7 @@ static void build_playing_screen() {
 
   // WiFi icon — tappable to open WiFi settings
   lv_obj_t *wifi_btn = lv_btn_create(bar);
-  lv_obj_set_size(wifi_btn, 50, 24);
+  lv_obj_set_size(wifi_btn, 80, 24);
   lv_obj_align(wifi_btn, LV_ALIGN_LEFT_MID, -4, 0);
   lv_obj_set_style_bg_opa(wifi_btn, LV_OPA_TRANSP, LV_STATE_DEFAULT);
   lv_obj_set_style_bg_color(wifi_btn, lv_color_hex(C_HL), LV_STATE_PRESSED);
@@ -711,12 +711,19 @@ static void build_playing_screen() {
   lv_obj_set_style_text_font(wi_wifi, &lv_font_montserrat_12, 0);
   lv_obj_center(wi_wifi);
 
-  // Clock in center of status bar
-  wi_clock = lv_label_create(bar);
+  // Clock next to WiFi icon (inside same tappable button)
+  wi_clock = lv_label_create(wifi_btn);
   lv_label_set_text(wi_clock, "--:--");
   lv_obj_set_style_text_color(wi_clock, lv_color_hex(C_TEXT), 0);
-  lv_obj_set_style_text_font(wi_clock, &lv_font_montserrat_14, 0);
-  lv_obj_align(wi_clock, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_set_style_text_font(wi_clock, &lv_font_montserrat_10, 0);
+  lv_obj_align(wi_clock, LV_ALIGN_RIGHT_MID, -2, 0);
+
+  // Center title
+  lv_obj_t *hdr_lbl = lv_label_create(bar);
+  lv_label_set_text(hdr_lbl, "Radiko Radio");
+  lv_obj_set_style_text_color(hdr_lbl, lv_color_hex(C_TEXT), 0);
+  lv_obj_set_style_text_font(hdr_lbl, &lv_font_montserrat_12, 0);
+  lv_obj_align(hdr_lbl, LV_ALIGN_CENTER, 0, 0);
 
   wi_bat = lv_label_create(bar);
   lv_label_set_text(wi_bat, LV_SYMBOL_BATTERY_FULL);
