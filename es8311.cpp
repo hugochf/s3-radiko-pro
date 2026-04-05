@@ -365,10 +365,10 @@ esp_err_t es8311_voice_volume_set(i2c_master_dev_handle_t dev, int volume, int *
     if (volume == 0) {
         reg32 = 0;  // mute
     } else {
-        // Map slider 1-100 to register 128-224 (~-63dB to -15dB).
-        // Capped at 75% to protect the small speaker.
-        reg32 = 128 + (volume * 96 / 100);
-        if (reg32 > 224) reg32 = 224;
+        // Map slider 1-100 to register 128-205 (~-63dB to -25dB).
+        // Capped at 60% to protect the small speaker.
+        reg32 = 128 + (volume * 77 / 100);
+        if (reg32 > 205) reg32 = 205;
     }
 
     // provide user with real volume set

@@ -754,10 +754,9 @@ static void build_playing_screen() {
     static uint8_t bl_level = 3;  // 0=dim, 1=low, 2=med, 3=full
     bl_level = (bl_level + 1) % 4;
     const uint8_t levels[] = {30, 80, 160, 255};
-    const char* icons[] = {"\xEF\x80\xAE", "\xEF\x80\xAE", "\xEF\x80\xAE", "\xEF\x80\xAE"};  // brightness levels
+    const char* names[] = {"Low", "Mid", "High", "Full"};
     bl_set(levels[bl_level]);
-    // Show level briefly in battery label
-    char b[16]; snprintf(b, sizeof b, LV_SYMBOL_IMAGE " %d", bl_level + 1);
+    char b[16]; snprintf(b, sizeof b, LV_SYMBOL_IMAGE "%s", names[bl_level]);
     lv_label_set_text(wi_bat, b);
     screenState = 0;
     lastTouch = millis();
@@ -768,22 +767,30 @@ static void build_playing_screen() {
   lv_obj_set_style_text_font(wi_bat, &lv_font_montserrat_12, 0);
   lv_obj_center(wi_bat);
 
-  // ---- Station logo (216×54, centered, tappable → list) ----
-  wi_logo = lv_obj_create(scr_play);
+  // ---- Swipe zone (full width, logo+name height) ----
+  lv_obj_t *swipe_zone = lv_obj_create(scr_play);
+  lv_obj_set_size(swipe_zone, 320, 90);
+  lv_obj_set_pos(swipe_zone, 0, 26);
+  lv_obj_set_style_bg_opa(swipe_zone, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(swipe_zone, 0, 0);
+  lv_obj_set_style_pad_all(swipe_zone, 0, 0);
+  lv_obj_clear_flag(swipe_zone, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_event_cb(swipe_zone, ev_show_list, LV_EVENT_CLICKED, NULL);
+  lv_obj_add_event_cb(swipe_zone, [](lv_event_t* e) {
+    lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
+    if (dir == LV_DIR_LEFT) { ev_next(e); refresh_playing(); }
+    else if (dir == LV_DIR_RIGHT) { ev_prev(e); refresh_playing(); }
+  }, LV_EVENT_GESTURE, NULL);
+
+  // ---- Station logo (216×54, inside swipe zone) ----
+  wi_logo = lv_obj_create(swipe_zone);
   lv_obj_set_size(wi_logo, 220, 58);
-  lv_obj_align(wi_logo, LV_ALIGN_TOP_MID, 0, 34);
+  lv_obj_align(wi_logo, LV_ALIGN_TOP_MID, 0, 8);
   lv_obj_set_style_bg_opa(wi_logo, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(wi_logo, 0, 0);
   lv_obj_set_style_pad_all(wi_logo, 0, 0);
   lv_obj_set_style_shadow_width(wi_logo, 0, 0);
   lv_obj_clear_flag(wi_logo, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_add_event_cb(wi_logo, ev_show_list, LV_EVENT_CLICKED, NULL);
-  // Swipe on logo area only for prev/next station
-  lv_obj_add_event_cb(wi_logo, [](lv_event_t* e) {
-    lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
-    if (dir == LV_DIR_LEFT) { ev_next(e); refresh_playing(); }
-    else if (dir == LV_DIR_RIGHT) { ev_prev(e); refresh_playing(); }
-  }, LV_EVENT_GESTURE, NULL);
 
   wi_logo_img = lv_img_create(wi_logo);
   lv_img_set_src(wi_logo_img, STATIONS[0].logo);
