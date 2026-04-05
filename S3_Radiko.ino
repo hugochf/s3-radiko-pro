@@ -607,8 +607,10 @@ static void ev_sleep_toggle(lv_event_t*) {
 }
 static void ev_led_toggle(lv_event_t*) {
   ledMode = (ledMode + 1) % LED_MODES;
-  if (ledMode == 6) neopixelWrite(PIN_RGB_LED, 0, 0, 0);  // OFF
-  lv_label_set_text(wi_led_btn, ledModeNames[ledMode]);
+  if (ledMode == 6) neopixelWrite(PIN_RGB_LED, 0, 0, 0);
+  lv_label_set_text(wi_led_btn, ledMode == 6 ? LV_SYMBOL_EYE_CLOSE : LV_SYMBOL_EYE_OPEN);
+  // Show mode name briefly on title
+  if (wi_title) lv_label_set_text(wi_title, ledModeNames[ledMode]);
   prefs.putInt("led", ledMode);
 }
 static void ev_show_list(lv_event_t*) {
@@ -940,15 +942,15 @@ static void build_playing_screen() {
 
   // LED toggle (small circle, right side)
   lv_obj_t *btn_led = lv_btn_create(scr_play);
-  lv_obj_set_size(btn_led, 56, 34);
-  lv_obj_set_pos(btn_led, 260, btn_y + 5);
-  lv_obj_set_style_radius(btn_led, 8, 0);
+  lv_obj_set_size(btn_led, 34, 34);
+  lv_obj_set_pos(btn_led, 282, btn_y + 5);
+  lv_obj_set_style_radius(btn_led, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_bg_color(btn_led, lv_color_hex(C_ACCENT), LV_STATE_DEFAULT);
   lv_obj_set_style_bg_color(btn_led, lv_color_hex(C_HL), LV_STATE_PRESSED);
   lv_obj_set_style_shadow_width(btn_led, 0, 0);
   lv_obj_add_event_cb(btn_led, ev_led_toggle, LV_EVENT_CLICKED, NULL);
   wi_led_btn = lv_label_create(btn_led);
-  lv_label_set_text(wi_led_btn, ledModeNames[ledMode]);
+  lv_label_set_text(wi_led_btn, ledMode == 6 ? LV_SYMBOL_EYE_CLOSE : LV_SYMBOL_EYE_OPEN);
   lv_obj_set_style_text_color(wi_led_btn, lv_color_hex(C_TEXT), 0);
   lv_obj_center(wi_led_btn);
 
