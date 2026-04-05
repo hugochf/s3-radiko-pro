@@ -424,6 +424,10 @@ static void fetch_program_info(const char* station_id) {
 static void show_status(const char* msg);
 static void hide_status();
 static void refresh_playing();
+static void build_wifi_screen();
+// WiFi setup screen variables (defined later, needed by lambda)
+static lv_obj_t *scr_wifi;
+static volatile bool wifi_setup_done;
 static lv_obj_t *scr_play  = nullptr;
 static lv_obj_t *wi_name   = nullptr;
 static lv_obj_t *wi_title  = nullptr;
@@ -946,12 +950,10 @@ static void build_list_screen() {
 // ============================================================
 // WIFI SETUP SCREEN — scan SSIDs, select, enter password
 // ============================================================
-static lv_obj_t *scr_wifi = nullptr;
 static lv_obj_t *wifi_list = nullptr;
 static lv_obj_t *wifi_kb   = nullptr;
 static lv_obj_t *wifi_ta   = nullptr;
 static String    wifi_selected_ssid = "";
-static volatile bool wifi_setup_done = false;
 
 static void ev_wifi_ssid_selected(lv_event_t* e) {
   // SSID stored in user_data, not from label (label has signal info appended)
