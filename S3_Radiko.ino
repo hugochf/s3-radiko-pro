@@ -514,6 +514,7 @@ static lv_obj_t *scr_list  = nullptr;
 // Playing screen widgets
 static lv_obj_t *wi_wifi   = nullptr;  // status bar: WiFi icon
 static lv_obj_t *wi_bat    = nullptr;  // status bar: battery
+static lv_obj_t *wi_clock  = nullptr;  // status bar: clock
 static lv_obj_t *wi_logo   = nullptr;  // station logo box
 static lv_obj_t *wi_logo_img = nullptr; // station logo image
 static lv_obj_t *wi_slider = nullptr;  // volume slider
@@ -610,6 +611,14 @@ static void update_status() {
   if (!wi_wifi) return;
   lv_label_set_text(wi_wifi,
     WiFi.status() == WL_CONNECTED ? LV_SYMBOL_WIFI : LV_SYMBOL_WARNING);
+  // Clock
+  if (wi_clock) {
+    struct tm ti;
+    if (getLocalTime(&ti, 0)) {
+      char t[6]; snprintf(t, sizeof t, "%02d:%02d", ti.tm_hour, ti.tm_min);
+      lv_label_set_text(wi_clock, t);
+    }
+  }
   int pct = bat_pct();
   if (pct >= 0) {
     bool charging = bat_is_charging();
@@ -702,11 +711,12 @@ static void build_playing_screen() {
   lv_obj_set_style_text_font(wi_wifi, &lv_font_montserrat_12, 0);
   lv_obj_center(wi_wifi);
 
-  lv_obj_t *hdr_lbl = lv_label_create(bar);
-  lv_label_set_text(hdr_lbl, "Radiko Radio");
-  lv_obj_set_style_text_color(hdr_lbl, lv_color_hex(C_TEXT), 0);
-  lv_obj_set_style_text_font(hdr_lbl, &lv_font_montserrat_12, 0);
-  lv_obj_align(hdr_lbl, LV_ALIGN_CENTER, 0, 0);
+  // Clock in center of status bar
+  wi_clock = lv_label_create(bar);
+  lv_label_set_text(wi_clock, "--:--");
+  lv_obj_set_style_text_color(wi_clock, lv_color_hex(C_TEXT), 0);
+  lv_obj_set_style_text_font(wi_clock, &lv_font_montserrat_14, 0);
+  lv_obj_align(wi_clock, LV_ALIGN_CENTER, 0, 0);
 
   wi_bat = lv_label_create(bar);
   lv_label_set_text(wi_bat, LV_SYMBOL_BATTERY_FULL);
@@ -1212,6 +1222,9 @@ void setup() {
     lv_scr_load(scr_play);
   }
   hide_status();
+
+  // NTP time sync (JST = UTC+9)
+  configTime(9 * 3600, 0, "ntp.nict.jp", "pool.ntp.org");
 
   // Radiko auth
   show_status("Authenticating Radiko...");
