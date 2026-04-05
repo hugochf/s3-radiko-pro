@@ -650,7 +650,7 @@ static void update_status() {
              pct > 25 ? LV_SYMBOL_BATTERY_2    :
                         LV_SYMBOL_BATTERY_EMPTY;
     }
-    char b[16]; snprintf(b, sizeof b, "%s%d%%", icon, pct > 100 ? 100 : pct);
+    char b[16]; snprintf(b, sizeof b, "%s %d%%", icon, pct > 100 ? 100 : pct);
     lv_label_set_text(wi_bat, b);
   }
 }
@@ -765,7 +765,7 @@ static void build_playing_screen() {
   lv_label_set_text(wi_bat, LV_SYMBOL_BATTERY_FULL);
   lv_obj_set_style_text_color(wi_bat, lv_color_hex(C_TEXT), 0);
   lv_obj_set_style_text_font(wi_bat, &lv_font_montserrat_12, 0);
-  lv_obj_center(wi_bat);
+  lv_obj_align(wi_bat, LV_ALIGN_RIGHT_MID, -2, 0);
 
   // ---- Station logo (full width for swipe, tap logo to open list) ----
   wi_logo = lv_obj_create(scr_play);
