@@ -105,7 +105,7 @@ static String radikoArea   = "JP14";
 static int    currentStn   = 0;
 static int    currentVol   = 20;   // 0–100 (ES8311 percentage)
 static bool   isPlaying    = false;
-static bool   ledOn        = true;  // RGB LED state
+static int    ledMode      = 0;     // 0=rainbow breath, 1=ocean, 2=sunset, 3=candle, 4=rainbow, 5=pulse, 6=off
 static uint32_t sleepTimer  = 0;    // 0=off, else millis when timer expires
 static int      sleepMins   = 0;    // display: 0/30/60/90
 static Preferences prefs;
@@ -143,17 +143,44 @@ static void hsv_to_rgb(uint16_t h, uint8_t s, uint8_t v, uint8_t* r, uint8_t* g,
   }
 }
 
+#define LED_MODES 7
+static const char* ledModeNames[] = {"Rainbow", "Ocean", "Sunset", "Candle", "Cycle", "Pulse", "OFF"};
+
 static void rgb_update() {
-  if (!ledOn) { neopixelWrite(PIN_RGB_LED, 0, 0, 0); return; }
   static uint16_t phase = 0;
-  // Rainbow + breathing: color cycles while brightness pulses
-  uint16_t hue = (phase / 3) % 360;  // very slow color cycle
-  float breath = (1.0f - cosf(phase * 2.0f * M_PI / 256.0f)) / 2.0f;  // ~8s breath
-  uint8_t v = (uint8_t)(breath * 255);  // full range 0-255
-  uint8_t r, g, b;
-  hsv_to_rgb(hue, 255, v, &r, &g, &b);
+  phase++;
+  uint8_t r = 0, g = 0, b = 0;
+  float breath;
+
+  switch (ledMode) {
+    case 0:  // Rainbow Breathing
+      breath = (1.0f - cosf(phase * 2.0f * M_PI / 256.0f)) / 2.0f;
+      hsv_to_rgb((phase / 3) % 360, 255, (uint8_t)(breath * 255), &r, &g, &b);
+      break;
+    case 1:  // Ocean — blue/cyan breathing
+      breath = (1.0f - cosf(phase * 2.0f * M_PI / 200.0f)) / 2.0f;
+      r = 0; g = (uint8_t)(breath * 80); b = (uint8_t)(breath * 255);
+      break;
+    case 2:  // Sunset — warm red/orange breathing
+      breath = (1.0f - cosf(phase * 2.0f * M_PI / 200.0f)) / 2.0f;
+      r = (uint8_t)(breath * 255); g = (uint8_t)(breath * 80); b = 0;
+      break;
+    case 3:  // Candle — warm flicker
+      { uint8_t flicker = random(120, 255);
+        r = flicker; g = flicker / 3; b = 0; }
+      break;
+    case 4:  // Rainbow Cycle — smooth, no breathing
+      hsv_to_rgb((phase / 2) % 360, 255, 180, &r, &g, &b);
+      break;
+    case 5:  // Pulse — quick bright flash then fade
+      { uint16_t p = phase % 120;
+        uint8_t v = p < 10 ? 255 : (p < 60 ? 255 - (p - 10) * 5 : 0);
+        r = v; g = v; b = v; }
+      break;
+    case 6:  // OFF
+      break;
+  }
   neopixelWrite(PIN_RGB_LED, r, g, b);
-  phase = (phase + 1) % 1024;
 }
 
 // ============================================================
@@ -579,10 +606,10 @@ static void ev_sleep_toggle(lv_event_t*) {
   }
 }
 static void ev_led_toggle(lv_event_t*) {
-  ledOn = !ledOn;
-  if (!ledOn) neopixelWrite(PIN_RGB_LED, 0, 0, 0);
-  lv_label_set_text(wi_led_btn, ledOn ? LV_SYMBOL_EYE_OPEN : LV_SYMBOL_EYE_CLOSE);
-  prefs.putBool("led", ledOn);
+  ledMode = (ledMode + 1) % LED_MODES;
+  if (ledMode == 6) neopixelWrite(PIN_RGB_LED, 0, 0, 0);  // OFF
+  lv_label_set_text(wi_led_btn, ledModeNames[ledMode]);
+  prefs.putInt("led", ledMode);
 }
 static void ev_show_list(lv_event_t*) {
   audio.stopSong();
@@ -913,15 +940,15 @@ static void build_playing_screen() {
 
   // LED toggle (small circle, right side)
   lv_obj_t *btn_led = lv_btn_create(scr_play);
-  lv_obj_set_size(btn_led, 34, 34);
-  lv_obj_set_pos(btn_led, 282, btn_y + 5);
-  lv_obj_set_style_radius(btn_led, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_size(btn_led, 56, 34);
+  lv_obj_set_pos(btn_led, 260, btn_y + 5);
+  lv_obj_set_style_radius(btn_led, 8, 0);
   lv_obj_set_style_bg_color(btn_led, lv_color_hex(C_ACCENT), LV_STATE_DEFAULT);
   lv_obj_set_style_bg_color(btn_led, lv_color_hex(C_HL), LV_STATE_PRESSED);
   lv_obj_set_style_shadow_width(btn_led, 0, 0);
   lv_obj_add_event_cb(btn_led, ev_led_toggle, LV_EVENT_CLICKED, NULL);
   wi_led_btn = lv_label_create(btn_led);
-  lv_label_set_text(wi_led_btn, ledOn ? LV_SYMBOL_EYE_OPEN : LV_SYMBOL_EYE_CLOSE);
+  lv_label_set_text(wi_led_btn, ledModeNames[ledMode]);
   lv_obj_set_style_text_color(wi_led_btn, lv_color_hex(C_TEXT), 0);
   lv_obj_center(wi_led_btn);
 
@@ -1173,7 +1200,7 @@ void setup() {
   prefs.begin("radiko", false);
   currentStn = prefs.getInt("stn", 0);
   currentVol = prefs.getInt("vol", 20);
-  ledOn = prefs.getBool("led", true);
+  ledMode = prefs.getInt("led", 0);
   if (currentStn >= NUM_STATIONS) currentStn = 0;
 
   // I2C master bus for ES8311 + FT6336G (shared bus, SDA=16, SCL=15)
