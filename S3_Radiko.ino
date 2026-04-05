@@ -16,6 +16,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiMulti.h>
 #include <HTTPClient.h>
 #include <NetworkClientSecure.h>
 #include <Audio.h>
@@ -42,8 +43,9 @@ extern "C" {
 // ============================================================
 // CONFIG
 // ============================================================
-#define WIFI_SSID     "aio_jp"
-#define WIFI_PASSWORD "Hugo1983522"
+// Default WiFi (used if no saved credentials)
+#define WIFI_SSID_DEFAULT     "aio_jp"
+#define WIFI_PASSWORD_DEFAULT "Hugo1983522"
 
 // ============================================================
 // PINS
@@ -105,6 +107,8 @@ static int    currentVol   = 20;   // 0–100 (ES8311 percentage)
 static bool   isPlaying    = false;
 static bool   ledOn        = true;  // RGB LED state
 static Preferences prefs;
+static String wifiSSID     = "";
+static String wifiPass     = "";
 static String songTitle    = "";
 
 // ============================================================
@@ -919,6 +923,99 @@ static void build_list_screen() {
 }
 
 // ============================================================
+// WIFI SETUP SCREEN — scan SSIDs, select, enter password
+// ============================================================
+static lv_obj_t *scr_wifi = nullptr;
+static lv_obj_t *wifi_list = nullptr;
+static lv_obj_t *wifi_kb   = nullptr;
+static lv_obj_t *wifi_ta   = nullptr;
+static String    wifi_selected_ssid = "";
+static volatile bool wifi_setup_done = false;
+
+static void ev_wifi_ssid_selected(lv_event_t* e) {
+  lv_obj_t* btn = lv_event_get_target(e);
+  lv_obj_t* lbl = lv_obj_get_child(btn, 0);
+  wifi_selected_ssid = lv_label_get_text(lbl);
+  // Show password input
+  lv_obj_add_flag(wifi_list, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(wifi_ta, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(wifi_kb, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void ev_wifi_kb_ready(lv_event_t* e) {
+  lv_event_code_t code = lv_event_get_code(e);
+  if (code == LV_EVENT_READY) {
+    // Connect with entered password
+    wifiSSID = wifi_selected_ssid;
+    wifiPass = lv_textarea_get_text(wifi_ta);
+    prefs.putString("ssid", wifiSSID);
+    prefs.putString("pass", wifiPass);
+    wifi_setup_done = true;
+  } else if (code == LV_EVENT_CANCEL) {
+    // Go back to SSID list
+    lv_obj_add_flag(wifi_ta, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(wifi_kb, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(wifi_list, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+static void build_wifi_screen() {
+  scr_wifi = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(scr_wifi, lv_color_hex(C_BG), 0);
+
+  // Title
+  lv_obj_t* title = lv_label_create(scr_wifi);
+  lv_label_set_text(title, "WiFi Setup");
+  lv_obj_set_style_text_color(title, lv_color_hex(C_TEXT), 0);
+  lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 4);
+
+  // Scrollable SSID list
+  wifi_list = lv_obj_create(scr_wifi);
+  lv_obj_set_size(wifi_list, 310, 210);
+  lv_obj_set_pos(wifi_list, 5, 24);
+  lv_obj_set_style_bg_color(wifi_list, lv_color_hex(C_BG), 0);
+  lv_obj_set_style_border_width(wifi_list, 0, 0);
+  lv_obj_set_style_pad_all(wifi_list, 2, 0);
+  lv_obj_set_flex_flow(wifi_list, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(wifi_list, 2, 0);
+
+  // Scan WiFi
+  int n = WiFi.scanNetworks();
+  for (int i = 0; i < n && i < 15; i++) {
+    lv_obj_t* btn = lv_btn_create(wifi_list);
+    lv_obj_set_size(btn, 300, 36);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(C_PANEL), LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(C_HL), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(btn, 6, 0);
+    lv_obj_add_event_cb(btn, ev_wifi_ssid_selected, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t* lbl = lv_label_create(btn);
+    String txt = WiFi.SSID(i) + "  (" + WiFi.RSSI(i) + "dB)";
+    lv_label_set_text(lbl, txt.c_str());
+    lv_obj_set_style_text_color(lbl, lv_color_hex(C_TEXT), 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+    lv_obj_center(lbl);
+  }
+  WiFi.scanDelete();
+
+  // Password textarea (hidden initially)
+  wifi_ta = lv_textarea_create(scr_wifi);
+  lv_obj_set_size(wifi_ta, 300, 36);
+  lv_obj_align(wifi_ta, LV_ALIGN_TOP_MID, 0, 24);
+  lv_textarea_set_placeholder_text(wifi_ta, "Enter password...");
+  lv_textarea_set_one_line(wifi_ta, true);
+  lv_textarea_set_password_mode(wifi_ta, true);
+  lv_obj_add_flag(wifi_ta, LV_OBJ_FLAG_HIDDEN);
+
+  // Keyboard (hidden initially)
+  wifi_kb = lv_keyboard_create(scr_wifi);
+  lv_keyboard_set_textarea(wifi_kb, wifi_ta);
+  lv_obj_add_event_cb(wifi_kb, ev_wifi_kb_ready, LV_EVENT_ALL, NULL);
+  lv_obj_add_flag(wifi_kb, LV_OBJ_FLAG_HIDDEN);
+}
+
+// ============================================================
 // SETUP
 // ============================================================
 void setup() {
@@ -1008,14 +1105,37 @@ void setup() {
   lv_scr_load(scr_play);
   lv_task_handler();
 
-  // WiFi
+  // WiFi — try saved credentials, then default, then show setup screen
+  wifiSSID = prefs.getString("ssid", WIFI_SSID_DEFAULT);
+  wifiPass = prefs.getString("pass", WIFI_PASSWORD_DEFAULT);
+
   show_status("Connecting WiFi...");
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.begin(wifiSSID.c_str(), wifiPass.c_str());
   uint32_t t0 = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000) {
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 10000) {
     lv_task_handler(); delay(100);
   }
-  if (WiFi.status() != WL_CONNECTED) { show_status("WiFi failed!"); return; }
+
+  // If failed, show WiFi setup screen
+  if (WiFi.status() != WL_CONNECTED) {
+    hide_status();
+    WiFi.disconnect();
+    WiFi.mode(WIFI_STA);
+    build_wifi_screen();
+    lv_scr_load(scr_wifi);
+    wifi_setup_done = false;
+    while (!wifi_setup_done) { lv_task_handler(); delay(10); }
+    // Connect with selected credentials
+    show_status("Connecting...");
+    lv_scr_load(scr_play);
+    lv_task_handler();
+    WiFi.begin(wifiSSID.c_str(), wifiPass.c_str());
+    t0 = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000) {
+      lv_task_handler(); delay(100);
+    }
+    if (WiFi.status() != WL_CONNECTED) { show_status("WiFi failed!"); return; }
+  }
 
   // Radiko auth
   show_status("Authenticating Radiko...");
