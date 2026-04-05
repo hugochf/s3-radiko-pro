@@ -239,12 +239,11 @@ static lv_color_t*        lv_px_buf2 = nullptr;
 static void lv_flush(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *px) {
   uint32_t w = area->x2 - area->x1 + 1;
   uint32_t h = area->y2 - area->y1 + 1;
-  tft.dmaWait();   // wait for previous DMA to finish
   tft.startWrite();
   tft.setAddrWindow(area->x1, area->y1, w, h);
   tft.pushPixelsDMA((uint16_t*)px, w * h);
-  tft.endWrite();
-  lv_disp_flush_ready(drv);  // LVGL can render to other buffer while DMA runs
+  tft.endWrite();  // waits for DMA, then releases CS
+  lv_disp_flush_ready(drv);
 }
 
 static void lv_touch(lv_indev_drv_t *, lv_indev_data_t *data) {
@@ -988,13 +987,12 @@ void setup() {
   // Battery ADC
   bat_init();
 
-  // LVGL — double buffer in DMA-capable internal RAM for smooth display
-  // 320x40x2 bytes = 25,600 bytes per buffer, 51,200 total from internal heap
-  #define LV_BUF_LINES 40
+  // LVGL — single DMA buffer in internal RAM (DMA-capable)
+  #define LV_BUF_LINES 30
   lv_px_buf1 = (lv_color_t*)heap_caps_malloc(320 * LV_BUF_LINES * sizeof(lv_color_t), MALLOC_CAP_DMA);
-  lv_px_buf2 = (lv_color_t*)heap_caps_malloc(320 * LV_BUF_LINES * sizeof(lv_color_t), MALLOC_CAP_DMA);
+  if (!lv_px_buf1) lv_px_buf1 = (lv_color_t*)ps_malloc(320 * LV_BUF_LINES * sizeof(lv_color_t));  // fallback
   lv_init();
-  lv_disp_draw_buf_init(&lv_draw_buf, lv_px_buf1, lv_px_buf2, 320 * LV_BUF_LINES);
+  lv_disp_draw_buf_init(&lv_draw_buf, lv_px_buf1, NULL, 320 * LV_BUF_LINES);
 
   static lv_disp_drv_t disp_drv;
   lv_disp_drv_init(&disp_drv);
