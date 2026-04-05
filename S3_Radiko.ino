@@ -1105,37 +1105,39 @@ void setup() {
   lv_scr_load(scr_play);
   lv_task_handler();
 
-  // WiFi — try saved credentials, then default, then show setup screen
-  wifiSSID = prefs.getString("ssid", WIFI_SSID_DEFAULT);
-  wifiPass = prefs.getString("pass", WIFI_PASSWORD_DEFAULT);
+  // WiFi connection with setup screen fallback
+  WiFi.mode(WIFI_STA);
+  wifiSSID = prefs.getString("ssid", "");
+  wifiPass = prefs.getString("pass", "");
 
-  show_status("Connecting WiFi...");
-  WiFi.begin(wifiSSID.c_str(), wifiPass.c_str());
-  uint32_t t0 = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 10000) {
-    lv_task_handler(); delay(100);
-  }
+  while (WiFi.status() != WL_CONNECTED) {
+    if (wifiSSID.length() > 0) {
+      // Try saved credentials
+      show_status(("Connecting " + wifiSSID + "...").c_str());
+      lv_task_handler();
+      WiFi.begin(wifiSSID.c_str(), wifiPass.c_str());
+      uint32_t t0 = millis();
+      while (WiFi.status() != WL_CONNECTED && millis() - t0 < 10000) {
+        lv_task_handler(); delay(100);
+      }
+      if (WiFi.status() == WL_CONNECTED) break;  // success!
+      WiFi.disconnect();
+    }
 
-  // If failed, show WiFi setup screen
-  if (WiFi.status() != WL_CONNECTED) {
+    // No credentials or connection failed — show WiFi setup screen
     hide_status();
-    WiFi.disconnect();
-    WiFi.mode(WIFI_STA);
     build_wifi_screen();
     lv_scr_load(scr_wifi);
     wifi_setup_done = false;
     while (!wifi_setup_done) { lv_task_handler(); delay(10); }
-    // Connect with selected credentials
-    show_status("Connecting...");
+    // User selected SSID and entered password — loop back to try connecting
     lv_scr_load(scr_play);
-    lv_task_handler();
-    WiFi.begin(wifiSSID.c_str(), wifiPass.c_str());
-    t0 = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000) {
-      lv_task_handler(); delay(100);
-    }
-    if (WiFi.status() != WL_CONNECTED) { show_status("WiFi failed!"); return; }
   }
+  hide_status();
+
+  // Save successful credentials
+  prefs.putString("ssid", wifiSSID);
+  prefs.putString("pass", wifiPass);
 
   // Radiko auth
   show_status("Authenticating Radiko...");
