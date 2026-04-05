@@ -945,11 +945,8 @@ static void ev_wifi_ssid_selected(lv_event_t* e) {
 static void ev_wifi_kb_ready(lv_event_t* e) {
   lv_event_code_t code = lv_event_get_code(e);
   if (code == LV_EVENT_READY) {
-    // Connect with entered password
     wifiSSID = wifi_selected_ssid;
-    wifiPass = lv_textarea_get_text(wifi_ta);
-    prefs.putString("ssid", wifiSSID);
-    prefs.putString("pass", wifiPass);
+    wifiPass = String(lv_textarea_get_text(wifi_ta));
     wifi_setup_done = true;
   } else if (code == LV_EVENT_CANCEL) {
     // Go back to SSID list
@@ -1005,7 +1002,7 @@ static void build_wifi_screen() {
   lv_obj_align(wifi_ta, LV_ALIGN_TOP_MID, 0, 24);
   lv_textarea_set_placeholder_text(wifi_ta, "Enter password...");
   lv_textarea_set_one_line(wifi_ta, true);
-  lv_textarea_set_password_mode(wifi_ta, true);
+  lv_textarea_set_password_mode(wifi_ta, false);  // show password in plain text
   lv_obj_add_flag(wifi_ta, LV_OBJ_FLAG_HIDDEN);
 
   // Keyboard (hidden initially)
@@ -1112,32 +1109,40 @@ void setup() {
 
   while (WiFi.status() != WL_CONNECTED) {
     if (wifiSSID.length() > 0) {
-      // Try saved credentials
-      show_status(("Connecting " + wifiSSID + "...").c_str());
+      // Try connecting
+      String msg = "Connecting: " + wifiSSID;
+      show_status(msg.c_str());
       lv_task_handler();
+      WiFi.disconnect();
+      delay(200);
       WiFi.begin(wifiSSID.c_str(), wifiPass.c_str());
       uint32_t t0 = millis();
-      while (WiFi.status() != WL_CONNECTED && millis() - t0 < 10000) {
+      while (WiFi.status() != WL_CONNECTED && millis() - t0 < 12000) {
         lv_task_handler(); delay(100);
       }
-      if (WiFi.status() == WL_CONNECTED) break;  // success!
+      if (WiFi.status() == WL_CONNECTED) {
+        // Save successful credentials
+        prefs.putString("ssid", wifiSSID);
+        prefs.putString("pass", wifiPass);
+        break;
+      }
+      // Failed
       WiFi.disconnect();
+      show_status(("Failed: " + wifiSSID).c_str());
+      lv_task_handler();
+      delay(1500);
     }
 
     // No credentials or connection failed — show WiFi setup screen
     hide_status();
+    if (scr_wifi) { lv_obj_del(scr_wifi); scr_wifi = nullptr; }  // clean up old screen
     build_wifi_screen();
     lv_scr_load(scr_wifi);
     wifi_setup_done = false;
     while (!wifi_setup_done) { lv_task_handler(); delay(10); }
-    // User selected SSID and entered password — loop back to try connecting
     lv_scr_load(scr_play);
   }
   hide_status();
-
-  // Save successful credentials
-  prefs.putString("ssid", wifiSSID);
-  prefs.putString("pass", wifiPass);
 
   // Radiko auth
   show_status("Authenticating Radiko...");
