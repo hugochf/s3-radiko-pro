@@ -754,7 +754,11 @@ static void build_playing_screen() {
     static uint8_t bl_level = 3;  // 0=dim, 1=low, 2=med, 3=full
     bl_level = (bl_level + 1) % 4;
     const uint8_t levels[] = {30, 80, 160, 255};
+    const char* icons[] = {"\xEF\x80\xAE", "\xEF\x80\xAE", "\xEF\x80\xAE", "\xEF\x80\xAE"};  // brightness levels
     bl_set(levels[bl_level]);
+    // Show level briefly in battery label
+    char b[16]; snprintf(b, sizeof b, LV_SYMBOL_IMAGE " %d", bl_level + 1);
+    lv_label_set_text(wi_bat, b);
     screenState = 0;
     lastTouch = millis();
   }, LV_EVENT_CLICKED, NULL);
@@ -773,11 +777,9 @@ static void build_playing_screen() {
   lv_obj_set_style_pad_all(wi_logo, 0, 0);
   lv_obj_set_style_shadow_width(wi_logo, 0, 0);
   lv_obj_clear_flag(wi_logo, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_add_flag(wi_logo, LV_OBJ_FLAG_GESTURE_BUBBLE);  // pass gestures up
   lv_obj_add_event_cb(wi_logo, ev_show_list, LV_EVENT_CLICKED, NULL);
-
-  // Swipe on main screen for prev/next station
-  lv_obj_add_event_cb(scr_play, [](lv_event_t* e) {
+  // Swipe on logo area only for prev/next station
+  lv_obj_add_event_cb(wi_logo, [](lv_event_t* e) {
     lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
     if (dir == LV_DIR_LEFT) { ev_next(e); refresh_playing(); }
     else if (dir == LV_DIR_RIGHT) { ev_prev(e); refresh_playing(); }
@@ -847,7 +849,7 @@ static void build_playing_screen() {
   // Prev (small circle)
   lv_obj_t *btn_prev = lv_btn_create(scr_play);
   lv_obj_set_size(btn_prev, 44, 44);
-  lv_obj_set_pos(btn_prev, 30, btn_y);
+  lv_obj_set_pos(btn_prev, 16, btn_y);
   lv_obj_set_style_radius(btn_prev, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_bg_color(btn_prev, lv_color_hex(C_ACCENT), LV_STATE_DEFAULT);
   lv_obj_set_style_bg_color(btn_prev, lv_color_hex(C_HL), LV_STATE_PRESSED);
@@ -861,7 +863,7 @@ static void build_playing_screen() {
   // Play/Pause (big circle)
   lv_obj_t *btn_play = lv_btn_create(scr_play);
   lv_obj_set_size(btn_play, 56, 56);
-  lv_obj_set_pos(btn_play, 112, btn_y - 6);
+  lv_obj_set_pos(btn_play, 90, btn_y - 6);
   lv_obj_set_style_radius(btn_play, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_bg_color(btn_play, lv_color_hex(C_HL), LV_STATE_DEFAULT);
   lv_obj_set_style_bg_color(btn_play, lv_color_hex(0xC03050), LV_STATE_PRESSED);
@@ -876,7 +878,7 @@ static void build_playing_screen() {
   // Next (small circle)
   lv_obj_t *btn_next = lv_btn_create(scr_play);
   lv_obj_set_size(btn_next, 44, 44);
-  lv_obj_set_pos(btn_next, 196, btn_y);
+  lv_obj_set_pos(btn_next, 176, btn_y);
   lv_obj_set_style_radius(btn_next, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_bg_color(btn_next, lv_color_hex(C_ACCENT), LV_STATE_DEFAULT);
   lv_obj_set_style_bg_color(btn_next, lv_color_hex(C_HL), LV_STATE_PRESSED);
@@ -890,7 +892,7 @@ static void build_playing_screen() {
   // Sleep timer (small circle)
   lv_obj_t *btn_sleep = lv_btn_create(scr_play);
   lv_obj_set_size(btn_sleep, 34, 34);
-  lv_obj_set_pos(btn_sleep, 252, btn_y + 5);
+  lv_obj_set_pos(btn_sleep, 244, btn_y + 5);
   lv_obj_set_style_radius(btn_sleep, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_bg_color(btn_sleep, lv_color_hex(C_ACCENT), LV_STATE_DEFAULT);
   lv_obj_set_style_bg_color(btn_sleep, lv_color_hex(C_HL), LV_STATE_PRESSED);
@@ -905,7 +907,7 @@ static void build_playing_screen() {
   // LED toggle (small circle, right side)
   lv_obj_t *btn_led = lv_btn_create(scr_play);
   lv_obj_set_size(btn_led, 34, 34);
-  lv_obj_set_pos(btn_led, 288, btn_y + 5);
+  lv_obj_set_pos(btn_led, 282, btn_y + 5);
   lv_obj_set_style_radius(btn_led, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_bg_color(btn_led, lv_color_hex(C_ACCENT), LV_STATE_DEFAULT);
   lv_obj_set_style_bg_color(btn_led, lv_color_hex(C_HL), LV_STATE_PRESSED);
