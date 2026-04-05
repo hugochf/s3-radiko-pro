@@ -959,7 +959,16 @@ static void ev_wifi_ssid_selected(lv_event_t* e) {
   // SSID stored in user_data, not from label (label has signal info appended)
   const char* ssid = (const char*)lv_event_get_user_data(e);
   wifi_selected_ssid = ssid;
-  // Show password input
+  // If this SSID matches saved credentials, connect directly
+  String savedSSID = prefs.getString("ssid", "");
+  if (wifi_selected_ssid == savedSSID) {
+    wifiSSID = savedSSID;
+    wifiPass = prefs.getString("pass", "");
+    wifi_setup_done = true;
+    return;
+  }
+  // Otherwise show password input
+  lv_textarea_set_text(wifi_ta, "");
   lv_obj_add_flag(wifi_list, LV_OBJ_FLAG_HIDDEN);
   lv_obj_clear_flag(wifi_ta, LV_OBJ_FLAG_HIDDEN);
   lv_obj_clear_flag(wifi_kb, LV_OBJ_FLAG_HIDDEN);
@@ -983,12 +992,44 @@ static void build_wifi_screen() {
   scr_wifi = lv_obj_create(NULL);
   lv_obj_set_style_bg_color(scr_wifi, lv_color_hex(C_BG), 0);
 
-  // Title
-  lv_obj_t* title = lv_label_create(scr_wifi);
+  // Header with back button
+  lv_obj_t *hdr = lv_obj_create(scr_wifi);
+  lv_obj_set_size(hdr, 320, 24);
+  lv_obj_set_pos(hdr, 0, 0);
+  lv_obj_set_style_bg_color(hdr, lv_color_hex(C_PANEL), 0);
+  lv_obj_set_style_border_width(hdr, 0, 0);
+  lv_obj_set_style_radius(hdr, 0, 0);
+  lv_obj_set_style_pad_all(hdr, 2, 0);
+  lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t *back = lv_btn_create(hdr);
+  lv_obj_set_size(back, 70, 20);
+  lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
+  lv_obj_set_style_bg_color(back, lv_color_hex(C_ACCENT), 0);
+  lv_obj_set_style_bg_color(back, lv_color_hex(C_HL), LV_STATE_PRESSED);
+  lv_obj_set_style_radius(back, 6, 0);
+  lv_obj_set_style_shadow_width(back, 0, 0);
+  lv_obj_add_event_cb(back, [](lv_event_t*) {
+    // Return to player without changing WiFi
+    wifiSSID = prefs.getString("ssid", "");
+    wifiPass = prefs.getString("pass", "");
+    if (wifiSSID.length() > 0) {
+      wifi_setup_done = true;  // reconnect with existing credentials
+    } else {
+      lv_scr_load(scr_play);  // just go back, no WiFi
+    }
+  }, LV_EVENT_CLICKED, NULL);
+  lv_obj_t *blbl = lv_label_create(back);
+  lv_label_set_text(blbl, LV_SYMBOL_LEFT " Back");
+  lv_obj_set_style_text_color(blbl, lv_color_hex(C_TEXT), 0);
+  lv_obj_set_style_text_font(blbl, &lv_font_montserrat_12, 0);
+  lv_obj_center(blbl);
+
+  lv_obj_t* title = lv_label_create(hdr);
   lv_label_set_text(title, "WiFi Setup");
   lv_obj_set_style_text_color(title, lv_color_hex(C_TEXT), 0);
   lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
-  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 4);
+  lv_obj_align(title, LV_ALIGN_CENTER, 20, 0);
 
   // Scrollable SSID list
   wifi_list = lv_obj_create(scr_wifi);
