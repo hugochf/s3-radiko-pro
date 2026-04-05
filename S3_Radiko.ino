@@ -776,13 +776,21 @@ static void build_playing_screen() {
   lv_obj_set_style_pad_all(wi_logo, 0, 0);
   lv_obj_set_style_shadow_width(wi_logo, 0, 0);
   lv_obj_clear_flag(wi_logo, LV_OBJ_FLAG_SCROLLABLE);
+  // Manual swipe detection: track press/release X positions
+  static lv_coord_t press_x = 0;
   lv_obj_add_event_cb(wi_logo, [](lv_event_t* e) {
-    lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
-    if (dir == LV_DIR_LEFT) { ev_next(e); refresh_playing(); }
-    else if (dir == LV_DIR_RIGHT) { ev_prev(e); refresh_playing(); }
-    else { ev_show_list(e); }  // tap (no swipe direction) opens list
-  }, LV_EVENT_GESTURE, NULL);
-  lv_obj_add_event_cb(wi_logo, ev_show_list, LV_EVENT_CLICKED, NULL);
+    lv_indev_t* indev = lv_indev_get_act();
+    lv_point_t p; lv_indev_get_point(indev, &p);
+    press_x = p.x;
+  }, LV_EVENT_PRESSED, NULL);
+  lv_obj_add_event_cb(wi_logo, [](lv_event_t* e) {
+    lv_indev_t* indev = lv_indev_get_act();
+    lv_point_t p; lv_indev_get_point(indev, &p);
+    int dx = p.x - press_x;
+    if (dx > 40) { ev_prev(e); refresh_playing(); }       // swipe right → prev
+    else if (dx < -40) { ev_next(e); refresh_playing(); }  // swipe left → next
+    else { ev_show_list(e); }                               // tap → station list
+  }, LV_EVENT_RELEASED, NULL);
 
   wi_logo_img = lv_img_create(wi_logo);
   lv_img_set_src(wi_logo_img, STATIONS[0].logo);
