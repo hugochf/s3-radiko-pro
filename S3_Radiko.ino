@@ -933,9 +933,9 @@ static String    wifi_selected_ssid = "";
 static volatile bool wifi_setup_done = false;
 
 static void ev_wifi_ssid_selected(lv_event_t* e) {
-  lv_obj_t* btn = lv_event_get_target(e);
-  lv_obj_t* lbl = lv_obj_get_child(btn, 0);
-  wifi_selected_ssid = lv_label_get_text(lbl);
+  // SSID stored in user_data, not from label (label has signal info appended)
+  const char* ssid = (const char*)lv_event_get_user_data(e);
+  wifi_selected_ssid = ssid;
   // Show password input
   lv_obj_add_flag(wifi_list, LV_OBJ_FLAG_HIDDEN);
   lv_obj_clear_flag(wifi_ta, LV_OBJ_FLAG_HIDDEN);
@@ -977,19 +977,24 @@ static void build_wifi_screen() {
   lv_obj_set_flex_flow(wifi_list, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_style_pad_row(wifi_list, 2, 0);
 
-  // Scan WiFi
+  // Scan WiFi — store SSIDs in persistent array for callbacks
+  static char ssid_buf[15][33];  // max 15 SSIDs, 32 chars each
   int n = WiFi.scanNetworks();
   for (int i = 0; i < n && i < 15; i++) {
+    strncpy(ssid_buf[i], WiFi.SSID(i).c_str(), 32);
+    ssid_buf[i][32] = 0;
+
     lv_obj_t* btn = lv_btn_create(wifi_list);
     lv_obj_set_size(btn, 300, 36);
     lv_obj_set_style_bg_color(btn, lv_color_hex(C_PANEL), LV_STATE_DEFAULT);
     lv_obj_set_style_bg_color(btn, lv_color_hex(C_HL), LV_STATE_PRESSED);
     lv_obj_set_style_radius(btn, 6, 0);
-    lv_obj_add_event_cb(btn, ev_wifi_ssid_selected, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(btn, ev_wifi_ssid_selected, LV_EVENT_CLICKED, ssid_buf[i]);
 
     lv_obj_t* lbl = lv_label_create(btn);
-    String txt = WiFi.SSID(i) + "  (" + WiFi.RSSI(i) + "dB)";
-    lv_label_set_text(lbl, txt.c_str());
+    char txt[48];
+    snprintf(txt, sizeof txt, "%s  (%ddB)", ssid_buf[i], WiFi.RSSI(i));
+    lv_label_set_text(lbl, txt);
     lv_obj_set_style_text_color(lbl, lv_color_hex(C_TEXT), 0);
     lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
     lv_obj_center(lbl);
