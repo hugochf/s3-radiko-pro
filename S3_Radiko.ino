@@ -746,7 +746,7 @@ static void build_playing_screen() {
 
   // Battery + brightness control (tap to cycle brightness)
   lv_obj_t *bat_btn = lv_btn_create(bar);
-  lv_obj_set_size(bat_btn, 76, 24);
+  lv_obj_set_size(bat_btn, 100, 24);
   lv_obj_align(bat_btn, LV_ALIGN_RIGHT_MID, 0, 0);
   lv_obj_set_style_bg_opa(bat_btn, LV_OPA_TRANSP, LV_STATE_DEFAULT);
   lv_obj_set_style_shadow_width(bat_btn, 0, 0);
