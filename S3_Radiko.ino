@@ -106,6 +106,8 @@ static int    currentStn   = 0;
 static int    currentVol   = 20;   // 0–100 (ES8311 percentage)
 static bool   isPlaying    = false;
 static bool   ledOn        = true;  // RGB LED state
+static uint32_t sleepTimer  = 0;    // 0=off, else millis when timer expires
+static int      sleepMins   = 0;    // display: 0/30/60/90
 static Preferences prefs;
 static String wifiSSID     = "";
 static String wifiPass     = "";
@@ -521,6 +523,7 @@ static lv_obj_t *wi_slider = nullptr;  // volume slider
 static lv_obj_t *wi_vol    = nullptr;  // volume value label
 static lv_obj_t *wi_play   = nullptr;  // play/pause button label
 static lv_obj_t *wi_led_btn = nullptr; // LED toggle button label
+static lv_obj_t *wi_sleep_btn = nullptr; // sleep timer label
 static lv_obj_t *wi_dots[NUM_STATIONS] = {};
 
 // Colour palette (dark modern)
@@ -558,6 +561,22 @@ static void ev_vol_changed(lv_event_t*) {
   lv_label_set_text(wi_vol, b);
   es8311_voice_volume_set(g_es8311_dev, currentVol, nullptr);
   prefs.putInt("vol", currentVol);
+}
+static void ev_sleep_toggle(lv_event_t*) {
+  // Cycle: OFF → 30 → 60 → 90 → OFF
+  if (sleepMins == 0) sleepMins = 30;
+  else if (sleepMins == 30) sleepMins = 60;
+  else if (sleepMins == 60) sleepMins = 90;
+  else sleepMins = 0;
+
+  if (sleepMins > 0) {
+    sleepTimer = millis() + sleepMins * 60000UL;
+    char b[8]; snprintf(b, sizeof b, "%dm", sleepMins);
+    lv_label_set_text(wi_sleep_btn, b);
+  } else {
+    sleepTimer = 0;
+    lv_label_set_text(wi_sleep_btn, LV_SYMBOL_BELL);
+  }
 }
 static void ev_led_toggle(lv_event_t*) {
   ledOn = !ledOn;
@@ -725,11 +744,25 @@ static void build_playing_screen() {
   lv_obj_set_style_text_font(hdr_lbl, &lv_font_montserrat_12, 0);
   lv_obj_align(hdr_lbl, LV_ALIGN_CENTER, 0, 0);
 
-  wi_bat = lv_label_create(bar);
+  // Battery + brightness control (tap to cycle brightness)
+  lv_obj_t *bat_btn = lv_btn_create(bar);
+  lv_obj_set_size(bat_btn, 60, 20);
+  lv_obj_align(bat_btn, LV_ALIGN_RIGHT_MID, 0, 0);
+  lv_obj_set_style_bg_opa(bat_btn, LV_OPA_TRANSP, LV_STATE_DEFAULT);
+  lv_obj_set_style_shadow_width(bat_btn, 0, 0);
+  lv_obj_add_event_cb(bat_btn, [](lv_event_t*) {
+    static uint8_t bl_level = 3;  // 0=dim, 1=low, 2=med, 3=full
+    bl_level = (bl_level + 1) % 4;
+    const uint8_t levels[] = {30, 80, 160, 255};
+    bl_set(levels[bl_level]);
+    screenState = 0;
+    lastTouch = millis();
+  }, LV_EVENT_CLICKED, NULL);
+  wi_bat = lv_label_create(bat_btn);
   lv_label_set_text(wi_bat, LV_SYMBOL_BATTERY_FULL);
   lv_obj_set_style_text_color(wi_bat, lv_color_hex(C_TEXT), 0);
   lv_obj_set_style_text_font(wi_bat, &lv_font_montserrat_12, 0);
-  lv_obj_align(wi_bat, LV_ALIGN_RIGHT_MID, -4, 0);
+  lv_obj_center(wi_bat);
 
   // ---- Station logo (216×54, centered, tappable → list) ----
   wi_logo = lv_obj_create(scr_play);
@@ -740,7 +773,15 @@ static void build_playing_screen() {
   lv_obj_set_style_pad_all(wi_logo, 0, 0);
   lv_obj_set_style_shadow_width(wi_logo, 0, 0);
   lv_obj_clear_flag(wi_logo, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(wi_logo, LV_OBJ_FLAG_GESTURE_BUBBLE);  // pass gestures up
   lv_obj_add_event_cb(wi_logo, ev_show_list, LV_EVENT_CLICKED, NULL);
+
+  // Swipe on main screen for prev/next station
+  lv_obj_add_event_cb(scr_play, [](lv_event_t* e) {
+    lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
+    if (dir == LV_DIR_LEFT) { ev_next(e); refresh_playing(); }
+    else if (dir == LV_DIR_RIGHT) { ev_prev(e); refresh_playing(); }
+  }, LV_EVENT_GESTURE, NULL);
 
   wi_logo_img = lv_img_create(wi_logo);
   lv_img_set_src(wi_logo_img, STATIONS[0].logo);
@@ -846,10 +887,25 @@ static void build_playing_screen() {
   lv_obj_set_style_text_color(lbl_next, lv_color_hex(C_TEXT), 0);
   lv_obj_center(lbl_next);
 
+  // Sleep timer (small circle)
+  lv_obj_t *btn_sleep = lv_btn_create(scr_play);
+  lv_obj_set_size(btn_sleep, 34, 34);
+  lv_obj_set_pos(btn_sleep, 252, btn_y + 5);
+  lv_obj_set_style_radius(btn_sleep, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(btn_sleep, lv_color_hex(C_ACCENT), LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_color(btn_sleep, lv_color_hex(C_HL), LV_STATE_PRESSED);
+  lv_obj_set_style_shadow_width(btn_sleep, 0, 0);
+  lv_obj_add_event_cb(btn_sleep, ev_sleep_toggle, LV_EVENT_CLICKED, NULL);
+  wi_sleep_btn = lv_label_create(btn_sleep);
+  lv_label_set_text(wi_sleep_btn, LV_SYMBOL_BELL);
+  lv_obj_set_style_text_color(wi_sleep_btn, lv_color_hex(C_TEXT), 0);
+  lv_obj_set_style_text_font(wi_sleep_btn, &lv_font_montserrat_10, 0);
+  lv_obj_center(wi_sleep_btn);
+
   // LED toggle (small circle, right side)
   lv_obj_t *btn_led = lv_btn_create(scr_play);
   lv_obj_set_size(btn_led, 34, 34);
-  lv_obj_set_pos(btn_led, 280, btn_y + 5);
+  lv_obj_set_pos(btn_led, 288, btn_y + 5);
   lv_obj_set_style_radius(btn_led, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_bg_color(btn_led, lv_color_hex(C_ACCENT), LV_STATE_DEFAULT);
   lv_obj_set_style_bg_color(btn_led, lv_color_hex(C_HL), LV_STATE_PRESSED);
@@ -1341,6 +1397,24 @@ void loop() {
       fetch_running = false;
       vTaskDelete(NULL);
     }, "fetch", 8192, (void*)(intptr_t)idx, 1, NULL, 0);
+  }
+
+  // Auto-reconnect WiFi if disconnected during playback
+  static uint32_t last_wifi_check = 0;
+  if (millis() - last_wifi_check > 5000) {
+    last_wifi_check = millis();
+    if (WiFi.status() != WL_CONNECTED && wifiSSID.length() > 0) {
+      WiFi.reconnect();
+    }
+  }
+
+  // Sleep timer — stop radio + screen off
+  if (sleepTimer > 0 && millis() > sleepTimer) {
+    sleepTimer = 0; sleepMins = 0;
+    audio.stopSong(); isPlaying = false;
+    bl_set(0); screenState = 2;
+    lv_label_set_text(wi_sleep_btn, LV_SYMBOL_BELL);
+    lv_label_set_text(wi_play, LV_SYMBOL_PLAY);
   }
 
   // Screen timeout: 5min→dim, 10min→off
