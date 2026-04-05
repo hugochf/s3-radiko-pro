@@ -37,6 +37,7 @@ extern "C" {
 #define TINFL_FLAG_PARSE_ZLIB_HEADER 1
 #define TINFL_DECOMPRESS_MEM_TO_MEM_FAILED ((size_t)(-1))
 #include "esp_adc/adc_oneshot.h"
+#include "esp_sleep.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
 
@@ -577,6 +578,26 @@ static void ev_next(lv_event_t*) {
   play_stn(currentStn);
   refresh_playing();
 }
+static void do_power_off() {
+  // Stop everything
+  audio.stopSong();
+  isPlaying = false;
+  neopixelWrite(PIN_RGB_LED, 0, 0, 0);
+
+  // Show power off message
+  show_status("Powering off...");
+  lv_task_handler();
+  delay(1000);
+
+  // Turn off screen
+  bl_set(0);
+
+  // Configure wake on GPIO0 (BOOT button) LOW
+  esp_sleep_enable_ext0_wakeup(GPIO_NUM_0, 0);
+  esp_deep_sleep_start();
+  // Never reaches here — wake = full reboot
+}
+
 static void ev_play(lv_event_t*) {
   if (isPlaying) stop_stn();
   else           play_stn(currentStn);
@@ -904,7 +925,8 @@ static void build_playing_screen() {
   lv_obj_set_style_bg_color(btn_play, lv_color_hex(C_HL), LV_STATE_DEFAULT);
   lv_obj_set_style_bg_color(btn_play, lv_color_hex(0xC03050), LV_STATE_PRESSED);
   lv_obj_set_style_shadow_width(btn_play, 0, 0);
-  lv_obj_add_event_cb(btn_play, ev_play, LV_EVENT_CLICKED, NULL);
+  lv_obj_add_event_cb(btn_play, ev_play, LV_EVENT_SHORT_CLICKED, NULL);
+  lv_obj_add_event_cb(btn_play, [](lv_event_t*) { do_power_off(); }, LV_EVENT_LONG_PRESSED, NULL);
   wi_play = lv_label_create(btn_play);
   lv_label_set_text(wi_play, LV_SYMBOL_PLAY);
   lv_obj_set_style_text_color(wi_play, lv_color_hex(C_TEXT), 0);
