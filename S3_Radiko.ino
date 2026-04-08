@@ -113,17 +113,31 @@ static Preferences prefs;
 static String wifiSSID     = "";
 static String wifiPass     = "";
 static String songTitle    = "";
+// Cached program titles for all stations (filled by fetch_all_program_info)
+static String stationProgs[15];  // NUM_STATIONS, defined later
+static volatile bool s_progs_updated = false;  // signal: list UI should refresh
 
 // ============================================================
 // BACKLIGHT / SCREEN TIMEOUT
 // ============================================================
-#define DIM_TIMEOUT_MS   300000UL  // 5 min → dim screen
-#define OFF_TIMEOUT_MS   600000UL  // 10 min → screen off
 #define DIM_DUTY     18            // ~7% brightness when dimmed (0–255)
+static uint32_t dim_timeout_ms = 300000UL;  // 5 min (overridden from prefs)
+static uint32_t off_timeout_ms = 600000UL;  // 10 min (overridden from prefs)
+static uint8_t  scr_rotation  = 1;          // 1 = normal landscape, 3 = flipped 180°
+static uint8_t  bl_level      = 3;          // 0=Low 1=Mid 2=High 3=Full (overridden from prefs)
+static const uint8_t bl_duty_levels[] = {30, 80, 160, 255};
+static const char*   bl_names[]       = {"Low", "Mid", "High", "Full"};
+#define FW_VERSION "S3 Radiko v1.0"
 static unsigned long lastTouch  = 0;
 static uint8_t       screenState = 0;  // 0=on, 1=dimmed, 2=off
 
 static void bl_set(int duty) { ledcWrite(PIN_BL, duty); }
+
+// Apply current brightness level to backlight + persist
+static void apply_brightness() {
+  bl_set(bl_duty_levels[bl_level]);
+  prefs.putUChar("bl", bl_level);
+}
 
 // ============================================================
 // RGB LED (WS2812B on GPIO42) — breathing effect
@@ -281,7 +295,7 @@ static void lv_touch(lv_indev_drv_t *, lv_indev_data_t *data) {
     data->point.x = touch_last_x;
     data->point.y = touch_last_y;
     lastTouch     = millis();
-    if (screenState > 0) { screenState = 0; bl_set(255); }
+    if (screenState > 0) { screenState = 0; bl_set(bl_duty_levels[bl_level]); }
   } else {
     data->state = LV_INDEV_STATE_REL;
   }
@@ -327,6 +341,50 @@ static bool radiko_auth() {
 
 // Fetch current program info from Radiko API
 static String s_prog_title = "";
+
+// Extract program title (and optional pfm) for one station from already-decompressed XML.
+// Non-mutating; safe to call repeatedly across stations.
+static void parse_one_station(const char* xml, const char* station_id, String& out) {
+  char tag[40];
+  snprintf(tag, sizeof tag, "id=\"%s\"", station_id);
+  const char* stn = strstr(xml, tag);
+  if (!stn) { out = ""; return; }
+
+  const char* prog    = strstr(stn,  "<prog ");
+  const char* progEnd = prog ? strstr(prog, "</prog>") : NULL;
+  if (!prog || !progEnd) { out = ""; return; }
+
+  const char* ts = strstr(prog, "<title>");
+  if (!ts || ts >= progEnd) { out = ""; return; }
+  ts += 7;
+  const char* te = strstr(ts, "</title>");
+  if (!te || te >= progEnd) { out = ""; return; }
+
+  // Copy title into temp buffer (avoids mutating shared XML)
+  char tmp[220];
+  size_t len = te - ts;
+  if (len >= sizeof(tmp)) len = sizeof(tmp) - 1;
+  memcpy(tmp, ts, len);
+  tmp[len] = 0;
+  out = tmp;
+
+  // Append <pfm> (DJ name) if present within prog block
+  const char* ps = strstr(prog, "<pfm>");
+  if (ps && ps < progEnd) {
+    ps += 5;
+    const char* pe = strstr(ps, "</pfm>");
+    if (pe && pe < progEnd && pe > ps) {
+      size_t plen = pe - ps;
+      if (plen >= sizeof(tmp)) plen = sizeof(tmp) - 1;
+      memcpy(tmp, ps, plen);
+      tmp[plen] = 0;
+      if (plen > 0) {
+        out += "  ";
+        out += tmp;
+      }
+    }
+  }
+}
 
 static void fetch_program_info(const char* station_id) {
   // Raw HTTPS request — full control, no gzip
@@ -418,35 +476,17 @@ static void fetch_program_info(const char* station_id) {
   free(buf);  // done with response data
   if (!xml) return;
 
-  // Search for station and extract program info (all in PSRAM)
-  char tag[32];
-  snprintf(tag, sizeof tag, "id=\"%s\"", station_id);
-  char* stn = strstr(xml, tag);
-  if (!stn) {
-    free(xml); return;
+  // Parse program info for ALL stations in one pass — XML covers the whole area
+  for (int i = 0; i < NUM_STATIONS; i++) {
+    parse_one_station(xml, STATIONS[i].id, stationProgs[i]);
+  }
+  s_progs_updated = true;
+
+  // Update songTitle for the currently-playing station
+  if (currentStn >= 0 && currentStn < NUM_STATIONS && stationProgs[currentStn].length() > 0) {
+    songTitle = stationProgs[currentStn];
   }
 
-  char* prog = strstr(stn, "<prog ");
-  char* progEnd = prog ? strstr(prog, "</prog>") : NULL;
-  if (!prog || !progEnd) { free(xml); return; }
-  *progEnd = 0;  // null-terminate prog block
-
-  char* ts = strstr(prog, "<title>");
-  char* te = strstr(prog, "</title>");
-  char* ps = strstr(prog, "<pfm>");
-  char* pe = strstr(prog, "</pfm>");
-
-  if (ts && te && te > ts) {
-    ts += 7;
-    *te = 0;
-    songTitle = ts;
-    if (ps && pe && pe > ps) {
-      ps += 5;
-      *pe = 0;
-      songTitle += "  ";
-      songTitle += ps;
-    }
-  }
   free(xml);
 }
 
@@ -455,6 +495,17 @@ static void show_status(const char* msg);
 static void hide_status();
 static void refresh_playing();
 static void build_wifi_screen();
+static void build_settings_screen();
+static void refresh_settings_info();
+
+// Compute LVGL zoom value (256 = 1.0x) so the image fits target_h tall
+// while preserving aspect ratio AND not exceeding max_w wide.
+static int compute_fit_zoom(const lv_img_dsc_t* img, int target_h, int max_w) {
+  if (!img || img->header.h == 0 || img->header.w == 0) return 256;
+  int zh = (target_h * 256) / img->header.h;
+  int zw = (max_w   * 256) / img->header.w;
+  return zh < zw ? zh : zw;
+}
 // WiFi setup screen variables (defined later, needed by lambda)
 static lv_obj_t *scr_wifi;
 static volatile bool wifi_setup_done;
@@ -540,6 +591,23 @@ void audio_eof_stream(const char* info)     { Serial.printf("[eof] %s\n", info);
 // LVGL UI – widget handles
 // ============================================================
 static lv_obj_t *scr_list  = nullptr;
+static lv_obj_t *scr_settings = nullptr;  // settings/info screen
+static lv_obj_t *list_prog_lbls[NUM_STATIONS] = {};  // program info labels per row
+// Settings screen dynamic labels (refreshed on open)
+static lv_obj_t *set_lbl_wifi   = nullptr;
+static lv_obj_t *set_lbl_ip     = nullptr;
+static lv_obj_t *set_lbl_area   = nullptr;
+static lv_obj_t *set_lbl_bat    = nullptr;
+static lv_obj_t *set_lbl_uptime = nullptr;
+static lv_obj_t *set_lbl_mem    = nullptr;
+static lv_obj_t *set_sl_dim     = nullptr;
+static lv_obj_t *set_sl_off     = nullptr;
+static lv_obj_t *set_sl_sleep   = nullptr;
+static lv_obj_t *set_sl_bl      = nullptr;
+static lv_obj_t *set_val_dim    = nullptr;
+static lv_obj_t *set_val_off    = nullptr;
+static lv_obj_t *set_val_sleep  = nullptr;
+static lv_obj_t *set_val_bl     = nullptr;
 
 // Playing screen widgets
 static lv_obj_t *wi_wifi   = nullptr;  // status bar: WiFi icon
@@ -640,6 +708,8 @@ static void ev_show_list(lv_event_t*) {
   s_pending_stn = -1;       // cancel any pending connect
   s_pending_connect_ms = 0;
   lv_scr_load(scr_list);
+  // Trigger background fetch so list shows fresh program info
+  if (WiFi.status() == WL_CONNECTED) s_fetch_station = currentStn;
 }
 static void ev_back(lv_event_t*) {
   lv_scr_load(scr_play);
@@ -663,7 +733,11 @@ static void ev_select_stn(lv_event_t *e) {
 static void refresh_playing() {
   if (!scr_play) return;
   const Station& s = STATIONS[currentStn];
-  if (wi_logo_img && s.logo) lv_img_set_src(wi_logo_img, s.logo);
+  if (wi_logo_img && s.logo) {
+    lv_img_set_src(wi_logo_img, s.logo);
+    lv_img_set_zoom(wi_logo_img, compute_fit_zoom(s.logo, 56, 300));
+    lv_obj_center(wi_logo_img);  // re-center after size change
+  }
   if (wi_name) lv_label_set_text(wi_name, s.name);
   lv_label_set_text(wi_title, songTitle.isEmpty() ? "---" : songTitle.c_str());
   lv_label_set_text(wi_play, isPlaying ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
@@ -788,11 +862,30 @@ static void build_playing_screen() {
   lv_obj_align(wi_clock, LV_ALIGN_RIGHT_MID, -2, 0);
 
   // Center title
-  lv_obj_t *hdr_lbl = lv_label_create(bar);
+  // Title (tap to open Settings/Info)
+  lv_obj_t *hdr_btn = lv_btn_create(bar);
+  lv_obj_set_size(hdr_btn, 130, 24);
+  lv_obj_align(hdr_btn, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_set_style_bg_opa(hdr_btn, LV_OPA_TRANSP, LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_color(hdr_btn, lv_color_hex(C_HL), LV_STATE_PRESSED);
+  lv_obj_set_style_shadow_width(hdr_btn, 0, 0);
+  lv_obj_set_style_radius(hdr_btn, 4, 0);
+  lv_obj_add_event_cb(hdr_btn, [](lv_event_t*) {
+    // Stop audio for smooth settings page (resume via Back)
+    audio.stopSong();
+    isPlaying = false;
+    s_pending_stn = -1;
+    s_pending_connect_ms = 0;
+    if (scr_settings) { lv_obj_del(scr_settings); scr_settings = nullptr; }
+    build_settings_screen();
+    refresh_settings_info();
+    lv_scr_load(scr_settings);
+  }, LV_EVENT_CLICKED, NULL);
+  lv_obj_t *hdr_lbl = lv_label_create(hdr_btn);
   lv_label_set_text(hdr_lbl, "Radiko Radio");
   lv_obj_set_style_text_color(hdr_lbl, lv_color_hex(C_TEXT), 0);
   lv_obj_set_style_text_font(hdr_lbl, &lv_font_montserrat_12, 0);
-  lv_obj_align(hdr_lbl, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_center(hdr_lbl);
 
   // Battery + brightness control (tap to cycle brightness)
   lv_obj_t *bat_btn = lv_btn_create(bar);
@@ -801,13 +894,10 @@ static void build_playing_screen() {
   lv_obj_set_style_bg_opa(bat_btn, LV_OPA_TRANSP, LV_STATE_DEFAULT);
   lv_obj_set_style_shadow_width(bat_btn, 0, 0);
   lv_obj_add_event_cb(bat_btn, [](lv_event_t*) {
-    static uint8_t bl_level = 3;  // 0=dim, 1=low, 2=med, 3=full
     bl_level = (bl_level + 1) % 4;
-    const uint8_t levels[] = {30, 80, 160, 255};
-    const char* names[] = {"Low", "Mid", "High", "Full"};
-    bl_set(levels[bl_level]);
-    char b[16]; snprintf(b, sizeof b, "%s%s", LV_SYMBOL_SETTINGS, names[bl_level]);
-    lv_label_set_text(wi_bat, b);
+    apply_brightness();
+    char b[16]; snprintf(b, sizeof b, "%s%s", LV_SYMBOL_SETTINGS, bl_names[bl_level]);
+    if (wi_bat) lv_label_set_text(wi_bat, b);
     screenState = 0;
     lastTouch = millis();
   }, LV_EVENT_CLICKED, NULL);
@@ -826,7 +916,10 @@ static void build_playing_screen() {
   lv_obj_set_style_pad_all(wi_logo, 0, 0);
   lv_obj_set_style_shadow_width(wi_logo, 0, 0);
   lv_obj_clear_flag(wi_logo, LV_OBJ_FLAG_SCROLLABLE);
-  // Manual swipe detection: track press/release X positions
+  // Manual swipe detection. Logic:
+  //   |dx| >= 25  → swipe (lower threshold = easier)
+  //   |dx| < 8 AND tap inside central region (x 120..200) → open station list
+  //   else: ignore (dead-zone, prevents accidental list opens during near-swipes)
   static lv_coord_t press_x = 0;
   lv_obj_add_event_cb(wi_logo, [](lv_event_t* e) {
     lv_indev_t* indev = lv_indev_get_act();
@@ -837,13 +930,19 @@ static void build_playing_screen() {
     lv_indev_t* indev = lv_indev_get_act();
     lv_point_t p; lv_indev_get_point(indev, &p);
     int dx = p.x - press_x;
-    if (dx > 40) { ev_prev(e); refresh_playing(); }       // swipe right → prev
-    else if (dx < -40) { ev_next(e); refresh_playing(); }  // swipe left → next
-    else { ev_show_list(e); }                               // tap → station list
+    if (dx >= 25)        { ev_prev(e); refresh_playing(); }       // swipe right → prev
+    else if (dx <= -25)  { ev_next(e); refresh_playing(); }       // swipe left → next
+    else if (abs(dx) < 8 && p.x >= 120 && p.x <= 200) {
+      ev_show_list(e);                                            // small tap on center → list
+    }
+    // else: dead-zone, do nothing
   }, LV_EVENT_RELEASED, NULL);
 
   wi_logo_img = lv_img_create(wi_logo);
+  lv_img_set_size_mode(wi_logo_img, LV_IMG_SIZE_MODE_REAL);
+  lv_img_set_antialias(wi_logo_img, true);  // bilinear scaling — smoother
   lv_img_set_src(wi_logo_img, STATIONS[0].logo);
+  lv_img_set_zoom(wi_logo_img, compute_fit_zoom(STATIONS[0].logo, 56, 300));
   lv_obj_center(wi_logo_img);
 
   // ---- Station name (white) ----
@@ -1062,21 +1161,44 @@ static void build_list_screen() {
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(row, ev_select_stn, LV_EVENT_CLICKED, (void*)(uintptr_t)i);
 
-    // Station logo (scaled to fit row)
+    // Station logo: max 38px tall, max 138px wide, preserve ratio
     lv_obj_t *logo = lv_img_create(row);
     lv_img_set_src(logo, STATIONS[i].logo);
-    lv_img_set_zoom(logo, 200);  // scale 216x54 → ~169x42
-    lv_obj_align(logo, LV_ALIGN_LEFT_MID, -6, 0);
+    lv_img_set_size_mode(logo, LV_IMG_SIZE_MODE_REAL);
+    lv_img_set_antialias(logo, true);  // bilinear scaling — smoother
+    lv_img_set_zoom(logo, compute_fit_zoom(STATIONS[i].logo, 38, 138));
+    lv_obj_align(logo, LV_ALIGN_LEFT_MID, 4, 0);
 
-    // Station full name, right-aligned
+    // Station full name, top-right
     lv_obj_t *name = lv_label_create(row);
     lv_label_set_text(name, STATIONS[i].name);
     lv_obj_set_style_text_color(name, lv_color_hex(C_TEXT), 0);
     lv_obj_set_style_text_font(name, &lv_font_jp_16, 0);
-    lv_obj_set_width(name, 140);
+    lv_obj_set_width(name, 168);
     lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_align(name, LV_ALIGN_RIGHT_MID, -6, 0);
+    lv_obj_align(name, LV_ALIGN_TOP_RIGHT, -6, 4);
+
+    // Program title (dim color, bottom-right)
+    lv_obj_t *prog = lv_label_create(row);
+    lv_label_set_text(prog, stationProgs[i].length() > 0 ? stationProgs[i].c_str() : "---");
+    lv_obj_set_style_text_color(prog, lv_color_hex(C_DIM), 0);
+    lv_obj_set_style_text_font(prog, &lv_font_jp_full, 0);
+    lv_obj_set_width(prog, 168);
+    lv_label_set_long_mode(prog, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_align(prog, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_align(prog, LV_ALIGN_BOTTOM_RIGHT, -6, -4);
+    list_prog_lbls[i] = prog;
+  }
+}
+
+// Refresh program-info labels on the station list (called when fetch completes)
+static void refresh_list_progs() {
+  for (int i = 0; i < NUM_STATIONS; i++) {
+    if (list_prog_lbls[i]) {
+      lv_label_set_text(list_prog_lbls[i],
+        stationProgs[i].length() > 0 ? stationProgs[i].c_str() : "---");
+    }
   }
 }
 
@@ -1215,6 +1337,316 @@ static void build_wifi_screen() {
 }
 
 // ============================================================
+// SETTINGS / INFO SCREEN
+// ============================================================
+// Dim/Off timeout option tables (index → ms, and map for "set checked by value")
+static const uint32_t dim_ms_opts[] = { 60000UL, 180000UL, 300000UL, 600000UL, 900000UL };
+static const uint32_t off_ms_opts[] = { 180000UL, 300000UL, 600000UL, 1800000UL, 0UL };  // 0=never
+static const int      sleep_min_opts[] = { 0, 30, 60, 90 };
+
+static int dim_opt_index() {
+  for (int i = 0; i < 5; i++) if (dim_ms_opts[i] == dim_timeout_ms) return i;
+  return 2;  // default 5m
+}
+static int off_opt_index() {
+  for (int i = 0; i < 5; i++) if (off_ms_opts[i] == off_timeout_ms) return i;
+  return 2;  // default 10m
+}
+static int sleep_opt_index() {
+  for (int i = 0; i < 4; i++) if (sleep_min_opts[i] == sleepMins) return i;
+  return 0;
+}
+
+static void refresh_settings_info() {
+  if (!scr_settings) return;
+  char b[64];
+
+  // WiFi
+  if (set_lbl_wifi) {
+    if (WiFi.status() == WL_CONNECTED) {
+      snprintf(b, sizeof b, "WiFi: %s (%ddBm)", WiFi.SSID().c_str(), (int)WiFi.RSSI());
+    } else {
+      snprintf(b, sizeof b, "WiFi: disconnected");
+    }
+    lv_label_set_text(set_lbl_wifi, b);
+  }
+  if (set_lbl_ip) {
+    if (WiFi.status() == WL_CONNECTED) {
+      snprintf(b, sizeof b, "IP: %s", WiFi.localIP().toString().c_str());
+    } else {
+      snprintf(b, sizeof b, "IP: ---");
+    }
+    lv_label_set_text(set_lbl_ip, b);
+  }
+  if (set_lbl_area) {
+    snprintf(b, sizeof b, "Area: %s", radikoArea.c_str());
+    lv_label_set_text(set_lbl_area, b);
+  }
+  if (set_lbl_bat) {
+    int mv = s_bat_mv_avg;
+    int pct = bat_pct();
+    snprintf(b, sizeof b, "Battery: %dmV (%d%%)", mv, pct);
+    lv_label_set_text(set_lbl_bat, b);
+  }
+  if (set_lbl_uptime) {
+    uint32_t s = millis() / 1000;
+    uint32_t h = s / 3600;
+    uint32_t m = (s % 3600) / 60;
+    uint32_t sec = s % 60;
+    snprintf(b, sizeof b, "Uptime: %luh %lum %lus", (unsigned long)h, (unsigned long)m, (unsigned long)sec);
+    lv_label_set_text(set_lbl_uptime, b);
+  }
+  if (set_lbl_mem) {
+    snprintf(b, sizeof b, "Heap: %uKB  PSRAM: %uKB",
+      (unsigned)(ESP.getFreeHeap() / 1024),
+      (unsigned)(ESP.getFreePsram() / 1024));
+    lv_label_set_text(set_lbl_mem, b);
+  }
+}
+
+static lv_obj_t *set_bm_rot = nullptr;
+static int rot_opt_index() { return scr_rotation == 3 ? 1 : 0; }
+
+// Display labels for each slider's stops
+static const char* dim_labels[]   = {"1m", "3m", "5m", "10m", "15m"};
+static const char* off_labels[]   = {"3m", "5m", "10m", "30m", "Never"};
+static const char* sleep_labels[] = {"Off", "30m", "60m", "90m"};
+
+static void ev_sl_bl_changed(lv_event_t* e) {
+  int idx = (int)lv_slider_get_value(set_sl_bl);
+  if (idx < 0 || idx > 3) return;
+  bl_level = (uint8_t)idx;
+  apply_brightness();
+  if (set_val_bl) lv_label_set_text(set_val_bl, bl_names[bl_level]);
+  if (wi_bat) {
+    char b[16]; snprintf(b, sizeof b, "%s%s", LV_SYMBOL_SETTINGS, bl_names[bl_level]);
+    lv_label_set_text(wi_bat, b);
+  }
+  screenState = 0;
+  lastTouch = millis();
+}
+
+static void ev_sl_dim_changed(lv_event_t* e) {
+  int idx = (int)lv_slider_get_value(set_sl_dim);
+  if (idx < 0 || idx > 4) return;
+  dim_timeout_ms = dim_ms_opts[idx];
+  prefs.putUInt("dim_ms", dim_timeout_ms);
+  if (set_val_dim) lv_label_set_text(set_val_dim, dim_labels[idx]);
+}
+
+static void ev_sl_off_changed(lv_event_t* e) {
+  int idx = (int)lv_slider_get_value(set_sl_off);
+  if (idx < 0 || idx > 4) return;
+  off_timeout_ms = off_ms_opts[idx];
+  prefs.putUInt("off_ms", off_timeout_ms);
+  if (set_val_off) lv_label_set_text(set_val_off, off_labels[idx]);
+}
+
+static void ev_sl_sleep_changed(lv_event_t* e) {
+  int idx = (int)lv_slider_get_value(set_sl_sleep);
+  if (idx < 0 || idx > 3) return;
+  sleepMins = sleep_min_opts[idx];
+  if (sleepMins > 0) {
+    sleepTimer = millis() + sleepMins * 60000UL;
+    char b[8]; snprintf(b, sizeof b, "%dm", sleepMins);
+    if (wi_sleep_btn) lv_label_set_text(wi_sleep_btn, b);
+  } else {
+    sleepTimer = 0;
+    if (wi_sleep_btn) lv_label_set_text(wi_sleep_btn, LV_SYMBOL_BELL);
+  }
+  if (set_val_sleep) lv_label_set_text(set_val_sleep, sleep_labels[idx]);
+}
+
+static void ev_bm_rot_changed(lv_event_t* e) {
+  int idx = lv_btnmatrix_get_selected_btn(set_bm_rot);
+  if (idx < 0 || idx > 1) return;
+  uint8_t newRot = (idx == 1) ? 3 : 1;
+  if (newRot == scr_rotation) return;
+  scr_rotation = newRot;
+  prefs.putUChar("rot", scr_rotation);
+  // Apply live: rotate display + touch, force full redraw
+  tft.setRotation(scr_rotation);
+  touch_set_rotation(scr_rotation);
+  lv_obj_invalidate(lv_scr_act());
+}
+
+static void build_settings_screen() {
+  scr_settings = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(scr_settings, lv_color_hex(C_BG), 0);
+  lv_obj_set_style_bg_opa(scr_settings, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(scr_settings, LV_OBJ_FLAG_SCROLLABLE);
+
+  // Header
+  lv_obj_t *hdr = lv_obj_create(scr_settings);
+  lv_obj_set_size(hdr, 320, 28);
+  lv_obj_set_pos(hdr, 0, 0);
+  lv_obj_set_style_bg_color(hdr, lv_color_hex(C_PANEL), 0);
+  lv_obj_set_style_border_width(hdr, 0, 0);
+  lv_obj_set_style_radius(hdr, 0, 0);
+  lv_obj_set_style_pad_all(hdr, 2, 0);
+  lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t *back = lv_btn_create(hdr);
+  lv_obj_set_size(back, 72, 24);
+  lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
+  lv_obj_set_style_bg_color(back, lv_color_hex(C_ACCENT), 0);
+  lv_obj_set_style_bg_color(back, lv_color_hex(C_HL), LV_STATE_PRESSED);
+  lv_obj_set_style_radius(back, 6, 0);
+  lv_obj_set_style_shadow_width(back, 0, 0);
+  lv_obj_add_event_cb(back, [](lv_event_t*) {
+    lv_scr_load(scr_play);
+    // Resume playback
+    if (!isPlaying) {
+      play_stn(currentStn);
+      s_pending_connect_ms = millis() - 2000;  // connect immediately
+    }
+  }, LV_EVENT_CLICKED, NULL);
+  lv_obj_t *blbl = lv_label_create(back);
+  lv_label_set_text(blbl, LV_SYMBOL_LEFT " Back");
+  lv_obj_set_style_text_color(blbl, lv_color_hex(C_TEXT), 0);
+  lv_obj_set_style_text_font(blbl, &lv_font_montserrat_12, 0);
+  lv_obj_center(blbl);
+
+  lv_obj_t *title = lv_label_create(hdr);
+  lv_label_set_text(title, "Settings / Info");
+  lv_obj_set_style_text_color(title, lv_color_hex(C_TEXT), 0);
+  lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
+  lv_obj_align(title, LV_ALIGN_CENTER, 24, 0);
+
+  // Scrollable content area
+  lv_obj_t *cont = lv_obj_create(scr_settings);
+  lv_obj_set_size(cont, 320, 212);
+  lv_obj_set_pos(cont, 0, 28);
+  lv_obj_set_style_bg_color(cont, lv_color_hex(C_BG), 0);
+  lv_obj_set_style_bg_opa(cont, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(cont, 0, 0);
+  lv_obj_set_style_radius(cont, 0, 0);
+  lv_obj_set_style_pad_all(cont, 6, 0);
+  lv_obj_set_style_pad_row(cont, 6, 0);
+  lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
+
+  // Section helper (creates a header label)
+  auto make_section = [&](const char* txt) {
+    lv_obj_t *l = lv_label_create(cont);
+    lv_label_set_text(l, txt);
+    lv_obj_set_style_text_color(l, lv_color_hex(C_HL), 0);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+  };
+  auto make_info = [&]() -> lv_obj_t* {
+    lv_obj_t *l = lv_label_create(cont);
+    lv_label_set_text(l, "...");
+    lv_obj_set_style_text_color(l, lv_color_hex(C_TEXT), 0);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+    return l;
+  };
+  // Slider row helper: title (left) + value (right) over a stepped slider.
+  // Returns slider, sets *out_val to the value label.
+  auto make_slider_row = [&](const char* title, int max_idx, int cur_idx,
+                              const char* cur_label, lv_event_cb_t cb,
+                              lv_obj_t** out_val) -> lv_obj_t* {
+    lv_obj_t* row = lv_obj_create(cont);
+    lv_obj_set_size(row, 300, 48);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_set_style_pad_top(row, 2, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* tl = lv_label_create(row);
+    lv_label_set_text(tl, title);
+    lv_obj_set_style_text_color(tl, lv_color_hex(C_HL), 0);
+    lv_obj_set_style_text_font(tl, &lv_font_montserrat_12, 0);
+    lv_obj_align(tl, LV_ALIGN_TOP_LEFT, 4, 0);
+
+    lv_obj_t* vl = lv_label_create(row);
+    lv_label_set_text(vl, cur_label);
+    lv_obj_set_style_text_color(vl, lv_color_hex(C_TEXT), 0);
+    lv_obj_set_style_text_font(vl, &lv_font_montserrat_12, 0);
+    lv_obj_align(vl, LV_ALIGN_TOP_RIGHT, -4, 0);
+    *out_val = vl;
+
+    lv_obj_t* sl = lv_slider_create(row);
+    lv_obj_set_size(sl, 286, 8);
+    lv_obj_align(sl, LV_ALIGN_BOTTOM_MID, 0, -8);
+    lv_slider_set_range(sl, 0, max_idx);
+    lv_slider_set_value(sl, cur_idx, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(sl, lv_color_hex(C_TRACK), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(sl, lv_color_hex(C_HL),    LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(sl, lv_color_hex(C_HL),    LV_PART_KNOB);
+    lv_obj_set_style_pad_all(sl, 5,                       LV_PART_KNOB);
+    lv_obj_add_event_cb(sl, cb, LV_EVENT_VALUE_CHANGED, NULL);
+    return sl;
+  };
+
+  // --- Brightness ---
+  set_sl_bl = make_slider_row("Brightness", 3, bl_level, bl_names[bl_level],
+                               ev_sl_bl_changed, &set_val_bl);
+
+  // --- Screen Dim ---
+  {
+    int idx = dim_opt_index();
+    set_sl_dim = make_slider_row("Screen Dim", 4, idx, dim_labels[idx],
+                                  ev_sl_dim_changed, &set_val_dim);
+  }
+
+  // --- Screen Off ---
+  {
+    int idx = off_opt_index();
+    set_sl_off = make_slider_row("Screen Off", 4, idx, off_labels[idx],
+                                  ev_sl_off_changed, &set_val_off);
+  }
+
+  // --- Sleep Timer ---
+  {
+    int idx = sleep_opt_index();
+    set_sl_sleep = make_slider_row("Sleep Timer", 3, idx, sleep_labels[idx],
+                                    ev_sl_sleep_changed, &set_val_sleep);
+  }
+
+  make_section("Screen Rotation");
+  static const char* rot_map[] = {"Normal", "Flip 180", ""};
+  set_bm_rot = lv_btnmatrix_create(cont);
+  lv_btnmatrix_set_map(set_bm_rot, rot_map);
+  lv_obj_set_size(set_bm_rot, 300, 28);
+  lv_btnmatrix_set_btn_ctrl_all(set_bm_rot, LV_BTNMATRIX_CTRL_CHECKABLE);
+  lv_btnmatrix_set_one_checked(set_bm_rot, true);
+  lv_btnmatrix_set_btn_ctrl(set_bm_rot, rot_opt_index(), LV_BTNMATRIX_CTRL_CHECKED);
+  lv_obj_set_style_bg_color(set_bm_rot, lv_color_hex(C_BG), 0);
+  lv_obj_set_style_border_width(set_bm_rot, 0, 0);
+  lv_obj_set_style_pad_all(set_bm_rot, 2, 0);
+  lv_obj_set_style_bg_color(set_bm_rot, lv_color_hex(C_ACCENT), LV_PART_ITEMS);
+  lv_obj_set_style_bg_color(set_bm_rot, lv_color_hex(C_HL),    LV_PART_ITEMS | LV_STATE_CHECKED);
+  lv_obj_set_style_text_font(set_bm_rot, &lv_font_montserrat_12, LV_PART_ITEMS);
+  lv_obj_set_style_text_color(set_bm_rot, lv_color_hex(C_TEXT), LV_PART_ITEMS);
+  lv_obj_add_event_cb(set_bm_rot, ev_bm_rot_changed, LV_EVENT_VALUE_CHANGED, NULL);
+
+  // --- System info ---
+  make_section("System Info");
+  set_lbl_wifi   = make_info();
+  set_lbl_ip     = make_info();
+  set_lbl_area   = make_info();
+  set_lbl_bat    = make_info();
+  set_lbl_uptime = make_info();
+  set_lbl_mem    = make_info();
+
+  // --- Firmware info ---
+  make_section("Firmware");
+  lv_obj_t *fw1 = make_info();
+  lv_label_set_text(fw1, FW_VERSION);
+  lv_obj_t *fw2 = make_info();
+  char fwb[64];
+  snprintf(fwb, sizeof fwb, "Built: %s %s", __DATE__, __TIME__);
+  lv_label_set_text(fw2, fwb);
+  lv_obj_t *fw3 = make_info();
+  snprintf(fwb, sizeof fwb, "Chip: %s r%d",
+           ESP.getChipModel(), ESP.getChipRevision());
+  lv_label_set_text(fw3, fwb);
+  lv_obj_t *fw4 = make_info();
+  snprintf(fwb, sizeof fwb, "IDF: %s", ESP.getSdkVersion());
+  lv_label_set_text(fw4, fwb);
+}
+
+// ============================================================
 // SETUP
 // ============================================================
 void setup() {
@@ -1225,6 +1657,12 @@ void setup() {
   currentStn = prefs.getInt("stn", 0);
   currentVol = prefs.getInt("vol", 20);
   ledMode = prefs.getInt("led", 0);
+  dim_timeout_ms = prefs.getUInt("dim_ms", 300000UL);
+  off_timeout_ms = prefs.getUInt("off_ms", 600000UL);
+  scr_rotation   = prefs.getUChar("rot", 1);
+  if (scr_rotation != 1 && scr_rotation != 3) scr_rotation = 1;
+  bl_level       = prefs.getUChar("bl", 3);
+  if (bl_level > 3) bl_level = 3;
   if (currentStn >= NUM_STATIONS) currentStn = 0;
 
   // I2C master bus for ES8311 + FT6336G (shared bus, SDA=16, SCL=15)
@@ -1248,12 +1686,12 @@ void setup() {
   // TFT display – init BEFORE ledcAttach so tft.init()'s pinMode(TFT_BL)
   // does not detach the LEDC channel we attach right after.
   tft.init();
-  tft.setRotation(1);
+  tft.setRotation(scr_rotation);
   tft.fillScreen(TFT_BLACK);
 
   // Backlight PWM – attach AFTER tft.init() which calls pinMode(TFT_BL)
   ledcAttach(PIN_BL, 5000, 8);
-  bl_set(255);
+  bl_set(bl_duty_levels[bl_level]);
 
   // Capacitive touch
   touch_init(tft.width(), tft.height(), tft.getRotation());
@@ -1391,6 +1829,14 @@ void setup() {
   refresh_playing();
 
   lastTouch = millis();
+
+  // RGB LED task on Core 0 — independent of audio + LVGL on Core 1
+  xTaskCreatePinnedToCore([](void*) {
+    for (;;) {
+      rgb_update();
+      vTaskDelay(pdMS_TO_TICKS(30));
+    }
+  }, "rgb", 2048, NULL, 1, NULL, 0);
 }
 
 // ============================================================
@@ -1445,7 +1891,7 @@ void loop() {
   // Background program info fetch (runs in separate task on Core 0)
   static uint32_t last_fetch = 0;
   static bool fetch_running = false;
-  // Trigger: new station connect OR every 5 minutes
+  // Trigger: new station connect OR every 3 minutes
   if (s_fetch_station >= 0 || (isPlaying && !fetch_running && millis() - last_fetch > 180000)) {
     int idx = (s_fetch_station >= 0) ? s_fetch_station : currentStn;
     s_fetch_station = -1;
@@ -1453,10 +1899,16 @@ void loop() {
     fetch_running = true;
     xTaskCreatePinnedToCore([](void* p) {
       int i = (int)(intptr_t)p;
-      fetch_program_info(STATIONS[i].id);
+      fetch_program_info(STATIONS[i].id);  // now parses ALL stations
       fetch_running = false;
       vTaskDelete(NULL);
     }, "fetch", 8192, (void*)(intptr_t)idx, 1, NULL, 0);
+  }
+
+  // Refresh station list labels when fetch task signals new data
+  if (s_progs_updated) {
+    s_progs_updated = false;
+    refresh_list_progs();
   }
 
   // Auto-reconnect WiFi if disconnected during playback
@@ -1479,20 +1931,15 @@ void loop() {
 
   // Screen timeout: 5min→dim, 10min→off
   uint32_t idle = millis() - lastTouch;
-  if (screenState == 0 && idle > DIM_TIMEOUT_MS) {
+  if (screenState == 0 && idle > dim_timeout_ms) {
     screenState = 1;
     bl_set(DIM_DUTY);
-  } else if (screenState == 1 && idle > OFF_TIMEOUT_MS) {
+  } else if (screenState == 1 && idle > off_timeout_ms) {
     screenState = 2;
     bl_set(0);
   }
 
-  // Rainbow RGB LED
-  static uint32_t last_rgb = 0;
-  if (millis() - last_rgb > 30) {  // ~33 updates/sec for smooth rainbow
-    last_rgb = millis();
-    rgb_update();
-  }
+  // RGB LED runs in its own task on Core 0 (started in setup)
 
   // Periodic status bar + song title (~2s)
   static uint32_t last_sbar = 0;

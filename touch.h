@@ -9,6 +9,7 @@
 
 int touch_last_x = 0, touch_last_y = 0;
 static uint16_t _tw = 320, _th = 240;
+static uint8_t  _trot = 1;  // current rotation (1 = landscape, 3 = flipped)
 
 extern i2c_master_bus_handle_t g_i2c_bus;
 static i2c_master_dev_handle_t _ft_dev = nullptr;
@@ -19,8 +20,10 @@ static uint8_t _ft_read_reg(uint8_t reg) {
   return val;
 }
 
-void touch_init(uint16_t w, uint16_t h, uint8_t /*rot*/) {
-  _tw = w; _th = h;
+void touch_set_rotation(uint8_t rot) { _trot = rot; }
+
+void touch_init(uint16_t w, uint16_t h, uint8_t rot) {
+  _tw = w; _th = h; _trot = rot;
 
   // Hardware reset FT6336
   pinMode(TOUCH_INT, INPUT);
@@ -48,9 +51,17 @@ bool touch_touched() {
   uint16_t raw_x = (uint16_t)((data[0] & 0x0F) << 8) | data[1];
   uint16_t raw_y = (uint16_t)((data[2] & 0x0F) << 8) | data[3];
 
-  // ROTATION_RIGHT: x = raw_y, y = width(240) - raw_x
-  uint16_t x = raw_y;
-  uint16_t y = 240 - raw_x;
+  // Native panel: 240w × 320h. Map to chosen rotation.
+  uint16_t x, y;
+  if (_trot == 3) {
+    // Landscape flipped 180°
+    x = 320 - raw_y;
+    y = raw_x;
+  } else {
+    // Default landscape (rotation 1)
+    x = raw_y;
+    y = 240 - raw_x;
+  }
 
   touch_last_x = map(x, 0, 320, 0, (int)_tw - 1);
   touch_last_y = map(y, 0, 240, 0, (int)_th - 1);
