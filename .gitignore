@@ -1,0 +1,7 @@
+# Backup files from logo fetch/crop scripts
+*.bak
+*.bak2
+
+# Build artifacts
+build/
+.cache/
