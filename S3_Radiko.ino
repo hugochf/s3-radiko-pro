@@ -127,6 +127,7 @@ static uint8_t  scr_rotation  = 1;          // 1 = normal landscape, 3 = flipped
 static uint8_t  bl_level      = 3;          // 0=Low 1=Mid 2=High 3=Full (overridden from prefs)
 static const uint8_t bl_duty_levels[] = {30, 80, 160, 255};
 static const char*   bl_names[]       = {"Low", "Mid", "High", "Full"};
+static bool     saverEnabled = false;       // screen saver (clock) instead of off
 #define FW_VERSION "S3 Radiko v1.0"
 static unsigned long lastTouch  = 0;
 static uint8_t       screenState = 0;  // 0=on, 1=dimmed, 2=off
@@ -497,6 +498,9 @@ static void refresh_playing();
 static void build_wifi_screen();
 static void build_settings_screen();
 static void refresh_settings_info();
+static void build_saver_screen();
+static void update_saver_clock();
+static void saver_anim_step();
 
 // Compute LVGL zoom value (256 = 1.0x) so the image fits target_h tall
 // while preserving aspect ratio AND not exceeding max_w wide.
@@ -592,6 +596,17 @@ void audio_eof_stream(const char* info)     { Serial.printf("[eof] %s\n", info);
 // ============================================================
 static lv_obj_t *scr_list  = nullptr;
 static lv_obj_t *scr_settings = nullptr;  // settings/info screen
+static lv_obj_t *scr_saver = nullptr;     // screen saver (big clock)
+static lv_obj_t *saver_box = nullptr;     // container for the bouncing clock+date
+static lv_obj_t *saver_clock_lbl = nullptr;
+static lv_obj_t *saver_date_lbl  = nullptr;
+// Bouncing position + velocity (DVD-screensaver style)
+static int saver_pos_x = 80, saver_pos_y = 90;
+static int saver_vx   = 2,  saver_vy   = 1;
+#define SAVER_BOX_W 168
+#define SAVER_BOX_H 80
+#define SCREEN_W    320
+#define SCREEN_H    240
 static lv_obj_t *list_prog_lbls[NUM_STATIONS] = {};  // program info labels per row
 // Settings screen dynamic labels (refreshed on open)
 static lv_obj_t *set_lbl_wifi   = nullptr;
@@ -1404,8 +1419,46 @@ static void refresh_settings_info() {
   }
 }
 
-static lv_obj_t *set_bm_rot = nullptr;
-static int rot_opt_index() { return scr_rotation == 3 ? 1 : 0; }
+static lv_obj_t *set_sw_rot   = nullptr;
+static lv_obj_t *set_sw_saver = nullptr;
+
+// When the saver is enabled, the dim/off sliders are greyed out — the saver
+// replaces dim/off entirely, so those values aren't user-tunable.
+static void update_dim_off_enable_state() {
+  uint32_t title_color = saverEnabled ? 0x555577 : C_HL;
+  uint32_t value_color = saverEnabled ? 0x666688 : C_TEXT;
+
+  auto apply = [&](lv_obj_t* sl, lv_obj_t* val_lbl) {
+    if (!sl) return;
+    if (saverEnabled) lv_obj_add_state(sl, LV_STATE_DISABLED);
+    else              lv_obj_clear_state(sl, LV_STATE_DISABLED);
+    // Grey out the title (stashed as slider user_data) and value label
+    lv_obj_t* title = (lv_obj_t*)lv_obj_get_user_data(sl);
+    if (title)   lv_obj_set_style_text_color(title,   lv_color_hex(title_color), 0);
+    if (val_lbl) lv_obj_set_style_text_color(val_lbl, lv_color_hex(value_color), 0);
+  };
+
+  apply(set_sl_dim, set_val_dim);
+  apply(set_sl_off, set_val_off);
+}
+
+static void ev_sw_saver_changed(lv_event_t* e) {
+  bool checked = lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED);
+  saverEnabled = checked;
+  prefs.putBool("saver", saverEnabled);
+  update_dim_off_enable_state();
+}
+
+static void ev_sw_rot_changed(lv_event_t* e) {
+  bool checked = lv_obj_has_state((lv_obj_t*)lv_event_get_target(e), LV_STATE_CHECKED);
+  uint8_t newRot = checked ? 3 : 1;
+  if (newRot == scr_rotation) return;
+  scr_rotation = newRot;
+  prefs.putUChar("rot", scr_rotation);
+  tft.setRotation(scr_rotation);
+  touch_set_rotation(scr_rotation);
+  lv_obj_invalidate(lv_scr_act());
+}
 
 // Display labels for each slider's stops
 static const char* dim_labels[]   = {"1m", "3m", "5m", "10m", "15m"};
@@ -1455,19 +1508,6 @@ static void ev_sl_sleep_changed(lv_event_t* e) {
     if (wi_sleep_btn) lv_label_set_text(wi_sleep_btn, LV_SYMBOL_BELL);
   }
   if (set_val_sleep) lv_label_set_text(set_val_sleep, sleep_labels[idx]);
-}
-
-static void ev_bm_rot_changed(lv_event_t* e) {
-  int idx = lv_btnmatrix_get_selected_btn(set_bm_rot);
-  if (idx < 0 || idx > 1) return;
-  uint8_t newRot = (idx == 1) ? 3 : 1;
-  if (newRot == scr_rotation) return;
-  scr_rotation = newRot;
-  prefs.putUChar("rot", scr_rotation);
-  // Apply live: rotate display + touch, force full redraw
-  tft.setRotation(scr_rotation);
-  touch_set_rotation(scr_rotation);
-  lv_obj_invalidate(lv_scr_act());
 }
 
 static void build_settings_screen() {
@@ -1566,7 +1606,7 @@ static void build_settings_screen() {
     *out_val = vl;
 
     lv_obj_t* sl = lv_slider_create(row);
-    lv_obj_set_size(sl, 286, 8);
+    lv_obj_set_size(sl, 264, 8);  // 18px padding each side so knob doesn't kiss edge
     lv_obj_align(sl, LV_ALIGN_BOTTOM_MID, 0, -8);
     lv_slider_set_range(sl, 0, max_idx);
     lv_slider_set_value(sl, cur_idx, LV_ANIM_OFF);
@@ -1574,7 +1614,13 @@ static void build_settings_screen() {
     lv_obj_set_style_bg_color(sl, lv_color_hex(C_HL),    LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(sl, lv_color_hex(C_HL),    LV_PART_KNOB);
     lv_obj_set_style_pad_all(sl, 5,                       LV_PART_KNOB);
+    // Disabled-state styles (used when LV_STATE_DISABLED is added)
+    lv_obj_set_style_bg_color(sl, lv_color_hex(0x222238), LV_PART_MAIN      | LV_STATE_DISABLED);
+    lv_obj_set_style_bg_color(sl, lv_color_hex(0x444466), LV_PART_INDICATOR | LV_STATE_DISABLED);
+    lv_obj_set_style_bg_color(sl, lv_color_hex(0x555577), LV_PART_KNOB      | LV_STATE_DISABLED);
     lv_obj_add_event_cb(sl, cb, LV_EVENT_VALUE_CHANGED, NULL);
+    // Stash the title label as user_data of the slider so callers can find it
+    lv_obj_set_user_data(sl, tl);
     return sl;
   };
 
@@ -1603,22 +1649,34 @@ static void build_settings_screen() {
                                     ev_sl_sleep_changed, &set_val_sleep);
   }
 
-  make_section("Screen Rotation");
-  static const char* rot_map[] = {"Normal", "Flip 180", ""};
-  set_bm_rot = lv_btnmatrix_create(cont);
-  lv_btnmatrix_set_map(set_bm_rot, rot_map);
-  lv_obj_set_size(set_bm_rot, 300, 28);
-  lv_btnmatrix_set_btn_ctrl_all(set_bm_rot, LV_BTNMATRIX_CTRL_CHECKABLE);
-  lv_btnmatrix_set_one_checked(set_bm_rot, true);
-  lv_btnmatrix_set_btn_ctrl(set_bm_rot, rot_opt_index(), LV_BTNMATRIX_CTRL_CHECKED);
-  lv_obj_set_style_bg_color(set_bm_rot, lv_color_hex(C_BG), 0);
-  lv_obj_set_style_border_width(set_bm_rot, 0, 0);
-  lv_obj_set_style_pad_all(set_bm_rot, 2, 0);
-  lv_obj_set_style_bg_color(set_bm_rot, lv_color_hex(C_ACCENT), LV_PART_ITEMS);
-  lv_obj_set_style_bg_color(set_bm_rot, lv_color_hex(C_HL),    LV_PART_ITEMS | LV_STATE_CHECKED);
-  lv_obj_set_style_text_font(set_bm_rot, &lv_font_montserrat_12, LV_PART_ITEMS);
-  lv_obj_set_style_text_color(set_bm_rot, lv_color_hex(C_TEXT), LV_PART_ITEMS);
-  lv_obj_add_event_cb(set_bm_rot, ev_bm_rot_changed, LV_EVENT_VALUE_CHANGED, NULL);
+  // Switch row helper: title (left) + lv_switch (right) on a single row
+  auto make_switch_row = [&](const char* title, bool initial_state, lv_event_cb_t cb) -> lv_obj_t* {
+    lv_obj_t* row = lv_obj_create(cont);
+    lv_obj_set_size(row, 300, 32);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* tl = lv_label_create(row);
+    lv_label_set_text(tl, title);
+    lv_obj_set_style_text_color(tl, lv_color_hex(C_HL), 0);
+    lv_obj_set_style_text_font(tl, &lv_font_montserrat_12, 0);
+    lv_obj_align(tl, LV_ALIGN_LEFT_MID, 4, 0);
+
+    lv_obj_t* sw = lv_switch_create(row);
+    lv_obj_set_size(sw, 44, 22);
+    lv_obj_align(sw, LV_ALIGN_RIGHT_MID, -4, 0);
+    if (initial_state) lv_obj_add_state(sw, LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(sw, lv_color_hex(C_TRACK), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(sw, lv_color_hex(C_HL),    LV_PART_INDICATOR | LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(sw, lv_color_hex(C_TEXT),  LV_PART_KNOB);
+    lv_obj_add_event_cb(sw, cb, LV_EVENT_VALUE_CHANGED, NULL);
+    return sw;
+  };
+
+  set_sw_rot   = make_switch_row("Flip Screen 180\xC2\xB0", scr_rotation == 3, ev_sw_rot_changed);
+  set_sw_saver = make_switch_row("Screen Saver (Clock)",   saverEnabled,        ev_sw_saver_changed);
 
   // --- System info ---
   make_section("System Info");
@@ -1644,6 +1702,91 @@ static void build_settings_screen() {
   lv_obj_t *fw4 = make_info();
   snprintf(fwb, sizeof fwb, "IDF: %s", ESP.getSdkVersion());
   lv_label_set_text(fw4, fwb);
+
+  // Apply initial enable state for dim/off sliders based on saver setting
+  update_dim_off_enable_state();
+}
+
+// ============================================================
+// SCREEN SAVER (large clock)
+// ============================================================
+static void build_saver_screen() {
+  scr_saver = lv_obj_create(NULL);
+  lv_obj_set_style_bg_color(scr_saver, lv_color_hex(0x000000), 0);
+  lv_obj_set_style_bg_opa(scr_saver, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(scr_saver, LV_OBJ_FLAG_SCROLLABLE);
+
+  // Bouncing container — holds the clock + date and moves around the screen
+  saver_box = lv_obj_create(scr_saver);
+  lv_obj_set_size(saver_box, SAVER_BOX_W, SAVER_BOX_H);
+  lv_obj_set_pos(saver_box, saver_pos_x, saver_pos_y);
+  lv_obj_set_style_bg_opa(saver_box, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(saver_box, 0, 0);
+  lv_obj_set_style_pad_all(saver_box, 0, 0);
+  lv_obj_set_style_shadow_width(saver_box, 0, 0);
+  lv_obj_clear_flag(saver_box, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(saver_box, LV_OBJ_FLAG_CLICKABLE);  // pass touches to scr_saver
+
+  // Big HH:MM at top of box
+  saver_clock_lbl = lv_label_create(saver_box);
+  lv_label_set_text(saver_clock_lbl, "--:--");
+  lv_obj_set_style_text_color(saver_clock_lbl, lv_color_hex(C_TEXT), 0);
+  lv_obj_set_style_text_font(saver_clock_lbl, &lv_font_montserrat_48, 0);
+  lv_obj_align(saver_clock_lbl, LV_ALIGN_TOP_MID, 0, 0);
+
+  // Date below
+  saver_date_lbl = lv_label_create(saver_box);
+  lv_label_set_text(saver_date_lbl, "");
+  lv_obj_set_style_text_color(saver_date_lbl, lv_color_hex(C_DIM), 0);
+  lv_obj_set_style_text_font(saver_date_lbl, &lv_font_montserrat_16, 0);
+  lv_obj_align(saver_date_lbl, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+  // Touch anywhere returns to player and resets timers
+  lv_obj_add_flag(scr_saver, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(scr_saver, [](lv_event_t*) {
+    lv_scr_load(scr_play);
+    bl_set(bl_duty_levels[bl_level]);
+    screenState = 0;
+    lastTouch = millis();
+  }, LV_EVENT_CLICKED, NULL);
+}
+
+// Cycle the clock text color through HSV hues — called on each wall bounce
+static uint16_t saver_hue = 0;
+static void saver_change_color() {
+  saver_hue = (saver_hue + 47) % 360;  // 47° step → hits all colors before repeating
+  uint8_t r, g, b;
+  hsv_to_rgb(saver_hue, 255, 255, &r, &g, &b);
+  uint32_t color = ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+  if (saver_clock_lbl) lv_obj_set_style_text_color(saver_clock_lbl, lv_color_hex(color), 0);
+}
+
+// One step of the DVD-style bouncing animation
+static void saver_anim_step() {
+  if (!saver_box) return;
+  saver_pos_x += saver_vx;
+  saver_pos_y += saver_vy;
+  bool bounced = false;
+  if (saver_pos_x <= 0)                       { saver_pos_x = 0;                       saver_vx = -saver_vx; bounced = true; }
+  if (saver_pos_x + SAVER_BOX_W >= SCREEN_W)  { saver_pos_x = SCREEN_W - SAVER_BOX_W;  saver_vx = -saver_vx; bounced = true; }
+  if (saver_pos_y <= 0)                       { saver_pos_y = 0;                       saver_vy = -saver_vy; bounced = true; }
+  if (saver_pos_y + SAVER_BOX_H >= SCREEN_H)  { saver_pos_y = SCREEN_H - SAVER_BOX_H;  saver_vy = -saver_vy; bounced = true; }
+  lv_obj_set_pos(saver_box, saver_pos_x, saver_pos_y);
+  if (bounced) saver_change_color();
+}
+
+static void update_saver_clock() {
+  if (!saver_clock_lbl) return;
+  struct tm ti;
+  if (getLocalTime(&ti, 0)) {
+    char t[8]; snprintf(t, sizeof t, "%02d:%02d", ti.tm_hour, ti.tm_min);
+    lv_label_set_text(saver_clock_lbl, t);
+    char d[24];
+    static const char* wdays[] = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
+    snprintf(d, sizeof d, "%s  %04d-%02d-%02d",
+             wdays[ti.tm_wday % 7], ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday);
+    if (saver_date_lbl) lv_label_set_text(saver_date_lbl, d);
+  }
 }
 
 // ============================================================
@@ -1663,6 +1806,7 @@ void setup() {
   if (scr_rotation != 1 && scr_rotation != 3) scr_rotation = 1;
   bl_level       = prefs.getUChar("bl", 3);
   if (bl_level > 3) bl_level = 3;
+  saverEnabled   = prefs.getBool("saver", false);
   if (currentStn >= NUM_STATIONS) currentStn = 0;
 
   // I2C master bus for ES8311 + FT6336G (shared bus, SDA=16, SCL=15)
@@ -1821,6 +1965,7 @@ void setup() {
 
   // Build list screen
   build_list_screen();
+  build_saver_screen();
 
   // Connect to first station
   hide_status();
@@ -1929,14 +2074,40 @@ void loop() {
     lv_label_set_text(wi_play, LV_SYMBOL_PLAY);
   }
 
-  // Screen timeout: 5min→dim, 10min→off
+  // Screen timeout: dim → off (or saver clock when enabled)
   uint32_t idle = millis() - lastTouch;
-  if (screenState == 0 && idle > dim_timeout_ms) {
-    screenState = 1;
-    bl_set(DIM_DUTY);
-  } else if (screenState == 1 && idle > off_timeout_ms) {
-    screenState = 2;
-    bl_set(0);
+  if (saverEnabled) {
+    // Saver mode: dim_timeout → show clock at full brightness
+    //             off_timeout → dim the clock (never fully off)
+    if (screenState == 0 && idle > dim_timeout_ms && lv_scr_act() == scr_play) {
+      lv_scr_load(scr_saver);
+      update_saver_clock();
+      bl_set(bl_duty_levels[bl_level]);  // full brightness
+      screenState = 1;
+    } else if (screenState == 1 && idle > off_timeout_ms) {
+      bl_set(DIM_DUTY);
+      screenState = 2;
+    }
+    // Refresh clock every 10s while on saver
+    static uint32_t last_clock = 0;
+    if (lv_scr_act() == scr_saver && millis() - last_clock > 10000) {
+      last_clock = millis();
+      update_saver_clock();
+    }
+    // DVD-style bouncing animation step every 60ms
+    static uint32_t last_anim = 0;
+    if (lv_scr_act() == scr_saver && millis() - last_anim > 60) {
+      last_anim = millis();
+      saver_anim_step();
+    }
+  } else {
+    if (screenState == 0 && idle > dim_timeout_ms) {
+      screenState = 1;
+      bl_set(DIM_DUTY);
+    } else if (screenState == 1 && idle > off_timeout_ms) {
+      screenState = 2;
+      bl_set(0);
+    }
   }
 
   // RGB LED runs in its own task on Core 0 (started in setup)
