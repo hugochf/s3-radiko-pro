@@ -1,0 +1,12 @@
+# ESP-IDF build artifacts + generated config
+/build/
+sdkconfig
+sdkconfig.old
+
+# Managed components are downloaded, not committed — but dependencies.lock IS
+# committed (once real deps exist) so builds are reproducible (a Phase 0 goal).
+/managed_components/
+
+# Secrets: never commit real credentials. Early-bring-up creds (before Phase 6
+# provisioning lands) go in a gitignored header, not in tracked source.
+secrets.h

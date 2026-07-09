@@ -1,0 +1,38 @@
+# CI: build the ESP-IDF firmware on every push / PR. Pinned to the same IDF
+# version used locally (v5.3.5) so "green on CI" means "green on my machine".
+# The project lives in the idf/ subfolder of this repo.
+name: build
+
+on:
+  push:
+    paths:
+      - 'idf/**'
+      - '.github/workflows/build.yml'
+  pull_request:
+    paths:
+      - 'idf/**'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build firmware (ESP-IDF v5.3.5, target esp32s3)
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.3.5
+          target: esp32s3
+          path: idf
+
+      - name: Upload firmware binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: s3-radiko-pro-firmware
+          path: |
+            idf/build/s3_radiko_pro.bin
+            idf/build/bootloader/bootloader.bin
+            idf/build/partition_table/partition-table.bin
+          if-no-files-found: error

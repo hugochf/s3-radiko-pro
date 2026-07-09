@@ -1,0 +1,25 @@
+# sdkconfig.defaults — the ONLY committed config. sdkconfig itself is generated
+# and gitignored, so the deltas from IDF defaults stay small and reviewable
+# (PLAN.md workflow rule 5). Keep this file minimal: only what the hardware or
+# the build layout requires. Feature flags get added in the phase that needs them.
+
+# --- Target ---
+CONFIG_IDF_TARGET="esp32s3"
+
+# --- Flash: lcdwiki ES3C28P has 16 MB, QIO @ 80 MHz ---
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# --- PSRAM: 8 MB Octal (OPI) @ 80 MHz. Mandatory for the audio pipeline later. ---
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# --- Custom dual-OTA partition table ---
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# --- Console over the board's native USB (USB-Serial-JTAG), so one cable does
+#     flashing + `idf.py monitor` + JTAG debug (Phase 24). ---
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

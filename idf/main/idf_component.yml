@@ -1,0 +1,5 @@
+# Managed component manifest. Empty of third-party deps for Phase 0 — LVGL,
+# esp_lcd_touch, esp-adf etc. get added (pinned) in the phase that introduces
+# them, via `idf.py add-dependency`. Pin the IDF version so CI and local match.
+dependencies:
+  idf: ">=5.3,<5.4"

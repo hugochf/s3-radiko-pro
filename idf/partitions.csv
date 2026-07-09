@@ -1,0 +1,17 @@
+# Partition table — dual-OTA from day one (Phase 0), 16 MB flash.
+# App slots are 3 MB each (room for LVGL + esp-adf later). Reserved slots for
+# NVS encryption keys (Phase 7) and core dump (Phase 19) are laid out now so the
+# flash map never has to change once devices are in the field.
+#
+# App partitions must start on a 64 KB (0x10000) boundary. The gap between
+# nvs_keys and ota_0 is the alignment padding — intentional, not wasted by mistake.
+#
+# Name,     Type, SubType,  Offset,    Size,      Flags
+nvs,        data, nvs,      0x9000,    0x5000,
+otadata,    data, ota,      0xe000,    0x2000,
+phy_init,   data, phy,      0x10000,   0x1000,
+nvs_keys,   data, nvs_keys, 0x11000,   0x1000,    encrypted
+ota_0,      app,  ota_0,    0x20000,   0x300000,
+ota_1,      app,  ota_1,    0x320000,  0x300000,
+coredump,   data, coredump, 0x620000,  0x40000,
+storage,    data, spiffs,   0x660000,  0x9a0000,
