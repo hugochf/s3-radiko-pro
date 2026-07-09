@@ -166,7 +166,7 @@ purpose. Take the time per phase.
 ## Phase tracker
 
 - [x] **Phase 0** — Project skeleton ✅ green build + hardware boot + green CI (public repo)
-- [ ] **Phase 1** — Display driver via esp_lcd
+- [x] **Phase 1** — Display driver via esp_lcd ✅ ILI9341 up, colours + orientation correct on-device
 - [ ] **Phase 2** — LVGL via managed component
 - [ ] **Phase 3** — Touch driver
 - [ ] **Phase 4** — Player UI port
@@ -231,3 +231,32 @@ learning artifact.
   that adds `.github/workflows/*` is rejected. `gh auth` already had it.
 - Minor: `actions/checkout@v4` + `upload-artifact@v4` emit a Node 20 deprecation
   warning on GitHub runners — cosmetic; bump to v5 when convenient.
+
+### Phase 1 — Display driver (ILI9341 via esp_lcd)
+
+- **Pin map (from Arduino TFT_eSPI `User_Setup.h`):** SPI2_HOST, SCLK=12, MOSI=11,
+  MISO=13, CS=10, DC=46, RST=−1 (software reset), backlight=45 (active-high, LEDC
+  PWM). 40 MHz pclk. ILI9341 vendor driver = managed component
+  `espressif/esp_lcd_ili9341` (^1.2.0); it's not in esp_lcd core.
+- **This panel needed THREE non-default quirks, found empirically on-device.**
+  Getting one wrong disguises the others, so debug them with unambiguous, isolated
+  test patterns (solid fills, single-corner squares), not multi-colour patterns:
+  1. **Inverted pixels** → `esp_lcd_panel_invert_color(panel, true)`. Tell-tale:
+     white (0xFFFF) shows as black.
+  2. **BGR order + big-endian data, together** → `rgb_ele_order = BGR` **and**
+     byte-swap each RGB565 pixel (`__builtin_bswap16`). Getting only one of the two
+     looks like a *green/blue* swap; getting the other alone looks like *red/blue*.
+     LVGL will emit byte-swapped pixels itself in Phase 2 (its 16-bit swap option),
+     so we won't hand-swap there.
+  3. **Upside-down mount** → `swap_xy(true)` + `mirror(true, true)` for 320×240
+     landscape. Note: with `swap_xy` on, `mirror_x` controls the *vertical* display
+     axis and `mirror_y` the *horizontal* one (they're transposed).
+- **draw_bitmap is async** — it queues the SPI transfer and returns. Reusing/freeing
+  the pixel buffer immediately corrupts the image. Register `on_color_trans_done`
+  and block on a semaphore per draw (see `draw_wait()`); LVGL uses the same callback
+  to signal flush-ready in Phase 2.
+- **USB-Serial-JTAG wedges if you toggle RTS/DTR** on the port (my serial reader
+  did). Symptom: esptool "No serial data received", no reset mode recovers it. Fix:
+  unplug/replug the cable (or BOOT-hold). Read the port *passively* — never touch the
+  control lines. Also: a second board (plain ESP32) was on `usbserial-0001`; esptool's
+  chip-mismatch check stopped a mis-flash — always pass `-p /dev/cu.usbmodem2101`.

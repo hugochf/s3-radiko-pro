@@ -12,7 +12,7 @@ engineering** (OTA, secure boot, CI/CD, unit tests, JTAG, reproducible builds).
 
 - **Board:** lcdwiki ES3C28P — ESP32-S3, 16 MB flash, 8 MB OPI PSRAM
 - **Display:** ILI9341 320×240 SPI · **Touch:** FT6336G (I²C) · **Audio:** ES8311 codec + FM8002E amp (I²S)
-- Pin map and hardware quirks: see the Arduino prototype in the parent folder.
+- **Full pin map + panel quirks:** [../docs/board-lcdwiki-ES3C28P.md](../docs/board-lcdwiki-ES3C28P.md) (reusable board reference).
 
 ## Toolchain
 

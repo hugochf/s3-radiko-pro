@@ -1,0 +1,3 @@
+# ILI9341 vendor driver is not in esp_lcd core — pull it from the registry, pinned.
+dependencies:
+  espressif/esp_lcd_ili9341: "^1.2.0"
