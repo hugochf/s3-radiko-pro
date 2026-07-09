@@ -169,7 +169,7 @@ purpose. Take the time per phase.
 - [x] **Phase 1** — Display driver via esp_lcd ✅ ILI9341 up, colours + orientation correct on-device
 - [x] **Phase 2** — LVGL via managed component ✅ LVGL v9.3.0 rendering on-device
 - [x] **Phase 3** — Touch driver ✅ FT6336 -> LVGL, all corners mapped, shared I2C bus up
-- [ ] **Phase 4** — Player UI port
+- [x] **Phase 4** — Player UI port ✅ player + station list, JP font, touch nav (stub data)
 - [ ] **Phase 5** — WiFi state machine
 - [ ] **Phase 6** — WiFi provisioning
 - [ ] **Phase 7** — NVS settings
@@ -307,3 +307,23 @@ learning artifact.
   The read callback polls I2C from the LVGL task — fine at 400 kHz for a few bytes.
 - Minor: `esp_lcd_touch_get_coordinates` is deprecated (→ `_get_data` in 2.0) but
   still works; left as-is.
+
+### Phase 4 — Player UI port (stub data)
+
+- **v8 LVGL font `.c` files do NOT compile on v9** (the `lv_font_t.get_glyph_bitmap`
+  callback signature changed). Regenerate with `lv_font_conv` (Homebrew). The
+  installed version emits descriptors that happen to match v9.3
+  (`lv_font_get_bitmap_fmt_txt` exists with the v9 signature), so its output builds
+  clean. Source font: Noto Sans JP (`~/Library/Fonts`). **Subset = only the glyphs
+  the station names use** (ASCII + katakana 0x30A2-0x30FC + a dozen kanji) → ~3.5 K
+  lines, tiny. Full-range JP (arbitrary program titles) waits for real data.
+- **`STATION_COUNT` is a runtime `const int`, not usable for array sizes** — added a
+  `#define NUM_STATIONS 15` for compile-time sizing; loops use the runtime value.
+- **Logos are colour tiles + abbreviation for now** (real embedded logos = Phase 13).
+- Ported the player screen + station list only. Settings and screen-saver are their
+  own later phases (15, 16); WiFi setup rides with provisioning (6).
+- Components split by concern: `fonts` (JP glyphs), `stations` (data table), `ui`
+  (screens). Player state (current station / volume / playing) is local — no audio
+  or network yet, exactly the Tier-A end state.
+- **End of Tier A:** device boots, shows the player UI, Japanese renders, touch
+  navigates player <-> list, buttons/slider respond. No audio, no network.

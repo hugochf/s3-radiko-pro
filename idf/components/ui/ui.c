@@ -5,28 +5,54 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "fonts.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "lvgl.h"
+#include "stations.h"
 
 static const char *TAG = "ui";
 
-// Partial-render buffer height (lines). Two buffers -> render while one flushes.
 #define LVGL_BUF_LINES 40
+
+// Dark palette (ported from the Arduino build).
+#define C_BG     0x1A1A2E
+#define C_PANEL  0x16213E
+#define C_ACCENT 0x0F3460
+#define C_HL     0xE94560
+#define C_TEXT   0xEAEAEA
+#define C_DIM    0x8888AA
+#define C_TRACK  0x2E2E5E
 
 static lv_display_t     *s_disp  = NULL;
 static SemaphoreHandle_t s_mutex = NULL;
 
-// LVGL tick source — milliseconds since boot from the high-res timer.
+// ---- Player state (Phase 4: local only, no audio/network) ----
+static int  s_cur     = 0;
+static int  s_vol     = 20;
+static bool s_playing = false;
+
+// ---- Screens + widgets refreshed on state change ----
+static lv_obj_t *s_scr_player = NULL;
+static lv_obj_t *s_scr_list   = NULL;
+static lv_obj_t *w_logo_tile  = NULL;
+static lv_obj_t *w_logo_lbl   = NULL;
+static lv_obj_t *w_name       = NULL;
+static lv_obj_t *w_prog       = NULL;
+static lv_obj_t *w_vol_slider = NULL;
+static lv_obj_t *w_vol_val    = NULL;
+static lv_obj_t *w_play       = NULL;
+static lv_obj_t *w_dots[NUM_STATIONS];
+
+// =====================================================================
+// LVGL <-> display glue
+// =====================================================================
 static uint32_t tick_cb(void)
 {
     return (uint32_t)(esp_timer_get_time() / 1000);
 }
 
-// Push a rendered area to the panel. LVGL emits native little-endian RGB565;
-// this ILI9341 wants big-endian, so swap in place first (paired with BGR order
-// set in display_init). flush-ready is signalled by color_done_cb below.
 static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 {
     int w = area->x2 - area->x1 + 1;
@@ -36,7 +62,6 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
                               area->x2 + 1, area->y2 + 1, px_map);
 }
 
-// Fires (in ISR context) when the SPI transfer for a flush completes.
 static bool color_done_cb(esp_lcd_panel_io_handle_t io,
                           esp_lcd_panel_io_event_data_t *edata, void *ctx)
 {
@@ -70,52 +95,261 @@ static void lvgl_task(void *arg)
     }
 }
 
-// Phase 3 touch-test screen: shows the coordinates of each tap so we can verify
-// touch registers and the orientation mapping is correct (tap top-left -> small
-// x,y). Replaced by the real player UI in Phase 4.
-static lv_obj_t *s_coord_lbl = NULL;
-static int       s_taps      = 0;
-
-// Live readout: updates continuously while pressed/dragged (LV_EVENT_PRESSING),
-// so corners can be read precisely. Tap count bumps on each new press.
-static void scr_touch_cb(lv_event_t *e)
+// =====================================================================
+// Small helpers
+// =====================================================================
+// Style a coloured "logo" placeholder tile (real logos arrive in Phase 13).
+static void style_logo_tile(lv_obj_t *tile, lv_obj_t *lbl, const station_t *s)
 {
-    lv_indev_t *indev = lv_indev_active();
-    if (!indev) return;
-    if (lv_event_get_code(e) == LV_EVENT_PRESSED) s_taps++;
-    lv_point_t p;
-    lv_indev_get_point(indev, &p);
-    lv_label_set_text_fmt(s_coord_lbl, "x: %d   y: %d\n(taps: %d)",
-                          (int)p.x, (int)p.y, s_taps);
+    lv_obj_set_style_bg_color(tile, lv_color_hex(s->color), 0);
+    lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(tile, 6, 0);
+    lv_obj_set_style_border_width(tile, 0, 0);
+    lv_label_set_text(lbl, s->abbr);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_jp_16, 0);
+    lv_obj_center(lbl);
 }
 
-static void build_demo_screen(void)
+static void refresh_player(void)
 {
-    lv_obj_t *scr = lv_screen_active();
-    lv_obj_set_style_bg_color(scr, lv_color_hex(0x1A1A2E), 0);
-
-    lv_obj_t *title = lv_label_create(scr);
-    // Plain ASCII only — the built-in Montserrat font has no em-dash or CJK
-    // glyphs (those render as tofu boxes). Custom fonts arrive in Phase 4.
-    lv_label_set_text(title, "S3 Radiko - Touch test");
-    lv_obj_set_style_text_color(title, lv_color_hex(0xE94560), 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 20);
-
-    lv_obj_t *hint = lv_label_create(scr);
-    lv_label_set_text(hint, "Tap anywhere");
-    lv_obj_set_style_text_color(hint, lv_color_hex(0x8888AA), 0);
-    lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 60);
-
-    s_coord_lbl = lv_label_create(scr);
-    lv_label_set_text(s_coord_lbl, "x: --   y: --\n(taps: 0)");
-    lv_obj_set_style_text_color(s_coord_lbl, lv_color_hex(0xEAEAEA), 0);
-    lv_obj_set_style_text_align(s_coord_lbl, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_center(s_coord_lbl);
-
-    lv_obj_add_event_cb(scr, scr_touch_cb, LV_EVENT_PRESSED, NULL);
-    lv_obj_add_event_cb(scr, scr_touch_cb, LV_EVENT_PRESSING, NULL);
+    const station_t *s = &STATIONS[s_cur];
+    style_logo_tile(w_logo_tile, w_logo_lbl, s);
+    lv_label_set_text(w_name, s->name);
+    lv_label_set_text(w_prog, "- program info (Phase 14) -");
+    lv_label_set_text(w_play, s_playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+    lv_slider_set_value(w_vol_slider, s_vol, LV_ANIM_OFF);
+    lv_label_set_text_fmt(w_vol_val, "%d", s_vol);
+    for (int i = 0; i < STATION_COUNT; i++) {
+        lv_obj_set_style_bg_color(w_dots[i],
+            lv_color_hex(i == s_cur ? C_HL : 0x3A3A5A), 0);
+    }
 }
 
+// =====================================================================
+// Event callbacks
+// =====================================================================
+static void ev_open_list(lv_event_t *e) { lv_screen_load(s_scr_list); }
+static void ev_back_to_player(lv_event_t *e) { lv_screen_load(s_scr_player); }
+
+static void ev_prev(lv_event_t *e)
+{
+    s_cur = (s_cur + STATION_COUNT - 1) % STATION_COUNT;
+    refresh_player();
+}
+static void ev_next(lv_event_t *e)
+{
+    s_cur = (s_cur + 1) % STATION_COUNT;
+    refresh_player();
+}
+static void ev_play(lv_event_t *e)
+{
+    s_playing = !s_playing;
+    refresh_player();
+}
+static void ev_vol(lv_event_t *e)
+{
+    s_vol = (int)lv_slider_get_value(w_vol_slider);
+    lv_label_set_text_fmt(w_vol_val, "%d", s_vol);
+}
+static void ev_select_station(lv_event_t *e)
+{
+    s_cur = (int)(intptr_t)lv_event_get_user_data(e);
+    s_playing = true;
+    refresh_player();
+    lv_screen_load(s_scr_player);
+}
+
+// =====================================================================
+// Player screen
+// =====================================================================
+static lv_obj_t *mk_circle_btn(lv_obj_t *parent, int size, int x, int y,
+                               uint32_t bg, lv_event_cb_t cb)
+{
+    lv_obj_t *b = lv_button_create(parent);
+    lv_obj_set_size(b, size, size);
+    lv_obj_set_pos(b, x, y);
+    lv_obj_set_style_radius(b, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(bg), 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(C_HL), LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_width(b, 0, 0);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, NULL);
+    return b;
+}
+
+static void build_player_screen(void)
+{
+    s_scr_player = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_scr_player, lv_color_hex(C_BG), 0);
+    lv_obj_clear_flag(s_scr_player, LV_OBJ_FLAG_SCROLLABLE);
+
+    // ---- Status bar ----
+    lv_obj_t *bar = lv_obj_create(s_scr_player);
+    lv_obj_set_size(bar, 320, 24);
+    lv_obj_set_pos(bar, 0, 0);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(C_PANEL), 0);
+    lv_obj_set_style_radius(bar, 0, 0);
+    lv_obj_set_style_border_width(bar, 0, 0);
+    lv_obj_set_style_pad_all(bar, 2, 0);
+    lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *clock = lv_label_create(bar);
+    lv_label_set_text(clock, LV_SYMBOL_WIFI "  12:34");
+    lv_obj_set_style_text_color(clock, lv_color_hex(C_TEXT), 0);
+    lv_obj_align(clock, LV_ALIGN_LEFT_MID, 2, 0);
+
+    lv_obj_t *hdr = lv_label_create(bar);
+    lv_label_set_text(hdr, "Radiko");
+    lv_obj_set_style_text_color(hdr, lv_color_hex(C_TEXT), 0);
+    lv_obj_align(hdr, LV_ALIGN_CENTER, 0, 0);
+
+    lv_obj_t *bat = lv_label_create(bar);
+    lv_label_set_text(bat, LV_SYMBOL_BATTERY_FULL " 100%");
+    lv_obj_set_style_text_color(bat, lv_color_hex(C_TEXT), 0);
+    lv_obj_align(bat, LV_ALIGN_RIGHT_MID, -2, 0);
+
+    // ---- Logo tile (tap to open station list) ----
+    w_logo_tile = lv_obj_create(s_scr_player);
+    lv_obj_set_size(w_logo_tile, 150, 60);
+    lv_obj_align(w_logo_tile, LV_ALIGN_TOP_MID, 0, 32);
+    lv_obj_clear_flag(w_logo_tile, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(w_logo_tile, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(w_logo_tile, ev_open_list, LV_EVENT_CLICKED, NULL);
+    w_logo_lbl = lv_label_create(w_logo_tile);
+
+    // ---- Station name (JP) ----
+    w_name = lv_label_create(s_scr_player);
+    lv_obj_set_style_text_font(w_name, &lv_font_jp_16, 0);
+    lv_obj_set_style_text_color(w_name, lv_color_hex(C_TEXT), 0);
+    lv_obj_set_width(w_name, 300);
+    lv_obj_set_style_text_align(w_name, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(w_name, LV_ALIGN_TOP_MID, 0, 98);
+
+    // ---- Program title (stub) ----
+    w_prog = lv_label_create(s_scr_player);
+    lv_obj_set_style_text_font(w_prog, &lv_font_jp_16, 0);
+    lv_obj_set_style_text_color(w_prog, lv_color_hex(C_DIM), 0);
+    lv_obj_set_width(w_prog, 300);
+    lv_label_set_long_mode(w_prog, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_obj_set_style_text_align(w_prog, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(w_prog, LV_ALIGN_TOP_MID, 0, 120);
+
+    // ---- Volume row ----
+    lv_obj_t *vlbl = lv_label_create(s_scr_player);
+    lv_label_set_text(vlbl, "VOL");
+    lv_obj_set_style_text_color(vlbl, lv_color_hex(C_DIM), 0);
+    lv_obj_set_pos(vlbl, 12, 146);
+
+    w_vol_slider = lv_slider_create(s_scr_player);
+    lv_obj_set_size(w_vol_slider, 214, 8);
+    lv_obj_set_pos(w_vol_slider, 52, 150);
+    lv_slider_set_range(w_vol_slider, 0, 100);
+    lv_obj_set_style_bg_color(w_vol_slider, lv_color_hex(C_TRACK), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(w_vol_slider, lv_color_hex(C_HL), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(w_vol_slider, lv_color_hex(C_HL), LV_PART_KNOB);
+    lv_obj_add_event_cb(w_vol_slider, ev_vol, LV_EVENT_VALUE_CHANGED, NULL);
+
+    w_vol_val = lv_label_create(s_scr_player);
+    lv_obj_set_style_text_color(w_vol_val, lv_color_hex(C_TEXT), 0);
+    lv_obj_set_pos(w_vol_val, 286, 146);
+
+    // ---- Transport buttons ----
+    lv_obj_t *bp = mk_circle_btn(s_scr_player, 44, 40,  176, C_ACCENT, ev_prev);
+    lv_obj_t *lp = lv_label_create(bp); lv_label_set_text(lp, LV_SYMBOL_PREV); lv_obj_center(lp);
+
+    lv_obj_t *bplay = mk_circle_btn(s_scr_player, 56, 132, 170, C_HL, ev_play);
+    w_play = lv_label_create(bplay); lv_obj_center(w_play);
+
+    lv_obj_t *bn = mk_circle_btn(s_scr_player, 44, 236, 176, C_ACCENT, ev_next);
+    lv_obj_t *ln = lv_label_create(bn); lv_label_set_text(ln, LV_SYMBOL_NEXT); lv_obj_center(ln);
+
+    // ---- Position dots ----
+    int dot_w = STATION_COUNT * 8 + (STATION_COUNT - 1) * 4;
+    int dx = (320 - dot_w) / 2;
+    for (int i = 0; i < STATION_COUNT; i++) {
+        w_dots[i] = lv_obj_create(s_scr_player);
+        lv_obj_set_size(w_dots[i], 8, 8);
+        lv_obj_set_pos(w_dots[i], dx + i * 12, 230);
+        lv_obj_set_style_radius(w_dots[i], 4, 0);
+        lv_obj_set_style_border_width(w_dots[i], 0, 0);
+        lv_obj_clear_flag(w_dots[i], LV_OBJ_FLAG_SCROLLABLE);
+    }
+
+    refresh_player();
+}
+
+// =====================================================================
+// Station list screen
+// =====================================================================
+static void build_list_screen(void)
+{
+    s_scr_list = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_scr_list, lv_color_hex(C_BG), 0);
+    lv_obj_clear_flag(s_scr_list, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Header
+    lv_obj_t *hdr = lv_obj_create(s_scr_list);
+    lv_obj_set_size(hdr, 320, 30);
+    lv_obj_set_pos(hdr, 0, 0);
+    lv_obj_set_style_bg_color(hdr, lv_color_hex(C_PANEL), 0);
+    lv_obj_set_style_radius(hdr, 0, 0);
+    lv_obj_set_style_border_width(hdr, 0, 0);
+    lv_obj_set_style_pad_all(hdr, 4, 0);
+    lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *back = lv_button_create(hdr);
+    lv_obj_set_size(back, 80, 24);
+    lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_bg_color(back, lv_color_hex(C_ACCENT), 0);
+    lv_obj_add_event_cb(back, ev_back_to_player, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *bl = lv_label_create(back);
+    lv_label_set_text(bl, LV_SYMBOL_LEFT " Back");
+    lv_obj_center(bl);
+
+    lv_obj_t *ttl = lv_label_create(hdr);
+    lv_label_set_text(ttl, "Select Station");
+    lv_obj_set_style_text_color(ttl, lv_color_hex(C_TEXT), 0);
+    lv_obj_align(ttl, LV_ALIGN_CENTER, 24, 0);
+
+    // Scrollable rows
+    lv_obj_t *cont = lv_obj_create(s_scr_list);
+    lv_obj_set_size(cont, 320, 210);
+    lv_obj_set_pos(cont, 0, 30);
+    lv_obj_set_style_bg_color(cont, lv_color_hex(C_BG), 0);
+    lv_obj_set_style_border_width(cont, 0, 0);
+    lv_obj_set_style_radius(cont, 0, 0);
+    lv_obj_set_style_pad_all(cont, 0, 0);
+    lv_obj_set_style_pad_row(cont, 0, 0);
+    lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
+
+    for (int i = 0; i < STATION_COUNT; i++) {
+        const station_t *s = &STATIONS[i];
+        lv_obj_t *row = lv_obj_create(cont);
+        lv_obj_set_size(row, 320, 54);
+        lv_obj_set_style_bg_color(row, lv_color_hex(i & 1 ? C_PANEL : C_BG), 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_radius(row, 0, 0);
+        lv_obj_set_style_pad_all(row, 6, 0);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(row, ev_select_station, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+
+        lv_obj_t *tile = lv_obj_create(row);
+        lv_obj_set_size(tile, 96, 42);
+        lv_obj_align(tile, LV_ALIGN_LEFT_MID, 0, 0);
+        lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_t *tl = lv_label_create(tile);
+        style_logo_tile(tile, tl, s);
+
+        lv_obj_t *nm = lv_label_create(row);
+        lv_label_set_text(nm, s->name);
+        lv_obj_set_style_text_font(nm, &lv_font_jp_16, 0);
+        lv_obj_set_style_text_color(nm, lv_color_hex(C_TEXT), 0);
+        lv_obj_align(nm, LV_ALIGN_RIGHT_MID, -6, 0);
+    }
+}
+
+// =====================================================================
 esp_err_t ui_init(void)
 {
     s_mutex = xSemaphoreCreateRecursiveMutex();
@@ -132,17 +366,15 @@ esp_err_t ui_init(void)
     s_disp = lv_display_create(DISPLAY_H_RES, DISPLAY_V_RES);
     lv_display_set_flush_cb(s_disp, flush_cb);
     lv_display_set_buffers(s_disp, buf1, buf2, buf_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
-
-    // Route the panel's transfer-done signal to LVGL flush-ready.
     display_register_flush_ready_cb(color_done_cb, NULL);
 
-    build_demo_screen();
+    build_player_screen();
+    build_list_screen();
+    lv_screen_load(s_scr_player);
 
-    // LVGL + display on core 1, leaving core 0 for network/audio later.
-    xTaskCreatePinnedToCore(lvgl_task, "lvgl", 6144, NULL, 4, NULL, 1);
+    xTaskCreatePinnedToCore(lvgl_task, "lvgl", 8192, NULL, 4, NULL, 1);
 
-    ESP_LOGI(TAG, "LVGL v%d.%d.%d up, %dx%d",
-             lv_version_major(), lv_version_minor(), lv_version_patch(),
-             DISPLAY_H_RES, DISPLAY_V_RES);
+    ESP_LOGI(TAG, "LVGL v%d.%d.%d, %d stations, player UI up",
+             lv_version_major(), lv_version_minor(), lv_version_patch(), STATION_COUNT);
     return ESP_OK;
 }
