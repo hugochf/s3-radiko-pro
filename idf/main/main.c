@@ -18,6 +18,8 @@
 #include "freertos/task.h"
 
 #include "display.h"
+#include "i2c_bus.h"
+#include "touch.h"
 #include "ui.h"
 
 static const char *TAG = "boot";
@@ -51,11 +53,13 @@ void app_main(void)
              esp_get_free_heap_size() / 1024,
              (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
 
-    // Phase 1: bring up the ILI9341 panel. Phase 2: LVGL renders on top of it.
+    // Phase 1: ILI9341 panel. Phase 2: LVGL. Phase 3: shared I2C bus + FT6336 touch.
     ESP_ERROR_CHECK(display_init());
-    ESP_ERROR_CHECK(ui_init());
+    ESP_ERROR_CHECK(ui_init());          // lv_init happens here, before touch indev
+    ESP_ERROR_CHECK(i2c_bus_init());
+    ESP_ERROR_CHECK(touch_init());
     display_backlight_set(255);
-    ESP_LOGI(TAG, "display + LVGL up");
+    ESP_LOGI(TAG, "display + LVGL + touch up");
 
     // Idle heartbeat so the watchdog stays happy and we can see it's alive.
     uint32_t tick = 0;

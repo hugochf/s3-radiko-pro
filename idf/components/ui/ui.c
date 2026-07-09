@@ -70,8 +70,25 @@ static void lvgl_task(void *arg)
     }
 }
 
-// Phase 2 placeholder screen — proves LVGL renders text + a widget. Replaced by
-// the real player UI in Phase 4.
+// Phase 3 touch-test screen: shows the coordinates of each tap so we can verify
+// touch registers and the orientation mapping is correct (tap top-left -> small
+// x,y). Replaced by the real player UI in Phase 4.
+static lv_obj_t *s_coord_lbl = NULL;
+static int       s_taps      = 0;
+
+// Live readout: updates continuously while pressed/dragged (LV_EVENT_PRESSING),
+// so corners can be read precisely. Tap count bumps on each new press.
+static void scr_touch_cb(lv_event_t *e)
+{
+    lv_indev_t *indev = lv_indev_active();
+    if (!indev) return;
+    if (lv_event_get_code(e) == LV_EVENT_PRESSED) s_taps++;
+    lv_point_t p;
+    lv_indev_get_point(indev, &p);
+    lv_label_set_text_fmt(s_coord_lbl, "x: %d   y: %d\n(taps: %d)",
+                          (int)p.x, (int)p.y, s_taps);
+}
+
 static void build_demo_screen(void)
 {
     lv_obj_t *scr = lv_screen_active();
@@ -80,22 +97,23 @@ static void build_demo_screen(void)
     lv_obj_t *title = lv_label_create(scr);
     // Plain ASCII only — the built-in Montserrat font has no em-dash or CJK
     // glyphs (those render as tofu boxes). Custom fonts arrive in Phase 4.
-    lv_label_set_text(title, "S3 Radiko - LVGL v9");
+    lv_label_set_text(title, "S3 Radiko - Touch test");
     lv_obj_set_style_text_color(title, lv_color_hex(0xE94560), 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 24);
-
-    lv_obj_t *btn = lv_button_create(scr);
-    lv_obj_set_size(btn, 180, 56);
-    lv_obj_center(btn);
-    lv_obj_set_style_bg_color(btn, lv_color_hex(0x0F3460), 0);
-    lv_obj_t *btn_lbl = lv_label_create(btn);
-    lv_label_set_text(btn_lbl, "Phase 2 OK");
-    lv_obj_center(btn_lbl);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 20);
 
     lv_obj_t *hint = lv_label_create(scr);
-    lv_label_set_text(hint, "display + LVGL running");
+    lv_label_set_text(hint, "Tap anywhere");
     lv_obj_set_style_text_color(hint, lv_color_hex(0x8888AA), 0);
-    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -16);
+    lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 60);
+
+    s_coord_lbl = lv_label_create(scr);
+    lv_label_set_text(s_coord_lbl, "x: --   y: --\n(taps: 0)");
+    lv_obj_set_style_text_color(s_coord_lbl, lv_color_hex(0xEAEAEA), 0);
+    lv_obj_set_style_text_align(s_coord_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_center(s_coord_lbl);
+
+    lv_obj_add_event_cb(scr, scr_touch_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(scr, scr_touch_cb, LV_EVENT_PRESSING, NULL);
 }
 
 esp_err_t ui_init(void)

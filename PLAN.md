@@ -168,7 +168,7 @@ purpose. Take the time per phase.
 - [x] **Phase 0** — Project skeleton ✅ green build + hardware boot + green CI (public repo)
 - [x] **Phase 1** — Display driver via esp_lcd ✅ ILI9341 up, colours + orientation correct on-device
 - [x] **Phase 2** — LVGL via managed component ✅ LVGL v9.3.0 rendering on-device
-- [ ] **Phase 3** — Touch driver
+- [x] **Phase 3** — Touch driver ✅ FT6336 -> LVGL, all corners mapped, shared I2C bus up
 - [ ] **Phase 4** — Player UI port
 - [ ] **Phase 5** — WiFi state machine
 - [ ] **Phase 6** — WiFi provisioning
@@ -283,3 +283,27 @@ learning artifact.
   in Phase 4 need a custom subset font (like the Arduino's `lv_font_jp`).
 - LVGL v9 API names (vs v8): `lv_screen_active`, `lv_button_create`,
   `lv_display_*`, `lv_display_set_buffers(..., size_in_bytes, RENDER_MODE_PARTIAL)`.
+
+### Phase 3 — Touch driver (FT6336G via esp_lcd_touch)
+
+- **Shared I2C bus is its own component (`i2c_bus`, SDA=16/SCL=15).** `i2c_master`
+  is thread-safe, so touch (this phase) and the ES8311 codec (Phase 11) share the
+  one bus from different tasks. `i2c_bus_init()` is idempotent.
+- **Drivers:** `espressif/esp_lcd_touch_ft5x06` (^1.0.6 -> 1.1.0) covers the
+  FocalTech FT6336; pulls in `esp_lcd_touch`. Panel IO via
+  `esp_lcd_new_panel_io_i2c` on the i2c_master bus — **must set
+  `io_cfg.scl_speed_hz`** (required by the v2/bus-handle path; the FT5x06 config
+  macro doesn't).
+- **`esp_lcd_touch`'s `mirror_x`/`mirror_y` are broken for this geometry.** They
+  mirror on the *raw* axis (0..240) using `x_max` (=320) *before* the swap, which
+  offsets by 80 and kills the top edge (symptom: top unresponsive, y stuck ~85).
+  Fix: driver does **swap_xy only**; flip X manually in the read callback
+  (`x = (DISPLAY_H_RES-1) - x`). Verified against all four corners.
+- **Touch mapping needs live on-device tuning, not reasoning.** A click-only
+  readout is unreliable near edges (edge touches read as drags, not clicks) — use
+  a live `LV_EVENT_PRESSING` readout and read raw corners with mirroring *off*
+  first, then derive the transform.
+- Register the `lv_indev` under `ui_lock()` since the LVGL task is already running.
+  The read callback polls I2C from the LVGL task — fine at 400 kHz for a few bytes.
+- Minor: `esp_lcd_touch_get_coordinates` is deprecated (→ `_get_data` in 2.0) but
+  still works; left as-is.
