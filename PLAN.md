@@ -165,7 +165,7 @@ purpose. Take the time per phase.
 
 ## Phase tracker
 
-- [x] **Phase 0** — Project skeleton ✅ green build + hardware-verified boot
+- [x] **Phase 0** — Project skeleton ✅ green build + hardware boot + green CI (public repo)
 - [ ] **Phase 1** — Display driver via esp_lcd
 - [ ] **Phase 2** — LVGL via managed component
 - [ ] **Phase 3** — Touch driver
@@ -222,3 +222,12 @@ learning artifact.
 - **Hardware baseline (Phase 0):** free heap ~8531 KB internal + 8189 KB PSRAM,
   CPU 160 MHz, chip rev v0.2, PSRAM AP gen-3 64 Mbit @ 80 MHz. Reset cause after
   flash: `USB_UART_CHIP_RESET`. Track heap against this baseline as features land.
+- **CI gotcha:** a `paths:` filter on the workflow's `push` trigger caused the
+  repo's *initial* commit to skip the run, and until a run fires GitHub doesn't
+  register/list the workflow at all (`actions/workflows` returns 0). Dropping the
+  path filter (run on every push) fixed registration. Repo:
+  https://github.com/hugochf/s3-radiko-pro — CI green in ~2m10s (ESP-IDF v5.3.5).
+- **Publishing over HTTPS needs a token with `workflow` scope**, else the push
+  that adds `.github/workflows/*` is rejected. `gh auth` already had it.
+- Minor: `actions/checkout@v4` + `upload-artifact@v4` emit a Node 20 deprecation
+  warning on GitHub runners — cosmetic; bump to v5 when convenient.
