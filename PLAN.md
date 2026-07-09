@@ -165,7 +165,7 @@ purpose. Take the time per phase.
 
 ## Phase tracker
 
-- [x] **Phase 0** — Project skeleton ✅ green build (app 186 KB, 94% slot free)
+- [x] **Phase 0** — Project skeleton ✅ green build + hardware-verified boot
 - [ ] **Phase 1** — Display driver via esp_lcd
 - [ ] **Phase 2** — LVGL via managed component
 - [ ] **Phase 3** — Touch driver
@@ -216,3 +216,9 @@ learning artifact.
   (GitHub requires `.github/` at root), and points at the subproject via `path: idf`.
 - IDE (clangd) flags xtensa-gcc flags like `-mlongcalls` as errors — that's a
   clangd/toolchain mismatch, harmless. Trust `idf.py build`, not the squiggles.
+- **Two USB ports enumerate**: `/dev/cu.usbmodem2101` (native USB-Serial-JTAG,
+  what we flash/monitor) and `/dev/cu.usbserial-0001` (a UART bridge). Console is
+  on the JTAG port. Flash+monitor: `idf.py -p /dev/cu.usbmodem2101 flash monitor`.
+- **Hardware baseline (Phase 0):** free heap ~8531 KB internal + 8189 KB PSRAM,
+  CPU 160 MHz, chip rev v0.2, PSRAM AP gen-3 64 Mbit @ 80 MHz. Reset cause after
+  flash: `USB_UART_CHIP_RESET`. Track heap against this baseline as features land.
