@@ -89,6 +89,12 @@ void display_backlight_set(uint8_t duty)
     ledc_update_duty(BL_LEDC_MODE, BL_LEDC_CHANNEL);
 }
 
+void display_register_flush_ready_cb(esp_lcd_panel_io_color_trans_done_cb_t cb, void *ctx)
+{
+    esp_lcd_panel_io_callbacks_t cbs = { .on_color_trans_done = cb };
+    ESP_ERROR_CHECK(esp_lcd_panel_io_register_event_callbacks(s_io, &cbs, ctx));
+}
+
 esp_err_t display_init(void)
 {
     backlight_init();

@@ -1,0 +1,4 @@
+# LVGL v9, configured via Kconfig (menuconfig -> Component config -> LVGL).
+# Pinned to 9.3.x; dependencies.lock records the exact resolved version.
+dependencies:
+  lvgl/lvgl: "~9.3.0"

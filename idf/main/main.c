@@ -18,6 +18,7 @@
 #include "freertos/task.h"
 
 #include "display.h"
+#include "ui.h"
 
 static const char *TAG = "boot";
 
@@ -50,11 +51,11 @@ void app_main(void)
              esp_get_free_heap_size() / 1024,
              (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
 
-    // Phase 1: bring up the ILI9341, draw a test pattern, then light the panel.
+    // Phase 1: bring up the ILI9341 panel. Phase 2: LVGL renders on top of it.
     ESP_ERROR_CHECK(display_init());
-    ESP_ERROR_CHECK(display_test_pattern());
+    ESP_ERROR_CHECK(ui_init());
     display_backlight_set(255);
-    ESP_LOGI(TAG, "display up — color bars, backlight full");
+    ESP_LOGI(TAG, "display + LVGL up");
 
     // Idle heartbeat so the watchdog stays happy and we can see it's alive.
     uint32_t tick = 0;

@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include "esp_err.h"
 #include "esp_lcd_types.h"
+#include "esp_lcd_panel_io.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -31,6 +32,11 @@ esp_lcd_panel_handle_t display_panel(void);
 
 // Backlight brightness, 0 (off) .. 255 (full), via LEDC PWM on GPIO45.
 void display_backlight_set(uint8_t duty);
+
+// Replace the panel's color-transfer-done callback. Used by the UI layer to be
+// signalled when a flush finishes (LVGL flush-ready). Overrides the internal one
+// used by display_test_pattern, so don't mix the two.
+void display_register_flush_ready_cb(esp_lcd_panel_io_color_trans_done_cb_t cb, void *ctx);
 
 // Phase 1 sanity check: draw vertical color bars across the whole panel.
 esp_err_t display_test_pattern(void);

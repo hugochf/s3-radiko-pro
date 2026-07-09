@@ -167,7 +167,7 @@ purpose. Take the time per phase.
 
 - [x] **Phase 0** — Project skeleton ✅ green build + hardware boot + green CI (public repo)
 - [x] **Phase 1** — Display driver via esp_lcd ✅ ILI9341 up, colours + orientation correct on-device
-- [ ] **Phase 2** — LVGL via managed component
+- [x] **Phase 2** — LVGL via managed component ✅ LVGL v9.3.0 rendering on-device
 - [ ] **Phase 3** — Touch driver
 - [ ] **Phase 4** — Player UI port
 - [ ] **Phase 5** — WiFi state machine
@@ -260,3 +260,26 @@ learning artifact.
   unplug/replug the cable (or BOOT-hold). Read the port *passively* — never touch the
   control lines. Also: a second board (plain ESP32) was on `usbserial-0001`; esptool's
   chip-mismatch check stopped a mis-flash — always pass `-p /dev/cu.usbmodem2101`.
+
+### Phase 2 — LVGL (v9 via managed component)
+
+- **`lvgl/lvgl` pinned `~9.3.0`** (resolved 9.3.0), configured via Kconfig
+  (`CONFIG_LV_COLOR_DEPTH_16=y`) — no hand-written `lv_conf.h`. Adds ~230 KB to the
+  app (now ~475 KB, 85 % of slot free).
+- **Manual esp_lcd <-> LVGL glue (components/ui):**
+  - Flush: `flush_cb` calls `esp_lcd_panel_draw_bitmap`; **flush-ready is signalled
+    from the panel's `on_color_trans_done` ISR callback** (`lv_display_flush_ready`),
+    reusing the Phase-1 hook via `display_register_flush_ready_cb()`.
+  - **Byte-swap belongs in the flush**, not the pixel data: LVGL emits native
+    little-endian RGB565, this panel wants big-endian, so `lv_draw_sw_rgb565_swap()`
+    in `flush_cb` (paired with BGR order in the panel). Confirms the Phase-1 finding.
+  - Tick via `lv_tick_set_cb()` returning `esp_timer_get_time()/1000` — no periodic timer.
+  - LVGL is single-threaded: one task on core 1 runs `lv_timer_handler()`; all lv_*
+    calls guard on a **recursive mutex** (`ui_lock`/`ui_unlock`). Core 0 stays free
+    for network/audio later.
+  - Two partial draw buffers (40 lines each) in internal DMA RAM.
+- **Built-in Montserrat font is ASCII + a few symbols only** — an em-dash (U+2014)
+  rendered as a tofu box, and CJK has no glyphs at all. The Japanese station names
+  in Phase 4 need a custom subset font (like the Arduino's `lv_font_jp`).
+- LVGL v9 API names (vs v8): `lv_screen_active`, `lv_button_create`,
+  `lv_display_*`, `lv_display_set_buffers(..., size_in_bytes, RENDER_MODE_PARTIAL)`.

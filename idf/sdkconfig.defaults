@@ -23,3 +23,6 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # --- Console over the board's native USB (USB-Serial-JTAG), so one cable does
 #     flashing + `idf.py monitor` + JTAG debug (Phase 24). ---
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# --- LVGL (v9, configured via Kconfig): RGB565 to match the ILI9341. ---
+CONFIG_LV_COLOR_DEPTH_16=y
