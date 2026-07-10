@@ -3,6 +3,7 @@
 #include <string.h>
 #include "audio.h"
 #include "display.h"
+#include "logos.h"
 #include "esp_heap_caps.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_log.h"
@@ -44,7 +45,7 @@ static bool s_playing = false;
 static lv_obj_t *s_scr_player = NULL;
 static lv_obj_t *s_scr_list   = NULL;
 static lv_obj_t *w_logo_tile  = NULL;
-static lv_obj_t *w_logo_lbl   = NULL;
+static lv_obj_t *w_logo_img   = NULL;
 static lv_obj_t *w_name       = NULL;
 static lv_obj_t *w_prog       = NULL;
 static lv_obj_t *w_vol_slider = NULL;
@@ -71,11 +72,28 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
                               area->x2 + 1, area->y2 + 1, px_map);
 }
 
+// Signalled by the SPI DMA-done ISR; awaited by flush_wait_cb so the LVGL task
+// sleeps (yielding the CPU) instead of busy-spinning while the panel transfers.
+static SemaphoreHandle_t s_flush_sem = NULL;
+
 static bool color_done_cb(esp_lcd_panel_io_handle_t io,
                           esp_lcd_panel_io_event_data_t *edata, void *ctx)
 {
+    BaseType_t hp = pdFALSE;
     lv_display_flush_ready(s_disp);
-    return false;
+    xSemaphoreGiveFromISR(s_flush_sem, &hp);
+    return hp == pdTRUE;   // ask the ISR dispatcher to yield if we woke a task
+}
+
+// LVGL's default wait is a busy `while(disp->flushing)` spin that never yields —
+// on an RTOS that starves the idle task (and the task watchdog) if a flush ever
+// stalls. Block on the DMA-done semaphore instead. The timeout self-heals a lost
+// completion: force the flag clear and drop the frame rather than hang forever.
+static void flush_wait_cb(lv_display_t *disp)
+{
+    if (xSemaphoreTake(s_flush_sem, pdMS_TO_TICKS(100)) != pdTRUE) {
+        lv_display_flush_ready(disp);   // completion missed — recover, don't wedge
+    }
 }
 
 bool ui_lock(int timeout_ms)
@@ -121,23 +139,24 @@ static void lvgl_task(void *arg)
 // =====================================================================
 // Small helpers
 // =====================================================================
-// Style a coloured "logo" placeholder tile (real logos arrive in Phase 13).
-static void style_logo_tile(lv_obj_t *tile, lv_obj_t *lbl, const station_t *s)
+// Show a station logo in `img`, scaled to fit within box_w x box_h (never
+// upscaled beyond 1x, to keep it crisp). Logos are embedded RGB565 (Phase 13).
+static void set_logo(lv_obj_t *img, int station, int box_w, int box_h)
 {
-    lv_obj_set_style_bg_color(tile, lv_color_hex(s->color), 0);
-    lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(tile, 6, 0);
-    lv_obj_set_style_border_width(tile, 0, 0);
-    lv_label_set_text(lbl, s->abbr);
-    lv_obj_set_style_text_color(lbl, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_jp_16, 0);
-    lv_obj_center(lbl);
+    const lv_image_dsc_t *L = STATION_LOGOS[station];
+    lv_image_set_src(img, L);
+    int sw = box_w * 256 / L->header.w;
+    int sh = box_h * 256 / L->header.h;
+    int sc = sw < sh ? sw : sh;
+    if (sc > 256) sc = 256;
+    lv_image_set_scale(img, sc);
+    lv_obj_center(img);
 }
 
 static void refresh_player(void)
 {
     const station_t *s = &STATIONS[s_cur];
-    style_logo_tile(w_logo_tile, w_logo_lbl, s);
+    set_logo(w_logo_img, s_cur, 148, 58);
     lv_label_set_text(w_name, s->name);
     lv_label_set_text(w_prog, "- program info (Phase 14) -");
     lv_label_set_text(w_play, s_playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
@@ -164,6 +183,24 @@ static void apply_playback(void)
     else           stream_stop();
 }
 
+// Debounced commit for prev/next. Mashing the buttons should only scrub the
+// on-screen station; the flash write (NVS) and the real stream switch fire once,
+// a beat after the user stops. This avoids hammering flash and restarting the
+// decoder/HTTP pipeline on every press. Runs in the LVGL task (holds the lock).
+static lv_timer_t *s_commit_timer = NULL;
+static void commit_cb(lv_timer_t *t)
+{
+    persist_station();
+    apply_playback();
+    lv_timer_pause(t);
+}
+static void schedule_commit(void)
+{
+    if (!s_commit_timer) { persist_station(); apply_playback(); return; }
+    lv_timer_reset(s_commit_timer);
+    lv_timer_resume(s_commit_timer);
+}
+
 static void ev_open_list(lv_event_t *e) { lv_screen_load(s_scr_list); }
 static void ev_back_to_player(lv_event_t *e) { lv_screen_load(s_scr_player); }
 static void ev_open_wifi_setup(lv_event_t *e) { ui_show_wifi_setup(); }
@@ -172,15 +209,13 @@ static void ev_prev(lv_event_t *e)
 {
     s_cur = (s_cur + STATION_COUNT - 1) % STATION_COUNT;
     refresh_player();
-    persist_station();
-    apply_playback();   // switch stream if playing
+    schedule_commit();   // debounced: persist + switch stream once user settles
 }
 static void ev_next(lv_event_t *e)
 {
     s_cur = (s_cur + 1) % STATION_COUNT;
     refresh_player();
-    persist_station();
-    apply_playback();
+    schedule_commit();
 }
 static void ev_play(lv_event_t *e)
 {
@@ -304,7 +339,8 @@ static void build_player_screen(void)
     lv_obj_clear_flag(w_logo_tile, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(w_logo_tile, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(w_logo_tile, ev_open_list, LV_EVENT_CLICKED, NULL);
-    w_logo_lbl = lv_label_create(w_logo_tile);
+    w_logo_img = lv_image_create(w_logo_tile);
+    lv_obj_add_flag(w_logo_img, LV_OBJ_FLAG_EVENT_BUBBLE);   // taps reach the tile
 
     // ---- Station name (JP) ----
     w_name = lv_label_create(s_scr_player);
@@ -424,12 +460,10 @@ static void build_list_screen(void)
         lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(row, ev_select_station, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 
-        lv_obj_t *tile = lv_obj_create(row);
-        lv_obj_set_size(tile, 96, 42);
-        lv_obj_align(tile, LV_ALIGN_LEFT_MID, 0, 0);
-        lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_t *tl = lv_label_create(tile);
-        style_logo_tile(tile, tl, s);
+        lv_obj_t *logo = lv_image_create(row);
+        lv_obj_align(logo, LV_ALIGN_LEFT_MID, 4, 0);
+        lv_obj_add_flag(logo, LV_OBJ_FLAG_EVENT_BUBBLE);   // taps reach the row
+        set_logo(logo, i, 110, 44);
 
         lv_obj_t *nm = lv_label_create(row);
         lv_label_set_text(nm, s->name);
@@ -596,8 +630,12 @@ esp_err_t ui_init(void)
     uint8_t *buf2 = heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM);
     if (!buf1 || !buf2) return ESP_ERR_NO_MEM;
 
+    s_flush_sem = xSemaphoreCreateBinary();
+    if (!s_flush_sem) return ESP_ERR_NO_MEM;
+
     s_disp = lv_display_create(DISPLAY_H_RES, DISPLAY_V_RES);
     lv_display_set_flush_cb(s_disp, flush_cb);
+    lv_display_set_flush_wait_cb(s_disp, flush_wait_cb);  // yield, don't busy-spin
     lv_display_set_buffers(s_disp, buf1, buf2, buf_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
     display_register_flush_ready_cb(color_done_cb, NULL);
 
@@ -607,7 +645,14 @@ esp_err_t ui_init(void)
 
     lv_timer_create(status_timer_cb, 2000, NULL);  // WiFi/status bar refresh
 
-    xTaskCreatePinnedToCore(lvgl_task, "lvgl", 8192, NULL, 4, NULL, 1);
+    // One-shot debounce timer for prev/next (created paused; armed on each press).
+    s_commit_timer = lv_timer_create(commit_cb, 450, NULL);
+    lv_timer_pause(s_commit_timer);
+
+    // 16 KB stack: LVGL v9's image draw/decode path (Phase 13 logos) is much
+    // deeper than the label/tile path, and 8 KB could overflow while rendering
+    // the 15-logo station list.
+    xTaskCreatePinnedToCore(lvgl_task, "lvgl", 16384, NULL, 4, NULL, 1);
 
     ESP_LOGI(TAG, "LVGL v%d.%d.%d, %d stations, player UI up",
              lv_version_major(), lv_version_minor(), lv_version_patch(), STATION_COUNT);

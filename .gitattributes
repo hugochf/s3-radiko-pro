@@ -1,0 +1,4 @@
+# Embedded RGB565 logo blobs are raw binary — never apply line-ending or other
+# text normalization (git's heuristic misdetects some as text and would corrupt
+# them on cross-platform checkout).
+*.bin binary

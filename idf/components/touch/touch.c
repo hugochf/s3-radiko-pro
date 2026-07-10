@@ -52,7 +52,14 @@ esp_err_t touch_init(void)
         .x_max        = DISPLAY_H_RES,
         .y_max        = DISPLAY_V_RES,
         .rst_gpio_num = PIN_TOUCH_RST,
-        .int_gpio_num = PIN_TOUCH_INT,
+        // No INT: touch is polled in touch_read_cb, so the INT pin buys nothing.
+        // Worse, esp_lcd_touch installs a GPIO ISR for it, and the default GPIO
+        // ISR service is NOT in IRAM. A touch edge that fires during a flash
+        // write (NVS commit, cache disabled on both cores) would try to run that
+        // ISR from uncached flash -> unrecoverable hard wedge (no panic, no
+        // coredump). Mashing prev/next made INT edges collide with the per-press
+        // NVS write and hung the whole chip. Polling alone is fully responsive.
+        .int_gpio_num = GPIO_NUM_NC,
         // swap_xy only; X is flipped manually in touch_read_cb (see note there).
         // y_max=240 unused (no driver mirror). Verified against all four corners.
         .flags = {

@@ -26,3 +26,16 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 
 # --- LVGL (v9, configured via Kconfig): RGB565 to match the ILI9341. ---
 CONFIG_LV_COLOR_DEPTH_16=y
+
+# --- Crash diagnostics (added while debugging the Phase 13 logo hang; keep for
+#     the Tier D crash-dump work) ---
+# Hardware watchpoint at each task's stack end: an overflow faults immediately
+# (debug exception -> panic + backtrace) instead of silently corrupting memory
+# and wedging the whole chip with no serial output. Stronger than the default
+# canary, which only validates at context-switch time and misses violent overflows.
+CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y
+# Save an ELF coredump to the dedicated coredump flash partition so a crash can
+# be inspected after reboot with `idf.py coredump-info` / `coredump-debug`.
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y

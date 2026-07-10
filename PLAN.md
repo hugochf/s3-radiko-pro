@@ -181,7 +181,7 @@ purpose. Take the time per phase.
 - [x] **Phase 10** — Radiko auth1/auth2 (partial-key derivation, area=JP14) ✅
 - [x] **Phase 11** — Audio output: I2S + ES8311 (test tone audible) ✅
 - [x] **Phase 12** — HLS pipeline (libhelix-aac + hand-written HLS) ✅ Radiko audio plays!
-- [ ] **Phase 13** — Station logos as embedded data
+- [x] **Phase 13** — Station logos as embedded data ✅ real logos, RGB565 via EMBED_FILES
 - [ ] **Phase 14** — Program info fetch
 - [ ] **Phase 15** — Settings page port
 - [ ] **Phase 16** — Screen saver port
@@ -378,3 +378,43 @@ learning artifact.
   refreshes and session re-resolves never replay or skip.
 - **End of the hard part:** device authenticates and plays live Radiko audio
   through a pipeline we wrote and own — no esp-adf, no 250 MB SDK.
+
+### Phase 13 — Station logos as embedded data
+
+- **Embed pixels with `EMBED_FILES`, not a giant C array.** Raw RGB565 `.bin`
+  files at the component root → CMake `EMBED_FILES` → symbols
+  `_binary_<name>_bin_start`. A thin generated `logos_gen.c` wraps each blob in a
+  v9 `lv_image_dsc_t` (`.magic = LV_IMAGE_HEADER_MAGIC`, `.cf =
+  LV_COLOR_FORMAT_RGB565`, `w/h/stride`). Keeps flash use explicit and the source
+  tree tiny. `.bin` files MUST sit at the component root (not a subdir) for the
+  symbol names to match.
+- **Pre-size assets so LVGL renders at exactly 1x.** A non-1x `lv_image_set_scale`
+  forces LVGL v9's per-frame transform/blit path. Rendering 15 scaled logos in the
+  station list ran that path continuously on the LVGL task (prio 4, core 1), which
+  sits *above* the audio decoder (prio 3, core 1) → decoder starved → audio died.
+  Fix: fit each logo (aspect-preserved) into ≤108x42 so both the list box (110x44)
+  and player box (148x58) resolve to 1x → a plain blit, no transform.
+- **Debugging a hard hang with no serial output.** Three separate bugs, surfaced in
+  order by fixing each:
+  1. *Hard wedge, no panic, no coredump, USB-JTAG dead* while mashing prev/next.
+     Cause: touch is **polled**, but `esp_lcd_touch` was still given `int_gpio_num`,
+     so it installed a **non-IRAM GPIO ISR**. A touch edge firing *during* a
+     per-press NVS flash write (cache disabled on both cores) tried to run the ISR
+     from uncached flash → unrecoverable. Fix: `int_gpio_num = GPIO_NUM_NC`.
+  2. *Flash/stream churn.* Every prev/next did an NVS write **and** a full stream
+     stop+restart. Fix: **debounce** — update the UI instantly, commit NVS + switch
+     the stream once, ~450 ms after the user settles (an `lv_timer` reset on each
+     press). Better UX and far less flash wear.
+  3. *Task-watchdog on IDLE1, `lvgl` stuck in `wait_for_flushing`.* LVGL's default
+     flush wait is a busy `while(disp->flushing)` spin that never yields; if a SPI
+     flush completion stalls under load, IDLE1 starves. Fix: a **yielding**
+     `flush_wait_cb` that blocks on the DMA-done semaphore, with a 100 ms timeout
+     that force-clears the flag (drops the frame) so a lost completion self-heals
+     instead of wedging.
+- **Diagnostics worth keeping (pulled forward from Tier D):** hardware
+  stack-overflow watchpoint (`CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK`) and
+  coredump-to-flash (`CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH`, ELF). The watchpoint
+  ruled out a stack overflow; once the hard wedge became a catchable watchdog, the
+  ELF coredump + `xtensa-esp32s3-elf-addr2line` gave the exact stuck backtrace.
+  (`CONFIG_COMPILER_STACK_CHECK_MODE_NONE` means a plain overflow silently corrupts
+  and wedges — enable the watchpoint before trusting "no crash = no overflow".)
