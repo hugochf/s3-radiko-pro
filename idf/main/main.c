@@ -21,6 +21,7 @@
 #include "display.h"
 #include "i2c_bus.h"
 #include "settings.h"
+#include "timesync.h"
 #include "touch.h"
 #include "ui.h"
 #include "wifi.h"
@@ -78,6 +79,9 @@ void app_main(void)
         ESP_LOGI(TAG, "no WiFi creds — showing setup screen");
         ui_show_wifi_setup();
     }
+
+    // Phase 8: SNTP (JST) — syncs in the background once WiFi is up.
+    timesync_start();
 
     display_backlight_set(255);
     ESP_LOGI(TAG, "display + LVGL + touch + wifi up");

@@ -10,9 +10,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include <time.h>
 #include "lvgl.h"
 #include "settings.h"
 #include "stations.h"
+#include "timesync.h"
 #include "wifi.h"
 
 static const char *TAG = "ui";
@@ -47,6 +49,7 @@ static lv_obj_t *w_vol_slider = NULL;
 static lv_obj_t *w_vol_val    = NULL;
 static lv_obj_t *w_play       = NULL;
 static lv_obj_t *w_wifi       = NULL;
+static lv_obj_t *w_clock      = NULL;
 static lv_obj_t *w_dots[NUM_STATIONS];
 
 // =====================================================================
@@ -198,6 +201,17 @@ static void status_timer_cb(lv_timer_t *t)
     }
     lv_label_set_text(w_wifi, buf);
     lv_obj_set_style_text_color(w_wifi, lv_color_hex(color), 0);
+
+    if (w_clock) {
+        if (timesync_valid()) {
+            time_t now = time(NULL);
+            struct tm tm;
+            localtime_r(&now, &tm);
+            lv_label_set_text_fmt(w_clock, "%02d:%02d", tm.tm_hour, tm.tm_min);
+        } else {
+            lv_label_set_text(w_clock, "--:--");
+        }
+    }
 }
 
 // =====================================================================
@@ -245,10 +259,10 @@ static void build_player_screen(void)
     lv_obj_set_style_text_color(w_wifi, lv_color_hex(C_DIM), 0);
     lv_obj_align(w_wifi, LV_ALIGN_LEFT_MID, 0, 0);
 
-    lv_obj_t *hdr = lv_label_create(bar);
-    lv_label_set_text(hdr, "Radiko");
-    lv_obj_set_style_text_color(hdr, lv_color_hex(C_TEXT), 0);
-    lv_obj_align(hdr, LV_ALIGN_CENTER, 0, 0);
+    w_clock = lv_label_create(bar);
+    lv_label_set_text(w_clock, "--:--");
+    lv_obj_set_style_text_color(w_clock, lv_color_hex(C_TEXT), 0);
+    lv_obj_align(w_clock, LV_ALIGN_CENTER, 0, 0);
 
     lv_obj_t *bat = lv_label_create(bar);
     lv_label_set_text(bat, LV_SYMBOL_BATTERY_FULL " 100%");
