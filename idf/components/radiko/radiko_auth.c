@@ -11,6 +11,12 @@ static const char *TAG = "radiko";
 // Well-known pc_html5 app key (public; same as the Arduino build).
 static const char AUTH_KEY[] = "bcd151073c03b352e1ef2fd66c32209da9ca0afa";
 
+// Cached result of the last successful authentication.
+static radiko_auth_t s_auth;
+
+const char *radiko_token(void) { return s_auth.token; }
+const char *radiko_area(void)  { return s_auth.area; }
+
 esp_err_t radiko_authenticate(radiko_auth_t *out)
 {
     // ---- auth1: get token + key offset/length from response headers ----
@@ -85,6 +91,7 @@ esp_err_t radiko_authenticate(radiko_auth_t *out)
     memcpy(out->area, body, alen);
     out->area[alen] = '\0';
 
+    s_auth = *out;   // cache for radiko_token()/radiko_area()
     ESP_LOGI(TAG, "authenticated: area=%s token=%.12s...", out->area, out->token);
     return ESP_OK;
 }

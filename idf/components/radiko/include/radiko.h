@@ -18,8 +18,12 @@ typedef struct {
     char area[16];     // e.g. "JP14"
 } radiko_auth_t;
 
-// Run auth1 -> derive partial key -> auth2. Fills *out on success.
+// Run auth1 -> derive partial key -> auth2. Fills *out on success and caches it.
 esp_err_t radiko_authenticate(radiko_auth_t *out);
+
+// Last successful auth (empty string until authenticated).
+const char *radiko_token(void);
+const char *radiko_area(void);
 
 #ifdef __cplusplus
 }
