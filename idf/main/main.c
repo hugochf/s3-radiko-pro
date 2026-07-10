@@ -18,6 +18,7 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 
+#include "audio.h"
 #include "display.h"
 #include "i2c_bus.h"
 #include "radiko.h"
@@ -89,6 +90,9 @@ void app_main(void)
     ESP_ERROR_CHECK(i2c_bus_init());
     ESP_ERROR_CHECK(touch_init());
 
+    // Phase 11: I2S + ES8311 audio output.
+    ESP_ERROR_CHECK(audio_init());
+
     // Phase 5: event-driven WiFi station. Phase 6: on-device setup if no creds.
     ESP_ERROR_CHECK(wifi_start());
     if (!wifi_has_creds()) {
@@ -103,7 +107,10 @@ void app_main(void)
     xTaskCreate(radiko_auth_task, "radiko_auth", 8192, NULL, 5, NULL);
 
     display_backlight_set(255);
-    ESP_LOGI(TAG, "display + LVGL + touch + wifi up");
+    ESP_LOGI(TAG, "display + LVGL + touch + wifi + audio up");
+
+    // Phase 11 verification: audible boot tone.
+    audio_test_tone(1000, 1200);
 
     // Idle heartbeat so the watchdog stays happy and we can see it's alive.
     uint32_t tick = 0;
