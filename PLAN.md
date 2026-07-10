@@ -44,9 +44,11 @@ Same as the Arduino prototype:
       licenses (e.g. the ES8311 driver is Apache-2.0).
 - [x] **Commit cadence**: honest "every step" history — commit frequently within a
       phase, warts and all.
-- [x] **Audio framework**: **esp-adf first** to learn the pipeline pattern; revisit
-      libhelix-aac later if footprint matters. Audio component interface kept
-      abstract so either backend fits.
+- [x] **Audio framework**: **libhelix-aac + hand-written HLS** (revised at Phase 12).
+      Chosen over esp-adf to avoid the ~250 MB SDK and its IDF-version coupling, keep
+      a clean BSD license, reuse our httpc/audio components, and actually own the
+      pipeline (the project's whole point). **Fallback:** if libhelix hits an
+      unfixable wall, switch this phase to esp-adf.
 - [ ] **Secure boot timing**: final phase (Phase 25) — keep debugging easy until then.
 
 ## The hard problem: replacing ESP32-audioI2S
@@ -67,8 +69,9 @@ Replacement options:
 | **libhelix-aac** + custom HLS | BSD | Tiny, focused, you own the pipeline | Have to write HLS parser, chunk fetcher, ICY metadata yourself |
 | **fdk-aac** + custom HLS | FDK License (commercial OK) | Higher quality decoder | Larger code footprint |
 
-**Recommendation**: start with **esp-adf** to learn the audio pipeline pattern,
-then optionally rewrite with libhelix-aac later if footprint matters.
+**Decision (Phase 12)**: **libhelix-aac + hand-written HLS**. Owns the pipeline,
+BSD-licensed, no 250 MB SDK, no IDF-version gamble, reuses `httpc`/`audio`. Falls
+back to esp-adf only if libhelix proves unworkable.
 
 ## Phased plan
 
@@ -100,7 +103,7 @@ then optionally rewrite with libhelix-aac later if footprint matters.
 |---|-------|---------------------------|--------------|
 | 10 | **Radiko auth1/auth2** | HTTPS API client pattern, header parsing, key derivation | `components/radiko/auth.c` |
 | 11 | **Audio output: I2S + ES8311** | `esp_codec_dev` driver, no Arduino layer | `components/audio/codec_es8311.c` |
-| 12 | **HLS pipeline (esp-adf)** | Audio pipeline architecture, element-based design | `components/audio/pipeline.c` — playable! |
+| 12 | **HLS pipeline (libhelix-aac)** | Hand-written audio pipeline: m3u8 parse, chunk fetch, AAC decode, ring buffer | `components/hls/` + libhelix — playable! |
 | 13 | **Station logos as embedded data** | Build-time asset embedding via `EMBED_FILES` in CMake | logos via cmake, not generated `.c` |
 | 14 | **Program info fetch** | Background tasks, gzip via miniz/zlib, simple XML parsing | `components/radiko/program.c` |
 | 15 | **Settings page port** | Same UI as Arduino but driven by NVS schema | settings screen |
@@ -177,7 +180,7 @@ purpose. Take the time per phase.
 - [x] **Phase 9** — HTTPS + esp-tls (cert-bundle validation, httpc helper) ✅
 - [x] **Phase 10** — Radiko auth1/auth2 (partial-key derivation, area=JP14) ✅
 - [x] **Phase 11** — Audio output: I2S + ES8311 (test tone audible) ✅
-- [ ] **Phase 12** — HLS pipeline (esp-adf)
+- [ ] **Phase 12** — HLS pipeline (libhelix-aac + hand-written HLS)
 - [ ] **Phase 13** — Station logos as embedded data
 - [ ] **Phase 14** — Program info fetch
 - [ ] **Phase 15** — Settings page port

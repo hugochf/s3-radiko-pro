@@ -18,6 +18,7 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 
+#include "aacdec.h"
 #include "audio.h"
 #include "display.h"
 #include "i2c_bus.h"
@@ -111,6 +112,11 @@ void app_main(void)
 
     // Phase 11 verification: audible boot tone.
     audio_test_tone(1000, 1200);
+
+    // Phase 12 compile-check: does the vendored Helix AAC decoder build on xtensa?
+    HAACDecoder dec = AACInitDecoder();
+    ESP_LOGI(TAG, "libhelix AAC decoder: %s", dec ? "init OK" : "FAILED");
+    if (dec) AACFreeDecoder(dec);
 
     // Idle heartbeat so the watchdog stays happy and we can see it's alive.
     uint32_t tick = 0;
