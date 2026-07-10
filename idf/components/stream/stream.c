@@ -4,25 +4,39 @@
 #include <string.h>
 #include "aacdec.h"
 #include "audio.h"
+#include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
+#include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_random.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
-#include "httpc.h"
 #include "radiko.h"
 
 static const char *TAG = "stream";
 
 #define STREAM_INFO_FMT "https://radiko.jp/v3/station/stream/pc_html5/%s.xml"
-#define SEG_BUF_BYTES   (128 * 1024)   // one AAC segment (PSRAM)
+#define SEG_BUF_BYTES   (64 * 1024)   // one AAC segment (PSRAM)
 #define PLIST_BYTES     4096
+#define SEG_QUEUE_DEPTH 4             // fetched segments waiting to be decoded
 
-static TaskHandle_t     s_task = NULL;
-static volatile bool    s_stop = false;
+// Two-stage pipeline: the fetcher pulls AAC segments over the network (~4 s each)
+// into a queue; the decoder drains the queue -> libhelix -> audio. This overlaps
+// network latency with real-time playback so throughput stays >= 1x.
+typedef struct { char *buf; int len; } seg_t;
+
+static QueueHandle_t    s_q          = NULL;
+static TaskHandle_t     s_fetch_task = NULL;
+static TaskHandle_t     s_dec_task   = NULL;
+static volatile bool    s_stop       = false;
 static char             s_station[16];
 
-// ---- helpers ----
+// Persistent keep-alive HTTPS client (fetcher task only).
+static esp_http_client_handle_t s_client = NULL;
+static struct { char *buf; size_t cap; size_t len; } s_ctx;
+
 static void make_lsid(char *out /* [33] */)
 {
     uint8_t rnd[16];
@@ -31,31 +45,38 @@ static void make_lsid(char *out /* [33] */)
     out[32] = '\0';
 }
 
-static int fetch(const char *url, const char *token, char *buf, size_t cap)
+static esp_err_t on_http(esp_http_client_event_t *e)
 {
-    http_header_t h[1];
-    int nh = 0;
-    if (token && token[0]) { h[0].name = "X-Radiko-AuthToken"; h[0].value = token; nh = 1; }
-    http_req_t r = {
-        .url = url, .method = HTTP_METHOD_GET,
-        .req_headers = h, .n_req_headers = nh,
-        .body = buf, .body_cap = cap,
-    };
-    if (httpc_do(&r) != ESP_OK) return -1;
-    return r.status == 200 ? (int)r.body_len : -r.status;
+    if (e->event_id == HTTP_EVENT_ON_DATA && s_ctx.buf && s_ctx.cap) {
+        size_t space = s_ctx.cap - 1 - s_ctx.len;
+        size_t n = ((size_t)e->data_len < space) ? (size_t)e->data_len : space;
+        memcpy(s_ctx.buf + s_ctx.len, e->data, n);
+        s_ctx.len += n;
+        s_ctx.buf[s_ctx.len] = '\0';
+    }
+    return ESP_OK;
 }
 
-// First non-'#', non-empty line of an m3u8 (a URL). Copies into out.
+static int fetch(const char *url, const char *token, char *buf, size_t cap)
+{
+    s_ctx.buf = buf; s_ctx.cap = cap; s_ctx.len = 0;
+    if (buf && cap) buf[0] = '\0';
+    esp_http_client_set_url(s_client, url);
+    esp_http_client_set_method(s_client, HTTP_METHOD_GET);
+    if (token && token[0]) esp_http_client_set_header(s_client, "X-Radiko-AuthToken", token);
+    if (esp_http_client_perform(s_client) != ESP_OK) return -1;
+    int st = esp_http_client_get_status_code(s_client);
+    return (st == 200) ? (int)s_ctx.len : -st;
+}
+
 static bool first_url_line(const char *body, char *out, size_t cap)
 {
-    const char *p = body;
-    while (*p) {
+    for (const char *p = body; *p; ) {
         const char *nl = strpbrk(p, "\r\n");
         size_t len = nl ? (size_t)(nl - p) : strlen(p);
         if (len > 0 && p[0] != '#') {
             if (len >= cap) len = cap - 1;
-            memcpy(out, p, len);
-            out[len] = '\0';
+            memcpy(out, p, len); out[len] = '\0';
             return true;
         }
         if (!nl) break;
@@ -64,75 +85,24 @@ static bool first_url_line(const char *body, char *out, size_t cap)
     return false;
 }
 
-// Resolve the media URL, playing new segments. Returns false if it should be
-// re-resolved (session expired). last_seg tracks what we've already played.
-static bool play_media(const char *media_url, const char *token,
-                       AACFrameInfo *fi_out, char *seg_buf, char *plist,
-                       char *last_seg, size_t last_seg_cap, HAACDecoder dec)
+// ---- Fetcher: resolve the HLS chain, push new segments onto the queue ----
+static void fetcher_task(void *arg)
 {
-    int len = fetch(media_url, token, plist, PLIST_BYTES);
-    if (len <= 0) {
-        ESP_LOGW(TAG, "media playlist fetch -> %d", len);
-        return false;
-    }
-
-    // Walk segment URLs; play those after the last one we played.
-    bool seen_last = (last_seg[0] == '\0');
-    int played = 0;
-    char *save = NULL;
-    char *dup = plist;
-    for (char *line = strtok_r(dup, "\r\n", &save); line && !s_stop;
-         line = strtok_r(NULL, "\r\n", &save)) {
-        if (!line[0] || line[0] == '#') continue;
-
-        if (!seen_last) {
-            if (strcmp(line, last_seg) == 0) seen_last = true;
-            continue;   // skip up to and including the last played
-        }
-
-        // fetch segment
-        int slen = fetch(line, token, seg_buf, SEG_BUF_BYTES);
-        if (slen <= 0) { ESP_LOGW(TAG, "seg fetch -> %d", slen); continue; }
-
-        // decode ADTS AAC -> PCM -> audio
-        unsigned char *inp = (unsigned char *)seg_buf;
-        int left = slen;
-        static int16_t pcm[2048 * 2];
-        int frames = 0;
-        while (left > 0 && !s_stop) {
-            int off = AACFindSyncWord(inp, left);
-            if (off < 0) break;
-            inp += off; left -= off;
-            int err = AACDecode(dec, &inp, &left, pcm);
-            if (err) { inp++; left--; continue; }   // resync
-            AACGetLastFrameInfo(dec, fi_out);
-            if (frames == 0 && played == 0) {
-                ESP_LOGI(TAG, "decode: %d Hz, %d ch, %d samp/frame",
-                         fi_out->sampRateOut, fi_out->nChans, fi_out->outputSamps);
-            }
-            audio_write(pcm, fi_out->outputSamps * sizeof(int16_t), NULL);
-            frames++;
-        }
-        strncpy(last_seg, line, last_seg_cap - 1);
-        last_seg[last_seg_cap - 1] = '\0';
-        played++;
-    }
-    if (!seen_last) last_seg[0] = '\0';   // fell off the window — resync next time
-    return true;
-}
-
-static void stream_task(void *arg)
-{
-    char *seg_buf = heap_caps_malloc(SEG_BUF_BYTES, MALLOC_CAP_SPIRAM);
-    char *plist   = heap_caps_malloc(PLIST_BYTES, MALLOC_CAP_SPIRAM);
-    HAACDecoder dec = AACInitDecoder();
-    if (!seg_buf || !plist || !dec) { ESP_LOGE(TAG, "alloc/decoder failed"); goto done; }
+    char *plist = heap_caps_malloc(PLIST_BYTES, MALLOC_CAP_SPIRAM);
+    esp_http_client_config_t hcfg = {
+        .url = "https://radiko.jp/", .crt_bundle_attach = esp_crt_bundle_attach,
+        .keep_alive_enable = true, .timeout_ms = 10000, .event_handler = on_http,
+        .buffer_size = 4096,          // fewer TLS reads per segment
+    };
+    s_client = esp_http_client_init(&hcfg);
+    if (!plist || !s_client) { ESP_LOGE(TAG, "fetcher init failed"); goto done; }
+    ESP_LOGI(TAG, "fetcher start: internal free %u KB",
+             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024));
 
     const char *token = radiko_token();
     char base[160] = {0}, media_url[400] = {0}, last_seg[256] = {0};
-    AACFrameInfo fi = {0};
 
-    // stream-info -> playlist base URL
+    // stream-info -> playlist base
     char info_url[160];
     snprintf(info_url, sizeof(info_url), STREAM_INFO_FMT, s_station);
     if (fetch(info_url, NULL, plist, PLIST_BYTES) <= 0) { ESP_LOGE(TAG, "stream-info failed"); goto done; }
@@ -144,11 +114,11 @@ static void stream_task(void *arg)
         size_t n = (size_t)(e - p); if (n >= sizeof(base)) n = sizeof(base) - 1;
         memcpy(base, p, n); base[n] = '\0';
     }
-    ESP_LOGI(TAG, "streaming %s (base %s)", s_station, base);
+    ESP_LOGI(TAG, "streaming %s (internal free %u KB)", s_station,
+             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024));
 
     while (!s_stop) {
         if (media_url[0] == '\0') {
-            // master playlist -> media playlist URL
             char lsid[33]; make_lsid(lsid);
             char purl[320];
             snprintf(purl, sizeof(purl), "%s?station_id=%s&l=15&lsid=%s&type=b",
@@ -159,22 +129,77 @@ static void stream_task(void *arg)
                 vTaskDelay(pdMS_TO_TICKS(1000));
                 continue;
             }
-            last_seg[0] = '\0';
         }
 
-        if (!play_media(media_url, token, &fi, seg_buf, plist,
-                        last_seg, sizeof(last_seg), dec)) {
-            media_url[0] = '\0';   // re-resolve
+        if (fetch(media_url, token, plist, PLIST_BYTES) <= 0) {
+            media_url[0] = '\0';   // session gone — re-resolve (keep last_seg)
             continue;
         }
-        vTaskDelay(pdMS_TO_TICKS(2000));   // ~half the target duration
+
+        bool seen_last = (last_seg[0] == '\0');
+        int pushed = 0;
+        char *save = NULL;
+        for (char *line = strtok_r(plist, "\r\n", &save); line && !s_stop;
+             line = strtok_r(NULL, "\r\n", &save)) {
+            if (!line[0] || line[0] == '#') continue;
+            if (!seen_last) { if (!strcmp(line, last_seg)) seen_last = true; continue; }
+
+            char *buf = heap_caps_malloc(SEG_BUF_BYTES, MALLOC_CAP_SPIRAM);
+            if (!buf) { vTaskDelay(pdMS_TO_TICKS(200)); continue; }
+            int64_t ts = esp_timer_get_time();
+            int slen = fetch(line, token, buf, SEG_BUF_BYTES);
+            if (slen <= 0) { free(buf); continue; }
+            ESP_LOGI(TAG, "fetched seg %d B in %lld ms", slen, (esp_timer_get_time() - ts) / 1000);
+
+            seg_t seg = { buf, slen };
+            // Blocks when the queue is full -> paces the fetcher to real time.
+            while (!s_stop && xQueueSend(s_q, &seg, pdMS_TO_TICKS(200)) != pdTRUE) { }
+            if (s_stop) { free(buf); break; }
+            strncpy(last_seg, line, sizeof(last_seg) - 1);
+            last_seg[sizeof(last_seg) - 1] = '\0';
+            pushed++;
+        }
+        if (pushed == 0) vTaskDelay(pdMS_TO_TICKS(1000));   // at live edge
     }
 
 done:
+    if (s_client) { esp_http_client_cleanup(s_client); s_client = NULL; }
+    free(plist);
+    s_fetch_task = NULL;
+    vTaskDelete(NULL);
+}
+
+// ---- Decoder: drain the queue, decode ADTS AAC, feed audio ----
+static void decoder_task(void *arg)
+{
+    HAACDecoder dec = AACInitDecoder();
+    static int16_t pcm[2048 * 2];
+    AACFrameInfo fi;
+    bool logged = false;
+
+    while (!s_stop) {
+        seg_t seg;
+        if (xQueueReceive(s_q, &seg, pdMS_TO_TICKS(300)) != pdTRUE) continue;
+
+        unsigned char *inp = (unsigned char *)seg.buf;
+        int left = seg.len;
+        while (left > 0 && !s_stop) {
+            int off = AACFindSyncWord(inp, left);
+            if (off < 0) break;
+            inp += off; left -= off;
+            if (AACDecode(dec, &inp, &left, pcm)) { inp++; left--; continue; }
+            AACGetLastFrameInfo(dec, &fi);
+            if (!logged) {
+                logged = true;
+                ESP_LOGI(TAG, "decode: %d Hz, %d ch", fi.sampRateOut, fi.nChans);
+            }
+            audio_write(pcm, fi.outputSamps * sizeof(int16_t), NULL);
+        }
+        free(seg.buf);
+    }
+
     if (dec) AACFreeDecoder(dec);
-    free(seg_buf); free(plist);
-    ESP_LOGI(TAG, "stream task exit");
-    s_task = NULL;
+    s_dec_task = NULL;
     vTaskDelete(NULL);
 }
 
@@ -183,12 +208,19 @@ void stream_play(const char *station_id)
     stream_stop();
     strncpy(s_station, station_id, sizeof(s_station) - 1);
     s_station[sizeof(s_station) - 1] = '\0';
+    if (!s_q) s_q = xQueueCreate(SEG_QUEUE_DEPTH, sizeof(seg_t));
     s_stop = false;
-    xTaskCreatePinnedToCore(stream_task, "stream", 20480, NULL, 5, &s_task, 0);
+    xTaskCreatePinnedToCore(fetcher_task, "seg_fetch", 16384, NULL, 5, &s_fetch_task, 0);
+    xTaskCreatePinnedToCore(decoder_task, "seg_dec",   20480, NULL, 5, &s_dec_task,   1);
 }
 
 void stream_stop(void)
 {
     s_stop = true;
-    for (int i = 0; i < 100 && s_task; i++) vTaskDelay(pdMS_TO_TICKS(20));
+    for (int i = 0; i < 150 && (s_fetch_task || s_dec_task); i++) vTaskDelay(pdMS_TO_TICKS(20));
+    // Drain any leftover queued segments.
+    if (s_q) {
+        seg_t seg;
+        while (xQueueReceive(s_q, &seg, 0) == pdTRUE) free(seg.buf);
+    }
 }

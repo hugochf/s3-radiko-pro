@@ -561,9 +561,11 @@ esp_err_t ui_init(void)
     s_cur = (st->station >= 0 && st->station < STATION_COUNT) ? st->station : 0;
     s_vol = st->volume;
 
+    // Draw buffers in PSRAM (not internal DMA RAM) — frees ~50 KB of scarce
+    // internal RAM for TLS/WiFi. esp_lcd handles cache sync for PSRAM sources.
     size_t buf_bytes = DISPLAY_H_RES * LVGL_BUF_LINES * sizeof(uint16_t);
-    uint8_t *buf1 = heap_caps_malloc(buf_bytes, MALLOC_CAP_DMA);
-    uint8_t *buf2 = heap_caps_malloc(buf_bytes, MALLOC_CAP_DMA);
+    uint8_t *buf1 = heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM);
+    uint8_t *buf2 = heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM);
     if (!buf1 || !buf2) return ESP_ERR_NO_MEM;
 
     s_disp = lv_display_create(DISPLAY_H_RES, DISPLAY_V_RES);

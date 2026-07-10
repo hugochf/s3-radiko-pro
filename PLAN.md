@@ -180,7 +180,7 @@ purpose. Take the time per phase.
 - [x] **Phase 9** — HTTPS + esp-tls (cert-bundle validation, httpc helper) ✅
 - [x] **Phase 10** — Radiko auth1/auth2 (partial-key derivation, area=JP14) ✅
 - [x] **Phase 11** — Audio output: I2S + ES8311 (test tone audible) ✅
-- [ ] **Phase 12** — HLS pipeline (libhelix-aac + hand-written HLS)
+- [x] **Phase 12** — HLS pipeline (libhelix-aac + hand-written HLS) ✅ Radiko audio plays!
 - [ ] **Phase 13** — Station logos as embedded data
 - [ ] **Phase 14** — Program info fetch
 - [ ] **Phase 15** — Settings page port
@@ -355,3 +355,26 @@ learning artifact.
 - The S3 **USB-Serial-JTAG intermittently refuses download mode** ("No serial data
   received") right after some app resets; a flash retry loop (2-4 tries) clears it
   without a physical replug.
+
+### Phase 12 — HLS pipeline (libhelix-aac, hand-written) — Radiko plays!
+
+- **Radiko's streaming flow changed since the Arduino era.** Current chain:
+  stream-info XML (`v3/station/stream/pc_html5/{id}.xml`) → `playlist_create_url`
+  → `playlist.m3u8?station_id&l=15&lsid=<rand32hex>&type=b` (+ auth token header)
+  → master playlist → `medialist?session=…` → media playlist → `.aac` segments.
+  Codec is **HE-AAC (`mp4a.40.5`)** → SBR must be enabled in the libhelix shim.
+- **Two-stage pipeline is mandatory.** The CDN serves live segments at ~1x the
+  stream bitrate (a 5 s / 31 KB segment takes ~5 s to fetch). A single
+  fetch→decode→play loop is sub-real-time and starves. Split into a **fetcher
+  task** (queue of segments) + **decoder task** (drain → libhelix → audio) so
+  network latency overlaps playback. Plus a 15 s PCM ring buffer + I2S writer task.
+- **Internal RAM is the tight resource, and TLS needs a contiguous ~40 KB.** With
+  two task stacks it dropped to ~51 KB and `mbedtls_ssl_setup` returned
+  `-0x7F00` (ALLOC_FAILED). Fixes: route the Helix decoder state to PSRAM
+  (`helix_malloc` → `heap_caps_malloc(SPIRAM)`) **and** move the LVGL draw buffers
+  to PSRAM — freed internal RAM to ~99 KB, TLS connects.
+- **Keep-alive + a 4 KB HTTP read buffer** cut per-segment fetch overhead.
+- Track the last played segment by URL (unique timestamps) so live-playlist
+  refreshes and session re-resolves never replay or skip.
+- **End of the hard part:** device authenticates and plays live Radiko audio
+  through a pipeline we wrote and own — no esp-adf, no 250 MB SDK.

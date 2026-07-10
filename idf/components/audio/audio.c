@@ -30,7 +30,11 @@ static i2c_master_dev_handle_t  s_es  = NULL;
 
 // PCM ring buffer between the decoder (producer, bursty) and I2S (consumer,
 // real-time) — absorbs network/decode jitter so segments play gaplessly.
-#define PCM_BUF_BYTES (SAMPLE_RATE * 4 * 4)   // ~4 s of 16-bit stereo, in PSRAM
+// ~15 s of 16-bit stereo in PSRAM. Must exceed one HLS segment (5 s) with plenty
+// of headroom so the decoder can run ahead of the ~2.4 s-per-segment fetch and
+// front-load the initial playlist window (otherwise audio_write blocks mid-
+// segment, pinning throughput to real time and starving on fetch latency).
+#define PCM_BUF_BYTES (SAMPLE_RATE * 4 * 15)
 static StreamBufferHandle_t s_pcm = NULL;
 
 static void i2s_writer_task(void *arg)
