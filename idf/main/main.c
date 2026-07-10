@@ -40,7 +40,7 @@ static void radiko_auth_task(void *arg)
     radiko_auth_t auth;
     if (radiko_authenticate(&auth) == ESP_OK) {
         ESP_LOGI(TAG, "Radiko auth OK: area=%s", auth.area);
-        stream_probe("TBS");   // Phase 12 increment A: inspect the media playlist
+        stream_play("TBS");    // Phase 12: start streaming
     } else {
         ESP_LOGE(TAG, "Radiko auth failed");
     }

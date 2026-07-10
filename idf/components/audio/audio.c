@@ -5,7 +5,11 @@
 #include "driver/i2s_std.h"
 #include "es8311.h"
 #include "esp_check.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/stream_buffer.h"
+#include "freertos/task.h"
 #include "i2c_bus.h"
 
 static const char *TAG = "audio";
@@ -23,6 +27,23 @@ static const char *TAG = "audio";
 
 static i2s_chan_handle_t        s_tx  = NULL;
 static i2c_master_dev_handle_t  s_es  = NULL;
+
+// PCM ring buffer between the decoder (producer, bursty) and I2S (consumer,
+// real-time) — absorbs network/decode jitter so segments play gaplessly.
+#define PCM_BUF_BYTES (SAMPLE_RATE * 4 * 4)   // ~4 s of 16-bit stereo, in PSRAM
+static StreamBufferHandle_t s_pcm = NULL;
+
+static void i2s_writer_task(void *arg)
+{
+    static uint8_t chunk[4096];
+    while (true) {
+        size_t n = xStreamBufferReceive(s_pcm, chunk, sizeof(chunk), portMAX_DELAY);
+        if (n) {
+            size_t bw;
+            i2s_channel_write(s_tx, chunk, n, &bw, portMAX_DELAY);
+        }
+    }
+}
 
 esp_err_t audio_init(void)
 {
@@ -74,6 +95,13 @@ esp_err_t audio_init(void)
     es8311_voice_volume_set(s_es, 70, NULL);
     es8311_voice_mute(s_es, false);
 
+    // PCM ring buffer (PSRAM storage) + the sole I2S writer task.
+    static StaticStreamBuffer_t sb_struct;
+    uint8_t *sb_storage = heap_caps_malloc(PCM_BUF_BYTES + 1, MALLOC_CAP_SPIRAM);
+    ESP_RETURN_ON_FALSE(sb_storage, ESP_ERR_NO_MEM, TAG, "pcm buf");
+    s_pcm = xStreamBufferCreateStatic(PCM_BUF_BYTES, 1, sb_storage, &sb_struct);
+    xTaskCreatePinnedToCore(i2s_writer_task, "i2s_wr", 4096, NULL, 6, NULL, 1);
+
     ESP_LOGI(TAG, "audio up: I2S %d Hz, ES8311 ready", SAMPLE_RATE);
     return ESP_OK;
 }
@@ -87,7 +115,10 @@ void audio_set_volume(int vol)
 
 esp_err_t audio_write(const void *pcm, size_t bytes, size_t *written)
 {
-    return i2s_channel_write(s_tx, pcm, bytes, written, portMAX_DELAY);
+    // Blocks when the buffer is full — natural back-pressure paces the decoder.
+    size_t n = xStreamBufferSend(s_pcm, pcm, bytes, portMAX_DELAY);
+    if (written) *written = n;
+    return ESP_OK;
 }
 
 void audio_test_tone(int freq_hz, int ms)
@@ -106,7 +137,6 @@ void audio_test_tone(int freq_hz, int ms)
             phase += step;
             if (phase > 2 * M_PI) phase -= 2 * M_PI;
         }
-        size_t bw;
-        i2s_channel_write(s_tx, buf, sizeof(buf), &bw, portMAX_DELAY);
+        audio_write(buf, sizeof(buf), NULL);   // through the ring buffer
     }
 }
