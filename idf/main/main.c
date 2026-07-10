@@ -68,8 +68,12 @@ void app_main(void)
     ESP_ERROR_CHECK(i2c_bus_init());
     ESP_ERROR_CHECK(touch_init());
 
-    // Phase 5: event-driven WiFi station with auto-reconnect.
+    // Phase 5: event-driven WiFi station. Phase 6: on-device setup if no creds.
     ESP_ERROR_CHECK(wifi_start());
+    if (!wifi_has_creds()) {
+        ESP_LOGI(TAG, "no WiFi creds — showing setup screen");
+        ui_show_wifi_setup();
+    }
 
     display_backlight_set(255);
     ESP_LOGI(TAG, "display + LVGL + touch + wifi up");

@@ -1,5 +1,6 @@
 #include "ui.h"
 
+#include <string.h>
 #include "display.h"
 #include "esp_heap_caps.h"
 #include "esp_lcd_panel_ops.h"
@@ -133,6 +134,7 @@ static void refresh_player(void)
 // =====================================================================
 static void ev_open_list(lv_event_t *e) { lv_screen_load(s_scr_list); }
 static void ev_back_to_player(lv_event_t *e) { lv_screen_load(s_scr_player); }
+static void ev_open_wifi_setup(lv_event_t *e) { ui_show_wifi_setup(); }
 
 static void ev_prev(lv_event_t *e)
 {
@@ -220,10 +222,17 @@ static void build_player_screen(void)
     lv_obj_set_style_pad_all(bar, 2, 0);
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
 
-    w_wifi = lv_label_create(bar);
+    // WiFi status — tappable to open the setup screen.
+    lv_obj_t *wbtn = lv_button_create(bar);
+    lv_obj_set_size(wbtn, 100, 22);
+    lv_obj_align(wbtn, LV_ALIGN_LEFT_MID, -4, 0);
+    lv_obj_set_style_bg_opa(wbtn, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_shadow_width(wbtn, 0, 0);
+    lv_obj_add_event_cb(wbtn, ev_open_wifi_setup, LV_EVENT_CLICKED, NULL);
+    w_wifi = lv_label_create(wbtn);
     lv_label_set_text(w_wifi, LV_SYMBOL_WIFI " ...");
     lv_obj_set_style_text_color(w_wifi, lv_color_hex(C_DIM), 0);
-    lv_obj_align(w_wifi, LV_ALIGN_LEFT_MID, 2, 0);
+    lv_obj_align(w_wifi, LV_ALIGN_LEFT_MID, 0, 0);
 
     lv_obj_t *hdr = lv_label_create(bar);
     lv_label_set_text(hdr, "Radiko");
@@ -374,6 +383,142 @@ static void build_list_screen(void)
         lv_obj_set_style_text_color(nm, lv_color_hex(C_TEXT), 0);
         lv_obj_align(nm, LV_ALIGN_RIGHT_MID, -6, 0);
     }
+}
+
+// =====================================================================
+// WiFi setup screen (scan -> select -> password -> connect)
+// =====================================================================
+static lv_obj_t *s_scr_wifi = NULL;
+static lv_obj_t *s_wifi_list = NULL;
+static lv_obj_t *s_wifi_ta   = NULL;
+static lv_obj_t *s_wifi_kb   = NULL;
+static char      s_sel_ssid[33];
+
+static void ev_kb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_READY) {              // "OK" pressed
+        wifi_connect_creds(s_sel_ssid, lv_textarea_get_text(s_wifi_ta));
+        lv_screen_load(s_scr_player);
+    } else if (code == LV_EVENT_CANCEL) {      // back to network list
+        lv_obj_add_flag(s_wifi_ta, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_wifi_kb, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_wifi_list, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void ev_pick_ssid(lv_event_t *e)
+{
+    const wifi_ap_info_t *ap = lv_event_get_user_data(e);
+    strncpy(s_sel_ssid, ap->ssid, sizeof(s_sel_ssid) - 1);
+    s_sel_ssid[sizeof(s_sel_ssid) - 1] = '\0';
+    if (!ap->secure) {                          // open network — connect now
+        wifi_connect_creds(s_sel_ssid, "");
+        lv_screen_load(s_scr_player);
+        return;
+    }
+    lv_textarea_set_text(s_wifi_ta, "");
+    lv_obj_add_flag(s_wifi_list, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(s_wifi_ta, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(s_wifi_kb, LV_OBJ_FLAG_HIDDEN);
+    lv_keyboard_set_textarea(s_wifi_kb, s_wifi_ta);
+}
+
+// Scan runs OFF the LVGL thread (blocking), then repopulates the list.
+static wifi_ap_info_t s_aps[20];   // persists so button user_data stays valid
+
+static void scan_task(void *arg)
+{
+    int n = wifi_scan(s_aps, 20);
+
+    ui_lock(-1);
+    lv_obj_clean(s_wifi_list);
+    if (n == 0) {
+        lv_obj_t *l = lv_label_create(s_wifi_list);
+        lv_label_set_text(l, "No networks found");
+        lv_obj_set_style_text_color(l, lv_color_hex(C_DIM), 0);
+    }
+    for (int i = 0; i < n; i++) {
+        lv_obj_t *btn = lv_button_create(s_wifi_list);
+        lv_obj_set_size(btn, 300, 34);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(C_PANEL), 0);
+        lv_obj_add_event_cb(btn, ev_pick_ssid, LV_EVENT_CLICKED, &s_aps[i]);
+        lv_obj_t *l = lv_label_create(btn);
+        lv_label_set_text_fmt(l, "%s %s  (%d)", s_aps[i].secure ? LV_SYMBOL_CLOSE : LV_SYMBOL_OK,
+                              s_aps[i].ssid, s_aps[i].rssi);
+        lv_obj_center(l);
+    }
+    ui_unlock();
+    vTaskDelete(NULL);
+}
+
+static void ev_wifi_back(lv_event_t *e) { lv_screen_load(s_scr_player); }
+
+static void build_wifi_setup_screen(void)
+{
+    s_scr_wifi = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_scr_wifi, lv_color_hex(C_BG), 0);
+    lv_obj_clear_flag(s_scr_wifi, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *hdr = lv_obj_create(s_scr_wifi);
+    lv_obj_set_size(hdr, 320, 28);
+    lv_obj_set_pos(hdr, 0, 0);
+    lv_obj_set_style_bg_color(hdr, lv_color_hex(C_PANEL), 0);
+    lv_obj_set_style_radius(hdr, 0, 0);
+    lv_obj_set_style_border_width(hdr, 0, 0);
+    lv_obj_set_style_pad_all(hdr, 2, 0);
+    lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *back = lv_button_create(hdr);
+    lv_obj_set_size(back, 70, 22);
+    lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_bg_color(back, lv_color_hex(C_ACCENT), 0);
+    lv_obj_add_event_cb(back, ev_wifi_back, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *bl = lv_label_create(back);
+    lv_label_set_text(bl, LV_SYMBOL_LEFT " Back");
+    lv_obj_center(bl);
+
+    lv_obj_t *ttl = lv_label_create(hdr);
+    lv_label_set_text(ttl, "WiFi Setup");
+    lv_obj_set_style_text_color(ttl, lv_color_hex(C_TEXT), 0);
+    lv_obj_align(ttl, LV_ALIGN_CENTER, 20, 0);
+
+    s_wifi_list = lv_obj_create(s_scr_wifi);
+    lv_obj_set_size(s_wifi_list, 314, 210);
+    lv_obj_set_pos(s_wifi_list, 3, 28);
+    lv_obj_set_style_bg_color(s_wifi_list, lv_color_hex(C_BG), 0);
+    lv_obj_set_style_border_width(s_wifi_list, 0, 0);
+    lv_obj_set_flex_flow(s_wifi_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(s_wifi_list, 4, 0);
+
+    // Password entry (hidden until a secured network is picked)
+    s_wifi_ta = lv_textarea_create(s_scr_wifi);
+    lv_obj_set_size(s_wifi_ta, 300, 36);
+    lv_obj_align(s_wifi_ta, LV_ALIGN_TOP_MID, 0, 30);
+    lv_textarea_set_one_line(s_wifi_ta, true);
+    lv_textarea_set_placeholder_text(s_wifi_ta, "Password");
+    lv_obj_add_flag(s_wifi_ta, LV_OBJ_FLAG_HIDDEN);
+
+    s_wifi_kb = lv_keyboard_create(s_scr_wifi);
+    lv_obj_add_event_cb(s_wifi_kb, ev_kb, LV_EVENT_ALL, NULL);
+    lv_obj_add_flag(s_wifi_kb, LV_OBJ_FLAG_HIDDEN);
+}
+
+void ui_show_wifi_setup(void)
+{
+    ui_lock(-1);
+    if (!s_scr_wifi) build_wifi_setup_screen();
+    lv_obj_add_flag(s_wifi_ta, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_wifi_kb, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(s_wifi_list, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clean(s_wifi_list);
+    lv_obj_t *l = lv_label_create(s_wifi_list);
+    lv_label_set_text(l, "Scanning...");
+    lv_obj_set_style_text_color(l, lv_color_hex(C_DIM), 0);
+    lv_screen_load(s_scr_wifi);
+    ui_unlock();
+
+    xTaskCreate(scan_task, "wifiscan", 4096, NULL, 4, NULL);
 }
 
 // =====================================================================

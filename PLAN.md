@@ -171,7 +171,7 @@ purpose. Take the time per phase.
 - [x] **Phase 3** — Touch driver ✅ FT6336 -> LVGL, all corners mapped, shared I2C bus up
 - [x] **Phase 4** — Player UI port ✅ player + station list, JP font, touch nav (stub data)
 - [x] **Phase 5** — WiFi state machine ✅ connects w/ retry+backoff, status in UI
-- [ ] **Phase 6** — WiFi provisioning
+- [x] **Phase 6** — WiFi setup (on-device: scan + keyboard, NVS-persisted) ✅
 - [ ] **Phase 7** — NVS settings
 - [ ] **Phase 8** — NTP time sync
 - [ ] **Phase 9** — HTTPS + esp-tls

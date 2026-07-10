@@ -16,6 +16,10 @@ extern "C" {
 
 esp_err_t ui_init(void);
 
+// Show the on-device WiFi setup screen (scan + password entry). Safe to call
+// from any task; it locks LVGL internally.
+void ui_show_wifi_setup(void);
+
 // Take/release the LVGL mutex (recursive). timeout_ms < 0 waits forever.
 bool ui_lock(int timeout_ms);
 void ui_unlock(void);
