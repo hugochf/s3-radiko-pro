@@ -11,6 +11,7 @@
 #include "freertos/task.h"
 #include "lvgl.h"
 #include "stations.h"
+#include "wifi.h"
 
 static const char *TAG = "ui";
 
@@ -43,6 +44,7 @@ static lv_obj_t *w_prog       = NULL;
 static lv_obj_t *w_vol_slider = NULL;
 static lv_obj_t *w_vol_val    = NULL;
 static lv_obj_t *w_play       = NULL;
+static lv_obj_t *w_wifi       = NULL;
 static lv_obj_t *w_dots[NUM_STATIONS];
 
 // =====================================================================
@@ -160,6 +162,31 @@ static void ev_select_station(lv_event_t *e)
     lv_screen_load(s_scr_player);
 }
 
+// Poll WiFi state and reflect it in the status bar. Runs inside lv_timer_handler
+// (LVGL task), so it already holds the LVGL lock. wifi_get_* are thread-safe.
+static void status_timer_cb(lv_timer_t *t)
+{
+    if (!w_wifi) return;
+    char buf[24];
+    uint32_t color;
+    switch (wifi_get_state()) {
+        case WIFI_CONNECTED:
+            snprintf(buf, sizeof(buf), LV_SYMBOL_WIFI " %ddBm", wifi_get_rssi());
+            color = 0x3AD07A;
+            break;
+        case WIFI_CONNECTING:
+            snprintf(buf, sizeof(buf), LV_SYMBOL_WIFI " ...");
+            color = 0xE0C040;
+            break;
+        default:
+            snprintf(buf, sizeof(buf), LV_SYMBOL_WARNING " off");
+            color = C_HL;
+            break;
+    }
+    lv_label_set_text(w_wifi, buf);
+    lv_obj_set_style_text_color(w_wifi, lv_color_hex(color), 0);
+}
+
 // =====================================================================
 // Player screen
 // =====================================================================
@@ -193,10 +220,10 @@ static void build_player_screen(void)
     lv_obj_set_style_pad_all(bar, 2, 0);
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *clock = lv_label_create(bar);
-    lv_label_set_text(clock, LV_SYMBOL_WIFI "  12:34");
-    lv_obj_set_style_text_color(clock, lv_color_hex(C_TEXT), 0);
-    lv_obj_align(clock, LV_ALIGN_LEFT_MID, 2, 0);
+    w_wifi = lv_label_create(bar);
+    lv_label_set_text(w_wifi, LV_SYMBOL_WIFI " ...");
+    lv_obj_set_style_text_color(w_wifi, lv_color_hex(C_DIM), 0);
+    lv_obj_align(w_wifi, LV_ALIGN_LEFT_MID, 2, 0);
 
     lv_obj_t *hdr = lv_label_create(bar);
     lv_label_set_text(hdr, "Radiko");
@@ -371,6 +398,8 @@ esp_err_t ui_init(void)
     build_player_screen();
     build_list_screen();
     lv_screen_load(s_scr_player);
+
+    lv_timer_create(status_timer_cb, 2000, NULL);  // WiFi/status bar refresh
 
     xTaskCreatePinnedToCore(lvgl_task, "lvgl", 8192, NULL, 4, NULL, 1);
 

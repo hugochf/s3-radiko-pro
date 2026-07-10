@@ -9,4 +9,6 @@ sdkconfig.old
 
 # Secrets: never commit real credentials. Early-bring-up creds (before Phase 6
 # provisioning lands) go in a gitignored header, not in tracked source.
+# (The committed *.example shows the shape.)
 secrets.h
+wifi_secrets.h

@@ -16,11 +16,13 @@
 #include "esp_psram.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "nvs_flash.h"
 
 #include "display.h"
 #include "i2c_bus.h"
 #include "touch.h"
 #include "ui.h"
+#include "wifi.h"
 
 static const char *TAG = "boot";
 
@@ -53,13 +55,24 @@ void app_main(void)
              esp_get_free_heap_size() / 1024,
              (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
 
+    // NVS is required by esp_wifi; init it early (Phase 7 expands its use).
+    esp_err_t nv = nvs_flash_init();
+    if (nv == ESP_ERR_NVS_NO_FREE_PAGES || nv == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ESP_ERROR_CHECK(nvs_flash_init());
+    }
+
     // Phase 1: ILI9341 panel. Phase 2: LVGL. Phase 3: shared I2C bus + FT6336 touch.
     ESP_ERROR_CHECK(display_init());
     ESP_ERROR_CHECK(ui_init());          // lv_init happens here, before touch indev
     ESP_ERROR_CHECK(i2c_bus_init());
     ESP_ERROR_CHECK(touch_init());
+
+    // Phase 5: event-driven WiFi station with auto-reconnect.
+    ESP_ERROR_CHECK(wifi_start());
+
     display_backlight_set(255);
-    ESP_LOGI(TAG, "display + LVGL + touch up");
+    ESP_LOGI(TAG, "display + LVGL + touch + wifi up");
 
     // Idle heartbeat so the watchdog stays happy and we can see it's alive.
     uint32_t tick = 0;

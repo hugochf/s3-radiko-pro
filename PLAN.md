@@ -170,7 +170,7 @@ purpose. Take the time per phase.
 - [x] **Phase 2** — LVGL via managed component ✅ LVGL v9.3.0 rendering on-device
 - [x] **Phase 3** — Touch driver ✅ FT6336 -> LVGL, all corners mapped, shared I2C bus up
 - [x] **Phase 4** — Player UI port ✅ player + station list, JP font, touch nav (stub data)
-- [ ] **Phase 5** — WiFi state machine
+- [x] **Phase 5** — WiFi state machine ✅ connects w/ retry+backoff, status in UI
 - [ ] **Phase 6** — WiFi provisioning
 - [ ] **Phase 7** — NVS settings
 - [ ] **Phase 8** — NTP time sync
@@ -327,3 +327,28 @@ learning artifact.
   or network yet, exactly the Tier-A end state.
 - **End of Tier A:** device boots, shows the player UI, Japanese renders, touch
   navigates player <-> list, buttons/slider respond. No audio, no network.
+
+## Tier B lessons
+
+### Phase 5 — WiFi state machine (esp_wifi + esp_event)
+
+- **`esp_wifi` requires NVS initialised first** — `nvs_flash_init()` (with the
+  no-free-pages/new-version erase-and-retry dance) before `wifi_start()`.
+- **Event-driven, no blocking loops** (unlike the Arduino `WiFi.begin()` wait):
+  handlers on `WIFI_EVENT`/`IP_EVENT`. STA_START → connect; STA_DISCONNECTED →
+  backoff + reconnect; GOT_IP → connected, reset retry.
+- **Backoff is a non-blocking `esp_timer` one-shot** (500 ms << retry, capped 30 s),
+  so nothing spins. Reset the counter on GOT_IP.
+- **Always log the disconnect reason** (`wifi_event_sta_disconnected_t.reason`):
+  201=AP-not-found, 15=bad-password saved a lot of guessing. Note: **ESP32-S3 is
+  2.4 GHz only** — a 5 GHz-only AP shows up as reason 201, not an auth error.
+- **Credentials stay out of git:** gitignored `wifi_secrets.h` pulled in via
+  `#if __has_include`, falling back to empty strings so CI still builds without it
+  (a committed `wifi_secrets.h.example` shows the shape). Component needs
+  `PRIV_INCLUDE_DIRS "."` so the header next to `wifi.c` is found.
+- **UI reflects WiFi by polling in an `lv_timer`** (runs inside `lv_timer_handler`,
+  already under the LVGL lock) — `wifi_get_*` are just thread-safe reads. No
+  cross-task LVGL calls needed.
+- The S3 **USB-Serial-JTAG intermittently refuses download mode** ("No serial data
+  received") right after some app resets; a flash retry loop (2-4 tries) clears it
+  without a physical replug.
