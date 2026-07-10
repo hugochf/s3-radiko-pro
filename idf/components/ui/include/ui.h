@@ -20,6 +20,12 @@ esp_err_t ui_init(void);
 // from any task; it locks LVGL internally.
 void ui_show_wifi_setup(void);
 
+// Reflect playback state in the UI (play/pause icon). Thread-safe.
+void ui_set_playing(bool playing);
+
+// The saved/selected station id (for auto-play after auth). Never NULL.
+const char *ui_current_station_id(void);
+
 // Take/release the LVGL mutex (recursive). timeout_ms < 0 waits forever.
 bool ui_lock(int timeout_ms);
 void ui_unlock(void);

@@ -17,8 +17,12 @@ extern "C" {
 esp_err_t audio_init(void);                 // I2S + ES8311 + amp enable
 void      audio_set_volume(int vol);        // 0..100 (codec DAC volume)
 
-// Write interleaved 16-bit stereo PCM to I2S (blocking).
+// Write interleaved 16-bit stereo PCM (back-pressures the caller until played).
 esp_err_t audio_write(const void *pcm, size_t bytes, size_t *written);
+
+// Instant silence: mute + drop all buffered PCM. audio_resume() restarts output.
+void audio_flush(void);
+void audio_resume(void);
 
 // Phase 11 verification: play a sine tone for `ms` milliseconds (blocking).
 void      audio_test_tone(int freq_hz, int ms);

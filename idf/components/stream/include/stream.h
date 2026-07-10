@@ -8,8 +8,12 @@
 extern "C" {
 #endif
 
-void stream_play(const char *station_id);   // (re)start streaming a station
-void stream_stop(void);                      // stop playback
+// Start the player-control task once at boot. Play/stop below post to it, so
+// they are non-blocking and safe to call from LVGL touch handlers.
+void stream_control_start(void);
+
+void stream_play(const char *station_id);   // request: (re)start a station
+void stream_stop(void);                      // request: stop playback
 
 #ifdef __cplusplus
 }

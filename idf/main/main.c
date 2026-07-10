@@ -40,7 +40,8 @@ static void radiko_auth_task(void *arg)
     radiko_auth_t auth;
     if (radiko_authenticate(&auth) == ESP_OK) {
         ESP_LOGI(TAG, "Radiko auth OK: area=%s", auth.area);
-        stream_play("TBS");    // Phase 12: start streaming
+        ui_set_playing(true);                    // auto-play the saved station
+        stream_play(ui_current_station_id());
     } else {
         ESP_LOGE(TAG, "Radiko auth failed");
     }
@@ -94,6 +95,10 @@ void app_main(void)
 
     // Phase 11: I2S + ES8311 audio output.
     ESP_ERROR_CHECK(audio_init());
+    audio_set_volume(settings_get()->volume);   // apply persisted volume
+
+    // Phase 12: player-control task (UI posts play/stop commands to it).
+    stream_control_start();
 
     // Phase 5: event-driven WiFi station. Phase 6: on-device setup if no creds.
     ESP_ERROR_CHECK(wifi_start());

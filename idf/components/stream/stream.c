@@ -47,6 +47,9 @@ static void make_lsid(char *out /* [33] */)
 
 static esp_err_t on_http(esp_http_client_event_t *e)
 {
+    // Abort an in-flight download the instant a stop/switch is requested, so
+    // stopping the old station doesn't wait for its ~5 s segment fetch.
+    if (s_stop) return ESP_FAIL;
     if (e->event_id == HTTP_EVENT_ON_DATA && s_ctx.buf && s_ctx.cap) {
         size_t space = s_ctx.cap - 1 - s_ctx.len;
         size_t n = ((size_t)e->data_len < space) ? (size_t)e->data_len : space;
@@ -89,24 +92,18 @@ static bool first_url_line(const char *body, char *out, size_t cap)
 static void fetcher_task(void *arg)
 {
     char *plist = heap_caps_malloc(PLIST_BYTES, MALLOC_CAP_SPIRAM);
-    esp_http_client_config_t hcfg = {
-        .url = "https://radiko.jp/", .crt_bundle_attach = esp_crt_bundle_attach,
-        .keep_alive_enable = true, .timeout_ms = 10000, .event_handler = on_http,
-        .buffer_size = 4096,          // fewer TLS reads per segment
-    };
-    s_client = esp_http_client_init(&hcfg);
     if (!plist || !s_client) { ESP_LOGE(TAG, "fetcher init failed"); goto done; }
-    ESP_LOGI(TAG, "fetcher start: internal free %u KB",
-             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024));
 
     const char *token = radiko_token();
-    char base[160] = {0}, media_url[400] = {0}, last_seg[256] = {0};
+    // base (playlist_create_url) is station-independent — resolve it once and
+    // reuse across station changes to skip the stream-info fetch.
+    static char base[160] = {0};
+    char media_url[400] = {0}, last_seg[256] = {0};
 
-    // stream-info -> playlist base
-    char info_url[160];
-    snprintf(info_url, sizeof(info_url), STREAM_INFO_FMT, s_station);
-    if (fetch(info_url, NULL, plist, PLIST_BYTES) <= 0) { ESP_LOGE(TAG, "stream-info failed"); goto done; }
-    {
+    if (base[0] == '\0') {
+        char info_url[160];
+        snprintf(info_url, sizeof(info_url), STREAM_INFO_FMT, s_station);
+        if (fetch(info_url, NULL, plist, PLIST_BYTES) <= 0) { ESP_LOGE(TAG, "stream-info failed"); goto done; }
         char *p = strstr(plist, "<playlist_create_url>");
         char *e = p ? strstr(p, "</playlist_create_url>") : NULL;
         if (!p || !e) { ESP_LOGE(TAG, "no playlist_create_url"); goto done; }
@@ -114,8 +111,7 @@ static void fetcher_task(void *arg)
         size_t n = (size_t)(e - p); if (n >= sizeof(base)) n = sizeof(base) - 1;
         memcpy(base, p, n); base[n] = '\0';
     }
-    ESP_LOGI(TAG, "streaming %s (internal free %u KB)", s_station,
-             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024));
+    ESP_LOGI(TAG, "streaming %s", s_station);
 
     while (!s_stop) {
         if (media_url[0] == '\0') {
@@ -146,10 +142,8 @@ static void fetcher_task(void *arg)
 
             char *buf = heap_caps_malloc(SEG_BUF_BYTES, MALLOC_CAP_SPIRAM);
             if (!buf) { vTaskDelay(pdMS_TO_TICKS(200)); continue; }
-            int64_t ts = esp_timer_get_time();
             int slen = fetch(line, token, buf, SEG_BUF_BYTES);
             if (slen <= 0) { free(buf); continue; }
-            ESP_LOGI(TAG, "fetched seg %d B in %lld ms", slen, (esp_timer_get_time() - ts) / 1000);
 
             seg_t seg = { buf, slen };
             // Blocks when the queue is full -> paces the fetcher to real time.
@@ -163,8 +157,7 @@ static void fetcher_task(void *arg)
     }
 
 done:
-    if (s_client) { esp_http_client_cleanup(s_client); s_client = NULL; }
-    free(plist);
+    free(plist);   // s_client persists across stations (keep-alive)
     s_fetch_task = NULL;
     vTaskDelete(NULL);
 }
@@ -196,6 +189,9 @@ static void decoder_task(void *arg)
             audio_write(pcm, fi.outputSamps * sizeof(int16_t), NULL);
         }
         free(seg.buf);
+        // Yield between segments so core-1's idle task runs (feeds the task
+        // watchdog) even when the queue is full during startup catch-up.
+        vTaskDelay(1);
     }
 
     if (dec) AACFreeDecoder(dec);
@@ -203,24 +199,71 @@ static void decoder_task(void *arg)
     vTaskDelete(NULL);
 }
 
-void stream_play(const char *station_id)
+// ---- Internal (blocking) start/stop, run only from the control task ----
+static void start_stream(const char *station_id)
 {
-    stream_stop();
     strncpy(s_station, station_id, sizeof(s_station) - 1);
     s_station[sizeof(s_station) - 1] = '\0';
     if (!s_q) s_q = xQueueCreate(SEG_QUEUE_DEPTH, sizeof(seg_t));
     s_stop = false;
+    audio_resume();     // unmute, start from an empty buffer (fresh/live)
     xTaskCreatePinnedToCore(fetcher_task, "seg_fetch", 16384, NULL, 5, &s_fetch_task, 0);
-    xTaskCreatePinnedToCore(decoder_task, "seg_dec",   20480, NULL, 5, &s_dec_task,   1);
+    // Decoder priority 3 is BELOW the LVGL task (4) on core 1, so touch/UI stay
+    // responsive; the 15 s ring buffer gives the decoder ample slack to catch up.
+    xTaskCreatePinnedToCore(decoder_task, "seg_dec",   20480, NULL, 3, &s_dec_task,   1);
+}
+
+static void stop_stream(void)
+{
+    s_stop = true;
+    audio_flush();   // instant silence + unblocks the decoder (so it exits fast)
+    // The fetcher can be mid-download, so wait generously for both tasks to exit.
+    for (int i = 0; i < 600 && (s_fetch_task || s_dec_task); i++) vTaskDelay(pdMS_TO_TICKS(20));
+    if (s_q) {
+        seg_t seg;
+        while (xQueueReceive(s_q, &seg, 0) == pdTRUE) free(seg.buf);  // drain leftovers
+    }
+}
+
+// ---- Player-control task: serialises play/stop so the UI never blocks ----
+typedef struct { char station[16]; bool play; } cmd_t;
+static QueueHandle_t s_cmd_q = NULL;
+
+static void ctrl_task(void *arg)
+{
+    cmd_t c;
+    while (true) {
+        if (xQueueReceive(s_cmd_q, &c, portMAX_DELAY) != pdTRUE) continue;
+        stop_stream();                                   // stop whatever's playing
+        if (c.play && c.station[0]) start_stream(c.station);
+    }
+}
+
+void stream_control_start(void)
+{
+    if (!s_cmd_q) s_cmd_q = xQueueCreate(1, sizeof(cmd_t));   // depth 1: latest wins
+    // One persistent keep-alive client, reused across every station change so the
+    // CDN connection stays warm (no re-handshake on switch).
+    if (!s_client) {
+        esp_http_client_config_t hcfg = {
+            .url = "https://radiko.jp/", .crt_bundle_attach = esp_crt_bundle_attach,
+            .keep_alive_enable = true, .timeout_ms = 10000, .event_handler = on_http,
+            .buffer_size = 4096,
+        };
+        s_client = esp_http_client_init(&hcfg);
+    }
+    xTaskCreate(ctrl_task, "stream_ctl", 3072, NULL, 6, NULL);
+}
+
+void stream_play(const char *station_id)
+{
+    cmd_t c = { .play = true };
+    strncpy(c.station, station_id, sizeof(c.station) - 1);
+    xQueueOverwrite(s_cmd_q, &c);
 }
 
 void stream_stop(void)
 {
-    s_stop = true;
-    for (int i = 0; i < 150 && (s_fetch_task || s_dec_task); i++) vTaskDelay(pdMS_TO_TICKS(20));
-    // Drain any leftover queued segments.
-    if (s_q) {
-        seg_t seg;
-        while (xQueueReceive(s_q, &seg, 0) == pdTRUE) free(seg.buf);
-    }
+    cmd_t c = { .play = false };
+    xQueueOverwrite(s_cmd_q, &c);
 }

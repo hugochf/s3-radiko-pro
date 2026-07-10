@@ -36,12 +36,20 @@ static i2c_master_dev_handle_t  s_es  = NULL;
 // segment, pinning throughput to real time and starving on fetch latency).
 #define PCM_BUF_BYTES (SAMPLE_RATE * 4 * 15)
 static StreamBufferHandle_t s_pcm = NULL;
+static volatile bool        s_active    = true;   // false -> audio_write drops
+static volatile bool        s_flush_req = false;  // ask the writer to discard buffered PCM
 
+// Only the writer task touches the buffer's receive side, so flushing here (vs
+// xStreamBufferReset) can't race a blocked reader.
 static void i2s_writer_task(void *arg)
 {
     static uint8_t chunk[4096];
     while (true) {
-        size_t n = xStreamBufferReceive(s_pcm, chunk, sizeof(chunk), portMAX_DELAY);
+        if (s_flush_req) {
+            while (xStreamBufferReceive(s_pcm, chunk, sizeof(chunk), 0) > 0) { }  // discard
+            s_flush_req = false;
+        }
+        size_t n = xStreamBufferReceive(s_pcm, chunk, sizeof(chunk), pdMS_TO_TICKS(50));
         if (n) {
             size_t bw;
             i2s_channel_write(s_tx, chunk, n, &bw, portMAX_DELAY);
@@ -119,10 +127,33 @@ void audio_set_volume(int vol)
 
 esp_err_t audio_write(const void *pcm, size_t bytes, size_t *written)
 {
-    // Blocks when the buffer is full — natural back-pressure paces the decoder.
-    size_t n = xStreamBufferSend(s_pcm, pcm, bytes, portMAX_DELAY);
-    if (written) *written = n;
+    // Back-pressure when full (paces the decoder), but bounded so a flush can
+    // unblock us quickly: while flushing/stopped (!s_active), drop the data.
+    const uint8_t *p = pcm;
+    size_t sent = 0;
+    while (sent < bytes && s_active) {
+        sent += xStreamBufferSend(s_pcm, p + sent, bytes - sent, pdMS_TO_TICKS(100));
+    }
+    if (written) *written = sent;
     return ESP_OK;
+}
+
+// Instant silence: mute, stop accepting PCM, and drop everything buffered.
+void audio_flush(void)
+{
+    if (s_es) es8311_voice_mute(s_es, true);
+    s_active    = false;                 // audio_write returns promptly, dropping
+    s_flush_req = true;                  // writer discards the ring buffer
+    vTaskDelay(pdMS_TO_TICKS(70));       // let both take effect
+}
+
+// Resume output with an empty buffer (fresh, live audio).
+void audio_resume(void)
+{
+    s_flush_req = true;
+    vTaskDelay(pdMS_TO_TICKS(20));
+    s_active = true;
+    if (s_es) es8311_voice_mute(s_es, false);
 }
 
 void audio_test_tone(int freq_hz, int ms)

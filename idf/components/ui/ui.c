@@ -1,6 +1,7 @@
 #include "ui.h"
 
 #include <string.h>
+#include "audio.h"
 #include "display.h"
 #include "esp_heap_caps.h"
 #include "esp_lcd_panel_ops.h"
@@ -14,6 +15,7 @@
 #include "lvgl.h"
 #include "settings.h"
 #include "stations.h"
+#include "stream.h"
 #include "timesync.h"
 #include "wifi.h"
 
@@ -87,6 +89,20 @@ void ui_unlock(void)
     xSemaphoreGiveRecursive(s_mutex);
 }
 
+void ui_set_playing(bool playing)
+{
+    ui_lock(-1);
+    s_playing = playing;
+    if (w_play) lv_label_set_text(w_play, playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
+    ui_unlock();
+}
+
+const char *ui_current_station_id(void)
+{
+    int i = (s_cur >= 0 && s_cur < STATION_COUNT) ? s_cur : 0;
+    return STATIONS[i].id;
+}
+
 static void lvgl_task(void *arg)
 {
     ESP_LOGI(TAG, "LVGL task started");
@@ -141,6 +157,13 @@ static void refresh_player(void)
 static void persist_station(void) { settings_get()->station = s_cur; settings_save(); }
 static void persist_volume(void)  { settings_get()->volume  = s_vol; settings_save(); }
 
+// Reflect s_playing/s_cur onto the actual stream (non-blocking requests).
+static void apply_playback(void)
+{
+    if (s_playing) stream_play(STATIONS[s_cur].id);
+    else           stream_stop();
+}
+
 static void ev_open_list(lv_event_t *e) { lv_screen_load(s_scr_list); }
 static void ev_back_to_player(lv_event_t *e) { lv_screen_load(s_scr_player); }
 static void ev_open_wifi_setup(lv_event_t *e) { ui_show_wifi_setup(); }
@@ -150,22 +173,26 @@ static void ev_prev(lv_event_t *e)
     s_cur = (s_cur + STATION_COUNT - 1) % STATION_COUNT;
     refresh_player();
     persist_station();
+    apply_playback();   // switch stream if playing
 }
 static void ev_next(lv_event_t *e)
 {
     s_cur = (s_cur + 1) % STATION_COUNT;
     refresh_player();
     persist_station();
+    apply_playback();
 }
 static void ev_play(lv_event_t *e)
 {
-    s_playing = !s_playing;   // transient — not persisted
+    s_playing = !s_playing;
     refresh_player();
+    apply_playback();
 }
 static void ev_vol(lv_event_t *e)   // live update while dragging
 {
     s_vol = (int)lv_slider_get_value(w_vol_slider);
     lv_label_set_text_fmt(w_vol_val, "%d", s_vol);
+    audio_set_volume(s_vol);        // apply to the ES8311 immediately
 }
 static void ev_vol_released(lv_event_t *e) { persist_volume(); }
 
@@ -175,6 +202,7 @@ static void ev_select_station(lv_event_t *e)
     s_playing = true;
     refresh_player();
     persist_station();
+    apply_playback();
     lv_screen_load(s_scr_player);
 }
 
