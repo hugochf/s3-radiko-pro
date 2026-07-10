@@ -11,6 +11,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "lvgl.h"
+#include "settings.h"
 #include "stations.h"
 #include "wifi.h"
 
@@ -132,6 +133,11 @@ static void refresh_player(void)
 // =====================================================================
 // Event callbacks
 // =====================================================================
+// Persist the fields the player can change. NVS writes are debounced to
+// meaningful moments (station select, volume release), not every slider tick.
+static void persist_station(void) { settings_get()->station = s_cur; settings_save(); }
+static void persist_volume(void)  { settings_get()->volume  = s_vol; settings_save(); }
+
 static void ev_open_list(lv_event_t *e) { lv_screen_load(s_scr_list); }
 static void ev_back_to_player(lv_event_t *e) { lv_screen_load(s_scr_player); }
 static void ev_open_wifi_setup(lv_event_t *e) { ui_show_wifi_setup(); }
@@ -140,27 +146,32 @@ static void ev_prev(lv_event_t *e)
 {
     s_cur = (s_cur + STATION_COUNT - 1) % STATION_COUNT;
     refresh_player();
+    persist_station();
 }
 static void ev_next(lv_event_t *e)
 {
     s_cur = (s_cur + 1) % STATION_COUNT;
     refresh_player();
+    persist_station();
 }
 static void ev_play(lv_event_t *e)
 {
-    s_playing = !s_playing;
+    s_playing = !s_playing;   // transient — not persisted
     refresh_player();
 }
-static void ev_vol(lv_event_t *e)
+static void ev_vol(lv_event_t *e)   // live update while dragging
 {
     s_vol = (int)lv_slider_get_value(w_vol_slider);
     lv_label_set_text_fmt(w_vol_val, "%d", s_vol);
 }
+static void ev_vol_released(lv_event_t *e) { persist_volume(); }
+
 static void ev_select_station(lv_event_t *e)
 {
     s_cur = (int)(intptr_t)lv_event_get_user_data(e);
     s_playing = true;
     refresh_player();
+    persist_station();
     lv_screen_load(s_scr_player);
 }
 
@@ -284,6 +295,7 @@ static void build_player_screen(void)
     lv_obj_set_style_bg_color(w_vol_slider, lv_color_hex(C_HL), LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(w_vol_slider, lv_color_hex(C_HL), LV_PART_KNOB);
     lv_obj_add_event_cb(w_vol_slider, ev_vol, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_event_cb(w_vol_slider, ev_vol_released, LV_EVENT_RELEASED, NULL);
 
     w_vol_val = lv_label_create(s_scr_player);
     lv_obj_set_style_text_color(w_vol_val, lv_color_hex(C_TEXT), 0);
@@ -529,6 +541,11 @@ esp_err_t ui_init(void)
 
     lv_init();
     lv_tick_set_cb(tick_cb);
+
+    // Start from persisted settings (Phase 7).
+    settings_t *st = settings_get();
+    s_cur = (st->station >= 0 && st->station < STATION_COUNT) ? st->station : 0;
+    s_vol = st->volume;
 
     size_t buf_bytes = DISPLAY_H_RES * LVGL_BUF_LINES * sizeof(uint16_t);
     uint8_t *buf1 = heap_caps_malloc(buf_bytes, MALLOC_CAP_DMA);

@@ -172,7 +172,7 @@ purpose. Take the time per phase.
 - [x] **Phase 4** — Player UI port ✅ player + station list, JP font, touch nav (stub data)
 - [x] **Phase 5** — WiFi state machine ✅ connects w/ retry+backoff, status in UI
 - [x] **Phase 6** — WiFi setup (on-device: scan + keyboard, NVS-persisted) ✅
-- [ ] **Phase 7** — NVS settings
+- [x] **Phase 7** — NVS settings (versioned blob, defaults, corruption recovery) ✅
 - [ ] **Phase 8** — NTP time sync
 - [ ] **Phase 9** — HTTPS + esp-tls
 - [ ] **Phase 10** — Radiko auth1/auth2

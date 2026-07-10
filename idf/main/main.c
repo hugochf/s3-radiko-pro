@@ -20,6 +20,7 @@
 
 #include "display.h"
 #include "i2c_bus.h"
+#include "settings.h"
 #include "touch.h"
 #include "ui.h"
 #include "wifi.h"
@@ -61,6 +62,9 @@ void app_main(void)
         ESP_ERROR_CHECK(nvs_flash_erase());
         ESP_ERROR_CHECK(nvs_flash_init());
     }
+
+    // Phase 7: load persistent settings (before UI so it starts from saved state).
+    ESP_ERROR_CHECK(settings_init());
 
     // Phase 1: ILI9341 panel. Phase 2: LVGL. Phase 3: shared I2C bus + FT6336 touch.
     ESP_ERROR_CHECK(display_init());
