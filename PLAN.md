@@ -175,7 +175,7 @@ purpose. Take the time per phase.
 - [x] **Phase 7** — NVS settings (versioned blob, defaults, corruption recovery) ✅
 - [x] **Phase 8** — NTP time sync (multi-server SNTP, JST, live clock) ✅
 - [x] **Phase 9** — HTTPS + esp-tls (cert-bundle validation, httpc helper) ✅
-- [ ] **Phase 10** — Radiko auth1/auth2
+- [x] **Phase 10** — Radiko auth1/auth2 (partial-key derivation, area=JP14) ✅
 - [ ] **Phase 11** — Audio output: I2S + ES8311
 - [ ] **Phase 12** — HLS pipeline (esp-adf)
 - [ ] **Phase 13** — Station logos as embedded data

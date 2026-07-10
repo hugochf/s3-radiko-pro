@@ -19,8 +19,8 @@
 #include "nvs_flash.h"
 
 #include "display.h"
-#include "httpc.h"
 #include "i2c_bus.h"
+#include "radiko.h"
 #include "settings.h"
 #include "timesync.h"
 #include "touch.h"
@@ -29,23 +29,18 @@
 
 static const char *TAG = "boot";
 
-// Phase 9 self-test: once WiFi is up, do a validated HTTPS GET against a real
-// Radiko endpoint (proves esp-tls + certificate-bundle validation works).
-// Superseded by the real auth client in Phase 10.
-static void https_selftest_task(void *arg)
+// Phase 10: once WiFi is up, authenticate with Radiko (auth1 + auth2). The token
+// authorises the stream in Phase 12; the area drives program info in Phase 14.
+static void radiko_auth_task(void *arg)
 {
     while (wifi_get_state() != WIFI_CONNECTED) vTaskDelay(pdMS_TO_TICKS(200));
 
-    static char body[512];
-    http_req_t req = {
-        .url      = "https://radiko.jp/v3/station/list/JP14.xml",
-        .method   = HTTP_METHOD_GET,
-        .body     = body,
-        .body_cap = sizeof(body),
-    };
-    esp_err_t err = httpc_do(&req);
-    ESP_LOGI(TAG, "HTTPS self-test: err=%s status=%d bytes=%u",
-             esp_err_to_name(err), req.status, (unsigned)req.body_len);
+    radiko_auth_t auth;
+    if (radiko_authenticate(&auth) == ESP_OK) {
+        ESP_LOGI(TAG, "Radiko auth OK: area=%s", auth.area);
+    } else {
+        ESP_LOGE(TAG, "Radiko auth failed");
+    }
     vTaskDelete(NULL);
 }
 
@@ -104,8 +99,8 @@ void app_main(void)
     // Phase 8: SNTP (JST) — syncs in the background once WiFi is up.
     timesync_start();
 
-    // Phase 9: prove validated HTTPS works (base for Radiko auth).
-    xTaskCreate(https_selftest_task, "https_test", 8192, NULL, 5, NULL);
+    // Phase 10: authenticate with Radiko once WiFi is up.
+    xTaskCreate(radiko_auth_task, "radiko_auth", 8192, NULL, 5, NULL);
 
     display_backlight_set(255);
     ESP_LOGI(TAG, "display + LVGL + touch + wifi up");
