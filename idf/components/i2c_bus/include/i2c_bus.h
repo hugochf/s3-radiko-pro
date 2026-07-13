@@ -17,6 +17,13 @@ extern "C" {
 esp_err_t i2c_bus_init(void);
 i2c_master_bus_handle_t i2c_bus_handle(void);
 
+// The bus is shared (FT6336 touch + ES8311 codec) and ESP-IDF's i2c_master is
+// NOT thread-safe across tasks: concurrent touch polls (LVGL task) and codec
+// mute/volume writes (stream ctrl task) corrupted the driver and hung both.
+// Every multi-op transaction must hold this lock.
+void i2c_bus_lock(void);
+void i2c_bus_unlock(void);
+
 #ifdef __cplusplus
 }
 #endif

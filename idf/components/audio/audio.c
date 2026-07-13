@@ -122,7 +122,7 @@ void audio_set_volume(int vol)
 {
     if (vol < 0) vol = 0;
     if (vol > 100) vol = 100;
-    if (s_es) es8311_voice_volume_set(s_es, vol, NULL);
+    if (s_es) { i2c_bus_lock(); es8311_voice_volume_set(s_es, vol, NULL); i2c_bus_unlock(); }
 }
 
 esp_err_t audio_write(const void *pcm, size_t bytes, size_t *written)
@@ -141,7 +141,7 @@ esp_err_t audio_write(const void *pcm, size_t bytes, size_t *written)
 // Instant silence: mute, stop accepting PCM, and drop everything buffered.
 void audio_flush(void)
 {
-    if (s_es) es8311_voice_mute(s_es, true);
+    if (s_es) { i2c_bus_lock(); es8311_voice_mute(s_es, true); i2c_bus_unlock(); }
     s_active    = false;                 // audio_write returns promptly, dropping
     s_flush_req = true;                  // writer discards the ring buffer
     vTaskDelay(pdMS_TO_TICKS(70));       // let both take effect
@@ -153,7 +153,7 @@ void audio_resume(void)
     s_flush_req = true;
     vTaskDelay(pdMS_TO_TICKS(20));
     s_active = true;
-    if (s_es) es8311_voice_mute(s_es, false);
+    if (s_es) { i2c_bus_lock(); es8311_voice_mute(s_es, false); i2c_bus_unlock(); }
 }
 
 void audio_test_tone(int freq_hz, int ms)

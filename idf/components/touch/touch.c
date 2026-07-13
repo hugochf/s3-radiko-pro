@@ -22,8 +22,10 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
     uint16_t x = 0, y = 0;
     uint8_t count = 0;
 
+    i2c_bus_lock();    // shared bus with the ES8311 (see i2c_bus.h)
     esp_lcd_touch_read_data(s_touch);
     bool pressed = esp_lcd_touch_get_coordinates(s_touch, &x, &y, NULL, &count, 1);
+    i2c_bus_unlock();
 
     if (pressed && count > 0) {
         // Flip X here rather than via the driver's mirror_x: esp_lcd_touch mirrors

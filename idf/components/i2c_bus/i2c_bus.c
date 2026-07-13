@@ -1,4 +1,6 @@
 #include "i2c_bus.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 #include "esp_check.h"
 #include "esp_log.h"
@@ -32,3 +34,11 @@ i2c_master_bus_handle_t i2c_bus_handle(void)
 {
     return s_bus;
 }
+
+static SemaphoreHandle_t s_i2c_mutex;
+void i2c_bus_lock(void)
+{
+    if (!s_i2c_mutex) s_i2c_mutex = xSemaphoreCreateMutex();
+    xSemaphoreTake(s_i2c_mutex, portMAX_DELAY);
+}
+void i2c_bus_unlock(void) { xSemaphoreGive(s_i2c_mutex); }
