@@ -4,6 +4,7 @@
 #include "audio.h"
 #include "display.h"
 #include "logos.h"
+#include "esp_app_desc.h"
 #include "esp_heap_caps.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_log.h"
@@ -278,6 +279,173 @@ static void ev_led_toggle(lv_event_t *e)
 
 static void ev_open_list(lv_event_t *e) { lv_screen_load(s_scr_list); }
 
+// ---- Settings / Info screen (Phase 15, Arduino port) ----
+static lv_obj_t *s_scr_set = NULL;
+static lv_obj_t *s_set_info[5];          // RSSI/area, uptime, heap, ver, idf
+static lv_obj_t *s_set_bl_val = NULL;
+static lv_obj_t *s_set_sl_val = NULL;
+static const uint8_t BL_DUTY[4] = { 64, 128, 192, 255 };
+static const char   *BL_NAMES[4] = { "Low", "Mid", "High", "Max" };
+static const char   *SLEEP_NAMES[4] = { "Off", "30 min", "60 min", "90 min" };
+
+static void ev_set_back(lv_event_t *e) { lv_screen_load(s_scr_player); }
+
+static void ev_set_bl(lv_event_t *e)
+{
+    int idx = (int)lv_slider_get_value(lv_event_get_target(e));
+    display_backlight_set(BL_DUTY[idx]);
+    lv_label_set_text(s_set_bl_val, BL_NAMES[idx]);
+    settings_get()->brightness = idx;
+    settings_save();
+}
+
+static void ev_set_sleep(lv_event_t *e)
+{
+    int idx = (int)lv_slider_get_value(lv_event_get_target(e));
+    lv_label_set_text(s_set_sl_val, SLEEP_NAMES[idx]);
+    s_sleep_idx = idx;
+    int min = SLEEP_MIN[idx];
+    if (s_sleep_timer) {
+        if (min == 0) lv_timer_pause(s_sleep_timer);
+        else {
+            lv_timer_set_period(s_sleep_timer, (uint32_t)min * 60 * 1000);
+            lv_timer_reset(s_sleep_timer);
+            lv_timer_resume(s_sleep_timer);
+        }
+    }
+    settings_get()->sleep_mins = (uint8_t)min;
+    settings_save();
+}
+
+// Fill the System Info labels; called each time the screen opens.
+static void refresh_settings_info(void)
+{
+    char b[64];
+    snprintf(b, sizeof(b), LV_SYMBOL_WIFI " %d dBm    Area: %s",
+             wifi_get_rssi(), radiko_area()[0] ? radiko_area() : "-");
+    lv_label_set_text(s_set_info[0], b);
+    snprintf(b, sizeof(b), "IP: %s", wifi_get_ip());
+    lv_label_set_text(s_set_info[1], b);
+    int64_t up = esp_timer_get_time() / 1000000;
+    snprintf(b, sizeof(b), "Uptime: %lld:%02lld:%02lld", up / 3600, (up / 60) % 60, up % 60);
+    lv_label_set_text(s_set_info[2], b);
+    snprintf(b, sizeof(b), "Free: %u KB internal, %u KB PSRAM",
+             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
+             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
+    lv_label_set_text(s_set_info[3], b);
+}
+
+static void ev_open_settings(lv_event_t *e)
+{
+    refresh_settings_info();
+    lv_screen_load(s_scr_set);
+}
+
+static lv_obj_t *set_slider_row(lv_obj_t *cont, const char *title, int max_idx,
+                                int cur, const char *cur_name,
+                                lv_event_cb_t cb, lv_obj_t **out_val)
+{
+    lv_obj_t *row = lv_obj_create(cont);
+    lv_obj_set_size(row, 300, 48);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *tl = lv_label_create(row);
+    lv_label_set_text(tl, title);
+    lv_obj_set_style_text_color(tl, lv_color_hex(C_HL), 0);
+    lv_obj_align(tl, LV_ALIGN_TOP_LEFT, 4, 0);
+
+    *out_val = lv_label_create(row);
+    lv_label_set_text(*out_val, cur_name);
+    lv_obj_set_style_text_color(*out_val, lv_color_hex(C_TEXT), 0);
+    lv_obj_align(*out_val, LV_ALIGN_TOP_RIGHT, -4, 0);
+
+    lv_obj_t *sl = lv_slider_create(row);
+    lv_obj_set_size(sl, 264, 8);
+    lv_obj_align(sl, LV_ALIGN_BOTTOM_MID, 0, -8);
+    lv_slider_set_range(sl, 0, max_idx);
+    lv_slider_set_value(sl, cur, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(sl, lv_color_hex(C_TRACK), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(sl, lv_color_hex(C_HL), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(sl, lv_color_hex(C_HL), LV_PART_KNOB);
+    lv_obj_add_event_cb(sl, cb, LV_EVENT_VALUE_CHANGED, NULL);
+    return sl;
+}
+
+static void build_settings_screen(void)
+{
+    s_scr_set = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_scr_set, lv_color_hex(C_BG), 0);
+    lv_obj_clear_flag(s_scr_set, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *hdr = lv_obj_create(s_scr_set);
+    lv_obj_set_size(hdr, 320, 28);
+    lv_obj_set_pos(hdr, 0, 0);
+    lv_obj_set_style_bg_color(hdr, lv_color_hex(C_PANEL), 0);
+    lv_obj_set_style_border_width(hdr, 0, 0);
+    lv_obj_set_style_radius(hdr, 0, 0);
+    lv_obj_set_style_pad_all(hdr, 2, 0);
+    lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *back = lv_button_create(hdr);
+    lv_obj_set_size(back, 72, 24);
+    lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_bg_color(back, lv_color_hex(C_ACCENT), 0);
+    lv_obj_set_style_shadow_width(back, 0, 0);
+    lv_obj_add_event_cb(back, ev_set_back, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *bl = lv_label_create(back);
+    lv_label_set_text(bl, LV_SYMBOL_LEFT " Back");
+    lv_obj_center(bl);
+
+    lv_obj_t *ttl = lv_label_create(hdr);
+    lv_label_set_text(ttl, "Settings / Info");
+    lv_obj_set_style_text_color(ttl, lv_color_hex(C_TEXT), 0);
+    lv_obj_align(ttl, LV_ALIGN_CENTER, 24, 0);
+
+    lv_obj_t *cont = lv_obj_create(s_scr_set);
+    lv_obj_set_size(cont, 320, 212);
+    lv_obj_set_pos(cont, 0, 28);
+    lv_obj_set_style_bg_color(cont, lv_color_hex(C_BG), 0);
+    lv_obj_set_style_border_width(cont, 0, 0);
+    lv_obj_set_style_radius(cont, 0, 0);
+    lv_obj_set_style_pad_all(cont, 6, 0);
+    lv_obj_set_style_pad_row(cont, 6, 0);
+    lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
+
+    settings_t *st = settings_get();
+    set_slider_row(cont, "Brightness", 3, st->brightness,
+                   BL_NAMES[st->brightness], ev_set_bl, &s_set_bl_val);
+    int sidx = (st->sleep_mins >= 90) ? 3 : (st->sleep_mins >= 60) ? 2
+             : (st->sleep_mins >= 30) ? 1 : 0;
+    set_slider_row(cont, "Sleep Timer", 3, sidx,
+                   SLEEP_NAMES[sidx], ev_set_sleep, &s_set_sl_val);
+
+    lv_obj_t *sec = lv_label_create(cont);
+    lv_label_set_text(sec, "System Info");
+    lv_obj_set_style_text_color(sec, lv_color_hex(C_HL), 0);
+    for (int i = 0; i < 4; i++) {
+        s_set_info[i] = lv_label_create(cont);
+        lv_obj_set_style_text_color(s_set_info[i], lv_color_hex(C_TEXT), 0);
+        lv_label_set_text(s_set_info[i], "...");
+    }
+
+    lv_obj_t *sec2 = lv_label_create(cont);
+    lv_label_set_text(sec2, "Firmware");
+    lv_obj_set_style_text_color(sec2, lv_color_hex(C_HL), 0);
+    const esp_app_desc_t *app = esp_app_get_description();
+    char fw[72];
+    lv_obj_t *f1 = lv_label_create(cont);
+    lv_obj_set_style_text_color(f1, lv_color_hex(C_TEXT), 0);
+    snprintf(fw, sizeof(fw), "v%s (%s %s)", app->version, app->date, app->time);
+    lv_label_set_text(f1, fw);
+    lv_obj_t *f2 = lv_label_create(cont);
+    lv_obj_set_style_text_color(f2, lv_color_hex(C_TEXT), 0);
+    snprintf(fw, sizeof(fw), "IDF %s", app->idf_ver);
+    lv_label_set_text(f2, fw);
+}
+
 // Swipe/tap gestures on the full-width logo strip (Arduino behaviour):
 //   dx >= +25 → prev station, dx <= -25 → next station,
 //   |dx| < 8 AND released in the centre region (x 120..200) → open station list,
@@ -298,10 +466,19 @@ static void ev_logo_released(lv_event_t *e)
     int dx = p.x - s_press_x;
     if      (dx >= 25) ev_prev(e);   // swipe right → previous station
     else if (dx <= -25) ev_next(e);  // swipe left  → next station
-    else if (dx > -8 && dx < 8 && p.x >= 120 && p.x <= 200) ev_open_list(e);
+    else if (dx > -8 && dx < 8 && p.x >= 120 && p.x <= 200 && p.y >= 40)
+        ev_open_list(e);   // y-guard: don't steal near-miss taps on the title
 }
 static void ev_back_to_player(lv_event_t *e) { lv_screen_load(s_scr_player); }
-static void ev_open_wifi_setup(lv_event_t *e) { ui_show_wifi_setup(); }
+// Arduino behaviour: entering WiFi setup stops playback first — scanning and
+// reconnecting while streaming is unreliable. User presses play afterwards.
+static void ev_open_wifi_setup(lv_event_t *e)
+{
+    s_playing = false;
+    refresh_player();
+    apply_playback();
+    ui_show_wifi_setup();
+}
 
 static void ev_prev(lv_event_t *e)
 {
@@ -415,6 +592,7 @@ static void build_player_screen(void)
     lv_obj_align(wbtn, LV_ALIGN_LEFT_MID, -4, 0);
     lv_obj_set_style_bg_opa(wbtn, LV_OPA_TRANSP, 0);
     lv_obj_set_style_shadow_width(wbtn, 0, 0);
+    lv_obj_set_ext_click_area(wbtn, 16);   // small target at the screen edge
     lv_obj_add_event_cb(wbtn, ev_open_wifi_setup, LV_EVENT_CLICKED, NULL);
     w_wifi = lv_label_create(wbtn);
     lv_label_set_text(w_wifi, LV_SYMBOL_WIFI " ...");
@@ -427,10 +605,18 @@ static void build_player_screen(void)
     lv_obj_set_style_text_color(w_clock, lv_color_hex(C_TEXT), 0);
     lv_obj_align(w_clock, LV_ALIGN_RIGHT_MID, -2, 0);
 
-    lv_obj_t *hdr_lbl = lv_label_create(bar);
+    // Real button (Arduino hdr_btn): the whole 130x24 centre area opens Settings.
+    lv_obj_t *hdr_btn = lv_button_create(bar);
+    lv_obj_set_size(hdr_btn, 130, 24);
+    lv_obj_align(hdr_btn, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_opa(hdr_btn, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_color(hdr_btn, lv_color_hex(C_HL), LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_width(hdr_btn, 0, 0);
+    lv_obj_add_event_cb(hdr_btn, ev_open_settings, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *hdr_lbl = lv_label_create(hdr_btn);
     lv_label_set_text(hdr_lbl, "Radiko Radio");
     lv_obj_set_style_text_color(hdr_lbl, lv_color_hex(C_TEXT), 0);
-    lv_obj_align(hdr_lbl, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_center(hdr_lbl);
 
     lv_obj_t *bat = lv_label_create(bar);
     lv_label_set_text(bat, LV_SYMBOL_BATTERY_FULL " 100%");
@@ -690,7 +876,8 @@ static void scan_task(void *arg)
         lv_obj_set_style_bg_color(btn, lv_color_hex(C_PANEL), 0);
         lv_obj_add_event_cb(btn, ev_pick_ssid, LV_EVENT_CLICKED, &s_aps[i]);
         lv_obj_t *l = lv_label_create(btn);
-        lv_label_set_text_fmt(l, "%s %s  (%d)", s_aps[i].secure ? LV_SYMBOL_CLOSE : LV_SYMBOL_OK,
+        lv_label_set_text_fmt(l, "%s %s%s  (%d)", LV_SYMBOL_WIFI,
+                              s_aps[i].secure ? "" : "(open) ",
                               s_aps[i].ssid, s_aps[i].rssi);
         lv_obj_center(l);
     }
@@ -798,6 +985,7 @@ esp_err_t ui_init(void)
 
     build_player_screen();
     build_list_screen();
+    build_settings_screen();
     lv_screen_load(s_scr_player);
 
     lv_timer_create(status_timer_cb, 2000, NULL);  // WiFi/status bar refresh
