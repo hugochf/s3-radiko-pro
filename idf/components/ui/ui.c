@@ -470,15 +470,10 @@ static void ev_logo_released(lv_event_t *e)
         ev_open_list(e);   // y-guard: don't steal near-miss taps on the title
 }
 static void ev_back_to_player(lv_event_t *e) { lv_screen_load(s_scr_player); }
-// Arduino behaviour: entering WiFi setup stops playback first — scanning and
-// reconnecting while streaming is unreliable. User presses play afterwards.
-static void ev_open_wifi_setup(lv_event_t *e)
-{
-    s_playing = false;
-    refresh_player();
-    apply_playback();
-    ui_show_wifi_setup();
-}
+// Audio keeps playing during WiFi setup (unlike the Arduino, which had to stop
+// its audio library): a scan only blips the connection and the 30 s PCM buffer
+// rides through it. Actually changing networks interrupts audio naturally.
+static void ev_open_wifi_setup(lv_event_t *e) { ui_show_wifi_setup(); }
 
 static void ev_prev(lv_event_t *e)
 {
