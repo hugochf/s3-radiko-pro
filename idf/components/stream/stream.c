@@ -134,7 +134,7 @@ static void fetcher_task(void *arg)
         if (media_url[0] == '\0') {
             char lsid[33]; make_lsid(lsid);
             char purl[320];
-            snprintf(purl, sizeof(purl), "%s?station_id=%s&l=15&lsid=%s&type=b",
+            snprintf(purl, sizeof(purl), "%s?station_id=%s&l=30&lsid=%s&type=b",
                      base, s_station, lsid);
             if (fetch(purl, token, plist, PLIST_BYTES) <= 0 ||
                 !first_url_line(plist, media_url, sizeof(media_url))) {
@@ -182,7 +182,10 @@ static void fetcher_task(void *arg)
             // the medialist session went stale — Radiko expires it after a few
             // minutes and then serves a frozen playlist with HTTP 200, so the fetch
             // never fails and audio silently dies. Force a fresh session.
-            if (++empty >= 12) { empty = 0; media_url[0] = '\0'; last_seg[0] = '\0'; }
+            if (++empty >= 5) {
+                ESP_LOGI(TAG, "live playlist stale; new session");
+                empty = 0; media_url[0] = '\0'; last_seg[0] = '\0';
+            }
             vTaskDelay(pdMS_TO_TICKS(1000));   // at live edge
         }
     }

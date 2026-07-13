@@ -34,7 +34,7 @@ static i2c_master_dev_handle_t  s_es  = NULL;
 // of headroom so the decoder can run ahead of the ~2.4 s-per-segment fetch and
 // front-load the initial playlist window (otherwise audio_write blocks mid-
 // segment, pinning throughput to real time and starving on fetch latency).
-#define PCM_BUF_BYTES (SAMPLE_RATE * 4 * 15)
+#define PCM_BUF_BYTES (SAMPLE_RATE * 4 * 30)   // 30 s: rides out session-expiry re-resolve
 static StreamBufferHandle_t s_pcm = NULL;
 static volatile bool        s_active    = true;   // false -> audio_write drops
 static volatile bool        s_flush_req = false;  // ask the writer to discard buffered PCM

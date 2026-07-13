@@ -465,5 +465,10 @@ real phase. Eight distinct bugs, each only visible after fixing the previous:
   centre tap=list), white logo card, slow-crawl marquees (player + list rows),
   list rows = logo left / name top-right / programme bottom-right, WS2812 mood
   LED component (GPIO42, 7 modes, prio-1 tick task), sleep-timer button.
-- **Boot→audio 50 s → 29 s:** stream-info over HTTP (−1 TLS handshake), test tone
-  removed. Next lever: reuse one keep-alive connection for auth1+auth2 (~−7 s).
+- **Boot→audio 50 s → 18 s:** stream-info over HTTP (−1 TLS handshake), test tone
+  removed, and auth1+auth2 share one keep-alive connection (−1 handshake, ~6 s).
+- **Periodic stop/resume choppiness = session-expiry gap vs buffer depth.** The
+  dropout window (stale detection + re-resolve) must stay well under the buffered
+  audio. Fixes: request `l=30` (30 s live backlog instead of 15), detect a stale
+  playlist after ~5 s of empty polls (was 12), and a 30 s PCM ring buffer.
+  Verified 7 min continuous with zero stalls.
