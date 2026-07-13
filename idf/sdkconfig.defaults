@@ -59,3 +59,9 @@ CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
 # that class of failure outright; the modest TLS slowdown is irrelevant at
 # 160 kbps stream bitrate.
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+
+# The WS2812 mood LED refreshes via RMT every 20 ms. Its ISR must live in IRAM:
+# a non-IRAM RMT interrupt firing during an NVS flash write (cache disabled)
+# wedges the chip — same failure class as the Phase 13 touch-INT bug, seen as
+# intermittent touch loss / full hangs.
+CONFIG_RMT_ISR_IRAM_SAFE=y
