@@ -19,10 +19,13 @@ Live Radiko audio plays, touchscreen-controlled. Working today:
 - Wi-Fi provisioning (on-screen scan + password) with NVS-persisted credentials
 - SNTP time sync (JST) — required for Radiko auth
 - Radiko `auth1`/`auth2` and live HLS playback (HE-AAC / `mp4a.40.5`, SBR)
-- Player UI: 15 stations, real embedded logos, play/pause, prev/next, volume
+- Player UI (Arduino-parity): swipeable full-width logo, play/pause, prev/next,
+  volume, sleep timer, WS2812 mood-LED modes
+- "Now on air" program info (title + performers) on the player and per list row,
+  full-CJK font, refreshed every 5 min
 - Instant pause/switch, debounced station navigation, persisted station & volume
 
-Roadmap next: program-info (now-playing), settings screen, screen saver, then the
+Roadmap next: settings screen, screen saver, then the
 Tier D hardening pass (error handling, OTA, unit tests). See [PLAN.md](PLAN.md).
 
 ## Hardware

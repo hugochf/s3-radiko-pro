@@ -19,6 +19,7 @@
 #include "nvs_flash.h"
 
 #include "audio.h"
+#include "led.h"
 #include "display.h"
 #include "i2c_bus.h"
 #include "radiko.h"
@@ -37,14 +38,18 @@ static void radiko_auth_task(void *arg)
 {
     while (wifi_get_state() != WIFI_CONNECTED) vTaskDelay(pdMS_TO_TICKS(200));
 
+    // Retry auth: a transient TLS/connection hiccup must not permanently leave
+    // the radio silent. Back off between attempts so we don't hammer Radiko.
     radiko_auth_t auth;
-    if (radiko_authenticate(&auth) == ESP_OK) {
-        ESP_LOGI(TAG, "Radiko auth OK: area=%s", auth.area);
-        ui_set_playing(true);                    // auto-play the saved station
-        stream_play(ui_current_station_id());
-    } else {
-        ESP_LOGE(TAG, "Radiko auth failed");
+    esp_err_t err;
+    for (int attempt = 1; (err = radiko_authenticate(&auth)) != ESP_OK; attempt++) {
+        ESP_LOGW(TAG, "Radiko auth failed (attempt %d); retrying", attempt);
+        vTaskDelay(pdMS_TO_TICKS(3000));
     }
+
+    ESP_LOGI(TAG, "Radiko auth OK: area=%s", auth.area);
+    ui_set_playing(true);                    // auto-play the saved station
+    stream_play(ui_current_station_id());    // stream gets its TLS RAM first
     vTaskDelete(NULL);
 }
 
@@ -97,8 +102,17 @@ void app_main(void)
     ESP_ERROR_CHECK(audio_init());
     audio_set_volume(settings_get()->volume);   // apply persisted volume
 
+    // WS2812 mood LED (Arduino parity; eye button on the player cycles modes).
+    led_init();
+
     // Phase 12: player-control task (UI posts play/stop commands to it).
     stream_control_start();
+
+    // Phase 14: "now on air" titles. Created HERE, at boot, so its task stack is
+    // allocated before any TLS session runs — created later it can split the
+    // largest free internal block below the ~16 KB contiguous mbedtls needs and
+    // permanently break streaming. The task itself waits for Radiko auth.
+    radiko_program_start(ui_program_updated);
 
     // Phase 5: event-driven WiFi station. Phase 6: on-device setup if no creds.
     ESP_ERROR_CHECK(wifi_start());
@@ -116,14 +130,15 @@ void app_main(void)
     display_backlight_set(255);
     ESP_LOGI(TAG, "display + LVGL + touch + wifi + audio up");
 
-    // Phase 11 verification: audible boot tone.
-    audio_test_tone(1000, 1200);
 
     // Idle heartbeat so the watchdog stays happy and we can see it's alive.
     uint32_t tick = 0;
     while (true) {
         vTaskDelay(pdMS_TO_TICKS(10000));
-        ESP_LOGI(TAG, "alive (%" PRIu32 "), free heap %" PRIu32 " KB",
-                 ++tick, esp_get_free_heap_size() / 1024);
+        ESP_LOGI(TAG, "alive (%" PRIu32 "), free internal %u KB (largest %u), PSRAM %u KB",
+                 ++tick,
+                 (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
+                 (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024),
+                 (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
     }
 }

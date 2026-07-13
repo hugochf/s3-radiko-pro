@@ -14,7 +14,7 @@ live here as the single source of truth.
                                                     │
                                                     ▼
   ┌─────────────── stream (two-stage HLS pipeline) ───────────────┐
-  │  fetcher (core 0)                     decoder (core 1)         │
+  │  fetcher (core 0)                     decoder (core 0)         │
   │  stream-info XML                                               │
   │   → playlist_create_url                                       │
   │   → master m3u8  ──► media m3u8 ──► .aac segments             │
@@ -40,29 +40,37 @@ latency with decode/playback is what keeps audio continuous.
 
 ## Task map
 
-Everything time-sensitive is pinned. **Core 1 hosts the UI, the decoder, and the
-I2S writer; core 0 hosts networking (Wi-Fi + the segment fetcher).** Priorities on
-core 1 are deliberate — see the note below.
+Everything time-sensitive is pinned. **Core 1 belongs to the UI (LVGL + I2S
+writer); core 0 hosts networking and decode (Wi-Fi, fetcher, decoder, program
+info, LED).** The split is deliberate — see the note below.
 
 | Task          | Core | Prio | Stack  | Lifetime  | Job |
 |---------------|:----:|:----:|-------:|-----------|-----|
 | `i2s_wr`      |  1   |  6   |  4 KB  | permanent | Drain PCM ring buffer → I2S0 DMA |
 | `stream_ctl`  | any  |  6   |  3 KB  | permanent | Serialize play/stop commands (1-deep queue, latest wins) |
 | `seg_fetch`   |  0   |  5   | 16 KB  | per-play  | Resolve playlists, fetch AAC segments → queue |
+| `seg_dec`     |  0   |  4   | 20 KB  | per-play  | Queue → libhelix AAC decode → `audio_write` |
 | `lvgl`        |  1   |  4   | 16 KB  | permanent | `lv_timer_handler`: render, poll touch, run UI events |
-| `seg_dec`     |  1   |  3   | 20 KB  | per-play  | Queue → libhelix AAC decode → `audio_write` |
-| `radiko_auth` | any  |  5   |  8 KB  | one-shot  | auth1/auth2 at boot, then exits |
+| `radiko_prog` |  0   |  4   |  6 KB  | permanent | "Now on air" fetch + puff gunzip every 5 min (waits for auth) |
+| `radiko_auth` | any  |  5   |  8 KB  | one-shot  | auth1/auth2 at boot (with retry), then exits |
+| `led`         |  0   |  1   | 2.5 KB | permanent | WS2812 mood-LED effects, 20 ms tick |
 | `wifiscan`    | any  |  4   |  4 KB  | one-shot  | Wi-Fi AP scan for the setup screen |
 
 Plus LVGL timers running inside the `lvgl` task: the 2 s status-bar refresh and
 the one-shot 450 ms prev/next debounce.
 
-**Why the decoder sits *below* LVGL (prio 3 < 4) on the same core.** Keeping the UI
-above the decoder means touch stays responsive under decode load, and the 15 s PCM
-buffer gives the decoder plenty of slack to catch up. The tradeoff: sustained heavy
-UI work *can* starve the decoder. That is exactly what bit Phase 13 — rendering 15
-scaled logos ran LVGL's transform path continuously and stalled audio; the fix was
-to make the logos render at 1× (a cheap blit) rather than to reshuffle priorities.
+**Why the decoder lives on core 0, not with LVGL (changed in Phase 14).** They
+originally shared core 1 (decoder prio 3 < LVGL 4). Once the full-CJK font made
+rendering heavy, whichever task lost the core-1 fight starved: stuttering audio
+*and* laggy UI. Now core 1 is LVGL's alone, and the decoder shares core 0 with
+tasks that are mostly blocked on network I/O. CPU-bound tasks must still yield
+periodically (the decoder sleeps 1 tick every ~32 frames) or a catch-up burst
+starves the idle task and trips the task watchdog.
+
+**Task creation order is part of the memory design.** Long-lived task stacks are
+created at boot, before any TLS session runs — a stack allocated mid-flight can
+split the largest free internal block and (before mbedtls moved to PSRAM) that
+permanently broke the stream's TLS handshake.
 
 **Stack sizes are not arbitrary.** The decoder needs 20 KB (libhelix frame work).
 The LVGL task was raised to 16 KB because v9's image draw/decode path is far deeper
@@ -81,12 +89,15 @@ PSRAM.**
 
 | User | Approx | Why internal |
 |------|-------:|--------------|
-| TLS / mbedtls session | ~40 KB contiguous | `mbedtls_ssl_setup` fails (`-0x7F00`) if it can't get a contiguous internal block |
 | libhelix decoder state | ~20–30 KB | CPU-bound; `helix_malloc` → plain `malloc` (internal). Routing it to PSRAM once caused an IDLE-starve watchdog — it was too slow there |
 | Task stacks, FreeRTOS objects, Wi-Fi | — | Kernel + driver requirements |
 
-The internal-RAM squeeze is real: fitting the ~40 KB TLS block is what forced the
-LVGL draw buffers (below) out to PSRAM in the first place.
+**mbedtls buffers live in PSRAM** (`CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y`, Phase 14).
+Before that, TLS needed a ~16 KB *contiguous* internal block per session and
+whether one survived boot-time allocation churn varied run to run — some boots
+streamed, others failed TLS forever. PSRAM ends that class of failure; the
+handshake slowdown (~2 s) is irrelevant at a 160 kbps stream bitrate. The
+asymmetric record buffers (IN 16 KB / OUT 4 KB) are kept to save PSRAM churn.
 
 ### PSRAM (8 MB)
 
@@ -99,7 +110,8 @@ LVGL draw buffers (below) out to PSRAM in the first place.
 
 ### Flash (16 MB, dual-OTA)
 
-Station logos are embedded RGB565 blobs (~110 KB) living in memory-mapped flash
+The full-CJK UI font (`lv_font_jp_16`, bpp2, ~1.05 MB) and the station logos
+(~290 KB at up-to-56 px, regenerated in Phase 14) are embedded RGB565/bitmap blobs
 (DROM) via `EMBED_FILES` — they cost flash, not RAM. Partition map
 (`idf/partitions.csv`): two 3 MB OTA app slots, 256 KB coredump, the rest SPIFFS
 storage. The layout was fixed at Phase 0 so it never has to change in the field.
@@ -125,10 +137,11 @@ UI calls `stream_play`.
 - **UI thread-safety:** all LVGL calls hold a recursive mutex (`ui_lock`/`ui_unlock`).
   The `lvgl` task holds it across `lv_timer_handler`; other tasks (e.g. `radiko_auth`
   calling `ui_set_playing`) take it too.
-- **Display flush is semaphore-driven, not busy-wait.** The SPI DMA-done ISR calls
-  `lv_display_flush_ready` and gives a semaphore; a custom `flush_wait_cb` blocks on
-  it (yielding the CPU) with a 100 ms timeout that self-heals a lost completion.
-  LVGL's default busy-spin would starve the idle task and trip the watchdog.
+- **Display flush is semaphore-driven, not busy-wait.** `flush_cb` queues the DMA
+  transfer, blocks (yielding) on the DMA-done semaphore, then calls
+  `lv_display_flush_ready` — exactly one take per flush, one give per completion.
+  LVGL's default busy-spin starved the idle task; a separate `flush_wait_cb`
+  variant desynced under load and dropped frames.
 - **Station navigation is debounced.** Prev/next update the UI instantly but defer
   the NVS write and the actual stream switch until ~450 ms after the user settles,
   so mashing the buttons doesn't hammer flash or restart the pipeline repeatedly.

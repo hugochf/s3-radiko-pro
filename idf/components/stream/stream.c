@@ -17,7 +17,9 @@
 
 static const char *TAG = "stream";
 
-#define STREAM_INFO_FMT "https://radiko.jp/v3/station/stream/pc_html5/%s.xml"
+// Plain HTTP on purpose: public data, no token sent, and it skips a ~5 s TLS
+// handshake on the boot->first-audio path (verified 200, no redirect).
+#define STREAM_INFO_FMT "http://radiko.jp/v3/station/stream/pc_html5/%s.xml"
 #define SEG_BUF_BYTES   (64 * 1024)   // one AAC segment (PSRAM)
 #define PLIST_BYTES     4096
 #define SEG_QUEUE_DEPTH 4             // fetched segments waiting to be decoded
@@ -100,20 +102,35 @@ static void fetcher_task(void *arg)
     static char base[160] = {0};
     char media_url[400] = {0}, last_seg[256] = {0};
 
-    if (base[0] == '\0') {
-        char info_url[160];
-        snprintf(info_url, sizeof(info_url), STREAM_INFO_FMT, s_station);
-        if (fetch(info_url, NULL, plist, PLIST_BYTES) <= 0) { ESP_LOGE(TAG, "stream-info failed"); goto done; }
-        char *p = strstr(plist, "<playlist_create_url>");
-        char *e = p ? strstr(p, "</playlist_create_url>") : NULL;
-        if (!p || !e) { ESP_LOGE(TAG, "no playlist_create_url"); goto done; }
-        p += strlen("<playlist_create_url>");
-        size_t n = (size_t)(e - p); if (n >= sizeof(base)) n = sizeof(base) - 1;
-        memcpy(base, p, n); base[n] = '\0';
-    }
     ESP_LOGI(TAG, "streaming %s", s_station);
 
+    int backoff = 0;   // grows on repeated resolve failures (don't hammer Radiko)
+    int empty = 0;     // consecutive live-playlist polls that yielded no new segment
     while (!s_stop) {
+        // base (playlist_create_url) resolves once and is reused across stations.
+        // Retry transient failures here rather than killing the fetcher — a brief
+        // TLS/network hiccup at startup must not permanently stop audio.
+        if (base[0] == '\0') {
+            char info_url[160];
+            snprintf(info_url, sizeof(info_url), STREAM_INFO_FMT, s_station);
+            char *p = NULL, *e = NULL;
+            if (fetch(info_url, NULL, plist, PLIST_BYTES) > 0 &&
+                (p = strstr(plist, "<playlist_create_url>")) != NULL &&
+                (e = strstr(p, "</playlist_create_url>")) != NULL) {
+                p += strlen("<playlist_create_url>");
+                size_t n = (size_t)(e - p); if (n >= sizeof(base)) n = sizeof(base) - 1;
+                memcpy(base, p, n); base[n] = '\0';
+                backoff = 0;
+            } else {
+                // Exponential backoff, capped at 10 s, so a persistent outage
+                // (or rate-limiting) doesn't retry once a second forever.
+                if (backoff < 10000) backoff = backoff ? backoff * 2 : 1000;
+                ESP_LOGW(TAG, "stream-info failed; retry in %d ms", backoff);
+                vTaskDelay(pdMS_TO_TICKS(backoff));
+                continue;
+            }
+        }
+
         if (media_url[0] == '\0') {
             char lsid[33]; make_lsid(lsid);
             char purl[320];
@@ -128,7 +145,12 @@ static void fetcher_task(void *arg)
         }
 
         if (fetch(media_url, token, plist, PLIST_BYTES) <= 0) {
-            media_url[0] = '\0';   // session gone — re-resolve (keep last_seg)
+            // Session gone — re-resolve. Clear last_seg too: the new session has a
+            // fresh live window with different segment names, so keeping the old
+            // one means seen_last never matches and every segment is skipped
+            // forever (audio dies after the first batch). Resync to the live edge.
+            media_url[0] = '\0';
+            last_seg[0] = '\0';
             continue;
         }
 
@@ -141,9 +163,9 @@ static void fetcher_task(void *arg)
             if (!seen_last) { if (!strcmp(line, last_seg)) seen_last = true; continue; }
 
             char *buf = heap_caps_malloc(SEG_BUF_BYTES, MALLOC_CAP_SPIRAM);
-            if (!buf) { vTaskDelay(pdMS_TO_TICKS(200)); continue; }
+            if (!buf) { ESP_LOGW(TAG, "seg buf alloc fail"); vTaskDelay(pdMS_TO_TICKS(200)); continue; }
             int slen = fetch(line, token, buf, SEG_BUF_BYTES);
-            if (slen <= 0) { free(buf); continue; }
+            if (slen <= 0) { ESP_LOGW(TAG, "seg fetch failed"); free(buf); continue; }
 
             seg_t seg = { buf, slen };
             // Blocks when the queue is full -> paces the fetcher to real time.
@@ -153,7 +175,16 @@ static void fetcher_task(void *arg)
             last_seg[sizeof(last_seg) - 1] = '\0';
             pushed++;
         }
-        if (pushed == 0) vTaskDelay(pdMS_TO_TICKS(1000));   // at live edge
+        if (pushed > 0) {
+            empty = 0;
+        } else {
+            // A few empty polls is normal at the live edge, but many in a row means
+            // the medialist session went stale — Radiko expires it after a few
+            // minutes and then serves a frozen playlist with HTTP 200, so the fetch
+            // never fails and audio silently dies. Force a fresh session.
+            if (++empty >= 12) { empty = 0; media_url[0] = '\0'; last_seg[0] = '\0'; }
+            vTaskDelay(pdMS_TO_TICKS(1000));   // at live edge
+        }
     }
 
 done:
@@ -176,6 +207,7 @@ static void decoder_task(void *arg)
 
         unsigned char *inp = (unsigned char *)seg.buf;
         int left = seg.len;
+        int frames = 0;
         while (left > 0 && !s_stop) {
             int off = AACFindSyncWord(inp, left);
             if (off < 0) break;
@@ -187,11 +219,14 @@ static void decoder_task(void *arg)
                 ESP_LOGI(TAG, "decode: %d Hz, %d ch", fi.sampRateOut, fi.nChans);
             }
             audio_write(pcm, fi.outputSamps * sizeof(int16_t), NULL);
+            // Yield every ~32 frames (~0.7 s of audio) so this core's idle task
+            // feeds the watchdog even mid-segment. Between-segments alone isn't
+            // enough during a catch-up burst: several segments decoded
+            // back-to-back kept the CPU >5 s and tripped the IDLE watchdog.
+            if ((++frames & 31) == 0) vTaskDelay(1);
         }
         free(seg.buf);
-        // Yield between segments so core-1's idle task runs (feeds the task
-        // watchdog) even when the queue is full during startup catch-up.
-        vTaskDelay(1);
+        vTaskDelay(1);   // idle/watchdog breather between segments too
     }
 
     if (dec) AACFreeDecoder(dec);
@@ -208,9 +243,11 @@ static void start_stream(const char *station_id)
     s_stop = false;
     audio_resume();     // unmute, start from an empty buffer (fresh/live)
     xTaskCreatePinnedToCore(fetcher_task, "seg_fetch", 16384, NULL, 5, &s_fetch_task, 0);
-    // Decoder priority 3 is BELOW the LVGL task (4) on core 1, so touch/UI stay
-    // responsive; the 15 s ring buffer gives the decoder ample slack to catch up.
-    xTaskCreatePinnedToCore(decoder_task, "seg_dec",   20480, NULL, 3, &s_dec_task,   1);
+    // Decoder on core 0 with the fetcher (which is mostly blocked on network I/O),
+    // NOT on core 1 with LVGL: the full-CJK font made rendering heavy enough that
+    // sharing core 1 starved whichever task lost — stuttering audio AND laggy UI.
+    // Now LVGL owns core 1 and the decoder competes only with I/O-bound tasks.
+    xTaskCreatePinnedToCore(decoder_task, "seg_dec",   20480, NULL, 4, &s_dec_task,   0);
 }
 
 static void stop_stream(void)

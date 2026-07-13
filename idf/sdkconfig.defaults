@@ -39,3 +39,23 @@ CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y
 CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
 CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
 CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
+
+# --- TLS memory: internal RAM is tight and mbedtls needs a 16 KB *contiguous*
+#     block for each of its RX/TX record buffers. The RX (IN) buffer must stay
+#     16 KB — the Radiko CDN sends full-size TLS records (a smaller IN buffer
+#     fails segment reads with -0x7100). But our requests are tiny HTTP GETs, so
+#     the TX (OUT) buffer can shrink from 16 KB to 4 KB. Asymmetric content-len
+#     lets IN and OUT differ; this frees ~12 KB per TLS session and removes a
+#     second 16 KB-contiguous requirement, which was intermittently failing the
+#     stream's TLS handshake (create_ssl / connect timeout) once auth's TLS churn
+#     had fragmented the heap below 16 KB. ---
+CONFIG_MBEDTLS_ASYMMETRIC_CONTENT_LEN=y
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+# Allocate ALL mbedtls buffers from PSRAM. Even with the OUT buffer shrunk, the
+# 16 KB IN buffer still needs contiguous internal RAM, and whether a ≥16 KB block
+# survives boot-time allocation churn varies run to run — some boots streamed
+# fine, others failed TLS forever (largest block stuck at ~15 KB). PSRAM ends
+# that class of failure outright; the modest TLS slowdown is irrelevant at
+# 160 kbps stream bitrate.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y

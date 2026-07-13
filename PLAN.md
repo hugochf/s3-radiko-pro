@@ -182,7 +182,7 @@ purpose. Take the time per phase.
 - [x] **Phase 11** — Audio output: I2S + ES8311 (test tone audible) ✅
 - [x] **Phase 12** — HLS pipeline (libhelix-aac + hand-written HLS) ✅ Radiko audio plays!
 - [x] **Phase 13** — Station logos as embedded data ✅ real logos, RGB565 via EMBED_FILES
-- [ ] **Phase 14** — Program info fetch
+- [x] **Phase 14** — Program info fetch ✅ + Arduino UI parity, RGB LED, sleep timer
 - [ ] **Phase 15** — Settings page port
 - [ ] **Phase 16** — Screen saver port
 - [ ] **Phase 17** — Error handling pass
@@ -418,3 +418,52 @@ learning artifact.
   ELF coredump + `xtensa-esp32s3-elf-addr2line` gave the exact stuck backtrace.
   (`CONFIG_COMPILER_STACK_CHECK_MODE_NONE` means a plain overflow silently corrupts
   and wedges — enable the watchpoint before trusting "no crash = no overflow".)
+
+### Phase 14 — Program info + audio-stability marathon
+
+The feature (now-on-air titles) was a day; making audio *stay* playing was the
+real phase. Eight distinct bugs, each only visible after fixing the previous:
+
+- **`/v3/program/now/{area}.xml` is always gzip'd** (even without Accept-Encoding)
+  and covers every station in one ~90 KB XML. Fetched over **plain HTTP** on
+  purpose — public data, and it avoids a second TLS session competing for RAM.
+- **Decompress with zlib's `puff`** (vendored, ~2 KB stack, zero heap — it uses
+  the output buffer as the DEFLATE window). The ROM `tinfl` needs an ~11 KB
+  internal-RAM decompressor that either starved the stream's TLS (as a task
+  stack) or crashed (as a PSRAM object). puff ended that whole class of problem.
+- **Radiko's medialist session expires after a few minutes** and then serves a
+  frozen playlist **with HTTP 200** — fetches never fail, audio just silently
+  drains. Detect "N consecutive polls with no new segment" → force a fresh
+  session. Also: on any session re-resolve, **clear `last_seg`** — the new live
+  window has different segment names, so keeping the old marker skips every
+  segment forever ("plays 5 s then stops").
+- **Never `goto done` on a transient network failure.** The fetcher's stream-info
+  resolve now retries with capped exponential backoff; auth retries too. A boot
+  hiccup must degrade into a delay, not silence.
+- **TLS vs internal RAM, the final round:** mbedtls needs its 16 KB IN record
+  buffer *contiguous internal* — and whether a ≥16 KB block survives boot-time
+  churn varied run to run. Fixes in order of discovery: asymmetric content len
+  (OUT 4 KB), create long-lived task stacks at boot (allocation order is part of
+  the memory design!), and finally **`CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y`** —
+  all mbedtls buffers in PSRAM. That ends the fragility structurally; the TLS
+  slowdown is irrelevant at 160 kbps.
+- **Core split: decoder moved to core 0** (with the I/O-bound fetcher), LVGL owns
+  core 1. The full-CJK font made rendering heavy enough that whichever task lost
+  the core-1 fight starved — stuttering audio AND laggy UI. CPU-bound work also
+  needs periodic yields (`vTaskDelay(1)` every ~32 frames) or a burst starves the
+  idle task → task watchdog.
+- **LVGL flush done right:** `flush_cb` writes the bitmap, then blocks (yielding)
+  on the DMA-done semaphore, then `lv_display_flush_ready` — one take per flush,
+  one give per completion. Both earlier attempts (default busy-spin; separate
+  `flush_wait_cb` with timeout) starved the idle task or dropped frames.
+- **Full-CJK font** (JIS-ish ranges + symbol blocks, bpp2, ~1.05 MB) replaces the
+  station-name subset — program titles use arbitrary kanji and 記号 like ♪.
+  LVGL v9 gotchas: `LONG_DOT` needs a *fixed-height* box or it wraps; image
+  scale is visual-only (align by the computed visual box, pivot 0,0); a widget
+  smaller than its source **crops before transforming**.
+- **Arduino UI parity pass:** full-width swipeable logo strip (swipe=prev/next,
+  centre tap=list), white logo card, slow-crawl marquees (player + list rows),
+  list rows = logo left / name top-right / programme bottom-right, WS2812 mood
+  LED component (GPIO42, 7 modes, prio-1 tick task), sleep-timer button.
+- **Boot→audio 50 s → 29 s:** stream-info over HTTP (−1 TLS handshake), test tone
+  removed. Next lever: reuse one keep-alive connection for auth1+auth2 (~−7 s).

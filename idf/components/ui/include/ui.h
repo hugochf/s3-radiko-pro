@@ -26,6 +26,10 @@ void ui_set_playing(bool playing);
 // The saved/selected station id (for auto-play after auth). Never NULL.
 const char *ui_current_station_id(void);
 
+// Re-read the current station's "now on air" title into the player. Thread-safe;
+// pass as the radiko_program_start() callback. Safe to call before UI is built.
+void ui_program_updated(void);
+
 // Take/release the LVGL mutex (recursive). timeout_ms < 0 waits forever.
 bool ui_lock(int timeout_ms);
 void ui_unlock(void);

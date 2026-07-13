@@ -20,78 +20,78 @@ extern const uint8_t logo_JOAK_FM_bin_start[] asm("_binary_logo_JOAK_FM_bin_star
 
 static const lv_image_dsc_t logo_TBS = {
     .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565,
-                 .w = 108, .h = 33, .stride = 216 },
-    .data = logo_TBS_bin_start, .data_size = 7128,
+                 .w = 184, .h = 56, .stride = 368 },
+    .data = logo_TBS_bin_start, .data_size = 20608,
 };
 static const lv_image_dsc_t logo_QRR = {
     .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565,
-                 .w = 108, .h = 31, .stride = 216 },
-    .data = logo_QRR_bin_start, .data_size = 6696,
+                 .w = 194, .h = 56, .stride = 388 },
+    .data = logo_QRR_bin_start, .data_size = 21728,
 };
 static const lv_image_dsc_t logo_LFR = {
     .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565,
-                 .w = 108, .h = 33, .stride = 216 },
-    .data = logo_LFR_bin_start, .data_size = 7128,
+                 .w = 185, .h = 56, .stride = 370 },
+    .data = logo_LFR_bin_start, .data_size = 20720,
 };
 static const lv_image_dsc_t logo_RN1 = {
     .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565,
-                 .w = 108, .h = 16, .stride = 216 },
-    .data = logo_RN1_bin_start, .data_size = 3456,
+                 .w = 300, .h = 43, .stride = 600 },
+    .data = logo_RN1_bin_start, .data_size = 25800,
 };
 static const lv_image_dsc_t logo_RN2 = {
     .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565,
-                 .w = 108, .h = 40, .stride = 216 },
-    .data = logo_RN2_bin_start, .data_size = 8640,
+                 .w = 153, .h = 56, .stride = 306 },
+    .data = logo_RN2_bin_start, .data_size = 17136,
 };
 static const lv_image_dsc_t logo_INT = {
     .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565,
-                 .w = 101, .h = 42, .stride = 202 },
-    .data = logo_INT_bin_start, .data_size = 8484,
+                 .w = 134, .h = 56, .stride = 268 },
+    .data = logo_INT_bin_start, .data_size = 15008,
 };
 static const lv_image_dsc_t logo_FMT = {
     .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565,
-                 .w = 104, .h = 42, .stride = 208 },
-    .data = logo_FMT_bin_start, .data_size = 8736,
+                 .w = 139, .h = 56, .stride = 278 },
+    .data = logo_FMT_bin_start, .data_size = 15568,
 };
 static const lv_image_dsc_t logo_FMJ = {
     .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565,
-                 .w = 101, .h = 42, .stride = 202 },
-    .data = logo_FMJ_bin_start, .data_size = 8484,
+                 .w = 134, .h = 56, .stride = 268 },
+    .data = logo_FMJ_bin_start, .data_size = 15008,
 };
 static const lv_image_dsc_t logo_JORF = {
     .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565,
-                 .w = 108, .h = 29, .stride = 216 },
-    .data = logo_JORF_bin_start, .data_size = 6264,
+                 .w = 211, .h = 56, .stride = 422 },
+    .data = logo_JORF_bin_start, .data_size = 23632,
 };
 static const lv_image_dsc_t logo_BAYFM78 = {
     .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565,
-                 .w = 108, .h = 28, .stride = 216 },
-    .data = logo_BAYFM78_bin_start, .data_size = 6048,
+                 .w = 218, .h = 56, .stride = 436 },
+    .data = logo_BAYFM78_bin_start, .data_size = 24416,
 };
 static const lv_image_dsc_t logo_NACK5 = {
     .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565,
-                 .w = 72, .h = 42, .stride = 144 },
-    .data = logo_NACK5_bin_start, .data_size = 6048,
+                 .w = 96, .h = 56, .stride = 192 },
+    .data = logo_NACK5_bin_start, .data_size = 10752,
 };
 static const lv_image_dsc_t logo_YFM = {
     .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565,
-                 .w = 108, .h = 35, .stride = 216 },
-    .data = logo_YFM_bin_start, .data_size = 7560,
+                 .w = 172, .h = 56, .stride = 344 },
+    .data = logo_YFM_bin_start, .data_size = 19264,
 };
 static const lv_image_dsc_t logo_IBS = {
     .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565,
-                 .w = 81, .h = 42, .stride = 162 },
-    .data = logo_IBS_bin_start, .data_size = 6804,
+                 .w = 108, .h = 56, .stride = 216 },
+    .data = logo_IBS_bin_start, .data_size = 12096,
 };
 static const lv_image_dsc_t logo_JOAK = {
     .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565,
-                 .w = 108, .h = 41, .stride = 216 },
-    .data = logo_JOAK_bin_start, .data_size = 8856,
+                 .w = 146, .h = 56, .stride = 292 },
+    .data = logo_JOAK_bin_start, .data_size = 16352,
 };
 static const lv_image_dsc_t logo_JOAK_FM = {
     .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565,
-                 .w = 108, .h = 41, .stride = 216 },
-    .data = logo_JOAK_FM_bin_start, .data_size = 8856,
+                 .w = 146, .h = 56, .stride = 292 },
+    .data = logo_JOAK_FM_bin_start, .data_size = 16352,
 };
 
 const lv_image_dsc_t *const STATION_LOGOS[] = {

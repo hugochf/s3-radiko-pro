@@ -13,7 +13,9 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include <time.h>
+#include "led.h"
 #include "lvgl.h"
+#include "radiko.h"
 #include "settings.h"
 #include "stations.h"
 #include "stream.h"
@@ -45,6 +47,7 @@ static bool s_playing = false;
 static lv_obj_t *s_scr_player = NULL;
 static lv_obj_t *s_scr_list   = NULL;
 static lv_obj_t *w_logo_tile  = NULL;
+static lv_obj_t *w_logo_card  = NULL;   // white pad behind the player logo
 static lv_obj_t *w_logo_img   = NULL;
 static lv_obj_t *w_name       = NULL;
 static lv_obj_t *w_prog       = NULL;
@@ -54,6 +57,7 @@ static lv_obj_t *w_play       = NULL;
 static lv_obj_t *w_wifi       = NULL;
 static lv_obj_t *w_clock      = NULL;
 static lv_obj_t *w_dots[NUM_STATIONS];
+static lv_obj_t *s_list_prog[NUM_STATIONS];   // per-row programme labels (list)
 
 // =====================================================================
 // LVGL <-> display glue
@@ -63,6 +67,9 @@ static uint32_t tick_cb(void)
     return (uint32_t)(esp_timer_get_time() / 1000);
 }
 
+// Given by the SPI DMA-done ISR, awaited once per flush in flush_cb.
+static SemaphoreHandle_t s_flush_sem = NULL;
+
 static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 {
     int w = area->x2 - area->x1 + 1;
@@ -70,30 +77,21 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
     lv_draw_sw_rgb565_swap(px_map, w * h);
     esp_lcd_panel_draw_bitmap(display_panel(), area->x1, area->y1,
                               area->x2 + 1, area->y2 + 1, px_map);
+    // Block (yielding) until the DMA finishes, then hand the buffer back to LVGL.
+    // Exactly one take per flush pairs with one give per completion — no desync,
+    // no frame drops. Yielding (vs LVGL's default busy-spin) lets the lower-prio
+    // audio decoder on this core run, so playback doesn't stutter. The timeout
+    // self-heals a lost completion instead of hanging.
+    xSemaphoreTake(s_flush_sem, pdMS_TO_TICKS(1000));
+    lv_display_flush_ready(disp);
 }
-
-// Signalled by the SPI DMA-done ISR; awaited by flush_wait_cb so the LVGL task
-// sleeps (yielding the CPU) instead of busy-spinning while the panel transfers.
-static SemaphoreHandle_t s_flush_sem = NULL;
 
 static bool color_done_cb(esp_lcd_panel_io_handle_t io,
                           esp_lcd_panel_io_event_data_t *edata, void *ctx)
 {
     BaseType_t hp = pdFALSE;
-    lv_display_flush_ready(s_disp);
     xSemaphoreGiveFromISR(s_flush_sem, &hp);
     return hp == pdTRUE;   // ask the ISR dispatcher to yield if we woke a task
-}
-
-// LVGL's default wait is a busy `while(disp->flushing)` spin that never yields —
-// on an RTOS that starves the idle task (and the task watchdog) if a flush ever
-// stalls. Block on the DMA-done semaphore instead. The timeout self-heals a lost
-// completion: force the flag clear and drop the frame rather than hang forever.
-static void flush_wait_cb(lv_display_t *disp)
-{
-    if (xSemaphoreTake(s_flush_sem, pdMS_TO_TICKS(100)) != pdTRUE) {
-        lv_display_flush_ready(disp);   // completion missed — recover, don't wedge
-    }
 }
 
 bool ui_lock(int timeout_ms)
@@ -141,24 +139,58 @@ static void lvgl_task(void *arg)
 // =====================================================================
 // Show a station logo in `img`, scaled to fit within box_w x box_h (never
 // upscaled beyond 1x, to keep it crisp). Logos are embedded RGB565 (Phase 13).
-static void set_logo(lv_obj_t *img, int station, int box_w, int box_h)
+static int set_logo(lv_obj_t *img, int station, int box_w, int box_h, int max_scale)
 {
     const lv_image_dsc_t *L = STATION_LOGOS[station];
     lv_image_set_src(img, L);
     int sw = box_w * 256 / L->header.w;
     int sh = box_h * 256 / L->header.h;
     int sc = sw < sh ? sw : sh;
-    if (sc > 256) sc = 256;
+    if (sc > max_scale) sc = max_scale;   // 256 = never upscale (list rows)
+    // v9 transforms are visual-only AND shrinking the widget crops the source
+    // before the transform. So: keep the widget at its natural size, scale
+    // around the top-left pivot, and let callers align by the visual box
+    // (top-left of the widget + w*sc/256 x h*sc/256).
+    lv_image_set_pivot(img, 0, 0);
     lv_image_set_scale(img, sc);
     lv_obj_center(img);
+    return sc;
+}
+
+// Show the cached "now on air" title for the current station (empty until the
+// first program fetch lands). The label is a circular marquee for long titles.
+static void set_program_label(void)
+{
+    char title[256];   // title + " / " + performers (pfm)
+    radiko_program_title(STATIONS[s_cur].id, title, sizeof(title));
+    lv_label_set_text(w_prog, title[0] ? title : "");
+}
+
+void ui_program_updated(void)
+{
+    ui_lock(-1);
+    if (w_prog) set_program_label();
+    // Refresh the station-list rows too (Arduino shows the programme per row).
+    char buf[256];
+    for (int i = 0; i < STATION_COUNT; i++) {
+        if (!s_list_prog[i]) continue;
+        radiko_program_title(STATIONS[i].id, buf, sizeof(buf));
+        lv_label_set_text(s_list_prog[i], buf[0] ? buf : "---");
+    }
+    ui_unlock();
 }
 
 static void refresh_player(void)
 {
     const station_t *s = &STATIONS[s_cur];
-    set_logo(w_logo_img, s_cur, 148, 58);
+    const lv_image_dsc_t *L = STATION_LOGOS[s_cur];
+    int sc = set_logo(w_logo_img, s_cur, 300, 56, 512);
+    lv_obj_set_size(w_logo_card,
+                    L->header.w * sc / 256 + 12, L->header.h * sc / 256 + 8);
+    lv_obj_center(w_logo_card);
+    lv_obj_center(w_logo_img);
     lv_label_set_text(w_name, s->name);
-    lv_label_set_text(w_prog, "- program info (Phase 14) -");
+    set_program_label();
     lv_label_set_text(w_play, s_playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
     lv_slider_set_value(w_vol_slider, s_vol, LV_ANIM_OFF);
     lv_label_set_text_fmt(w_vol_val, "%d", s_vol);
@@ -201,7 +233,73 @@ static void schedule_commit(void)
     lv_timer_resume(s_commit_timer);
 }
 
+// ---- Sleep timer (Arduino bell button): cycles OFF/30/60/90 min; when it
+// fires, playback stops. Runs as a paused LVGL timer armed on selection.
+static lv_obj_t  *s_sleep_lbl  = NULL;
+static lv_obj_t  *s_led_lbl    = NULL;
+static lv_timer_t *s_sleep_timer = NULL;
+static int        s_sleep_idx  = 0;
+static const int  SLEEP_MIN[]  = { 0, 30, 60, 90 };
+
+static void sleep_fire_cb(lv_timer_t *t)
+{
+    lv_timer_pause(t);
+    s_sleep_idx = 0;
+    s_playing = false;
+    refresh_player();
+    apply_playback();
+}
+static void ev_sleep_toggle(lv_event_t *e)
+{
+    s_sleep_idx = (s_sleep_idx + 1) % 4;
+    int min = SLEEP_MIN[s_sleep_idx];
+    if (s_sleep_timer) {
+        if (min == 0) lv_timer_pause(s_sleep_timer);
+        else {
+            lv_timer_set_period(s_sleep_timer, (uint32_t)min * 60 * 1000);
+            lv_timer_reset(s_sleep_timer);
+            lv_timer_resume(s_sleep_timer);
+        }
+    }
+    char buf[24];
+    if (min) snprintf(buf, sizeof(buf), "Sleep: %d min", min);
+    else     snprintf(buf, sizeof(buf), "Sleep: off");
+    lv_label_set_text(w_prog, buf);   // transient, like the Arduino build
+}
+
+// ---- RGB LED mode cycle (Arduino eye button) ----
+static void ev_led_toggle(lv_event_t *e)
+{
+    const char *name = led_cycle_mode();
+    lv_label_set_text(s_led_lbl,
+        led_mode() == LED_MODES - 1 ? LV_SYMBOL_EYE_CLOSE : LV_SYMBOL_EYE_OPEN);
+    lv_label_set_text(w_prog, name);  // transient, like the Arduino build
+}
+
 static void ev_open_list(lv_event_t *e) { lv_screen_load(s_scr_list); }
+
+// Swipe/tap gestures on the full-width logo strip (Arduino behaviour):
+//   dx >= +25 → prev station, dx <= -25 → next station,
+//   |dx| < 8 AND released in the centre region (x 120..200) → open station list,
+//   anything else → dead-zone (prevents accidental list opens during near-swipes).
+static void ev_prev(lv_event_t *e);
+static void ev_next(lv_event_t *e);
+static int32_t s_press_x;
+static void ev_logo_pressed(lv_event_t *e)
+{
+    lv_point_t p;
+    lv_indev_get_point(lv_indev_active(), &p);
+    s_press_x = p.x;
+}
+static void ev_logo_released(lv_event_t *e)
+{
+    lv_point_t p;
+    lv_indev_get_point(lv_indev_active(), &p);
+    int dx = p.x - s_press_x;
+    if      (dx >= 25) ev_prev(e);   // swipe right → previous station
+    else if (dx <= -25) ev_next(e);  // swipe left  → next station
+    else if (dx > -8 && dx < 8 && p.x >= 120 && p.x <= 200) ev_open_list(e);
+}
 static void ev_back_to_player(lv_event_t *e) { lv_screen_load(s_scr_player); }
 static void ev_open_wifi_setup(lv_event_t *e) { ui_show_wifi_setup(); }
 
@@ -250,11 +348,12 @@ static void status_timer_cb(lv_timer_t *t)
     uint32_t color;
     switch (wifi_get_state()) {
         case WIFI_CONNECTED:
-            snprintf(buf, sizeof(buf), LV_SYMBOL_WIFI " %ddBm", wifi_get_rssi());
+            snprintf(buf, sizeof(buf), LV_SYMBOL_WIFI);   // icon only (Arduino bar)
+            (void)wifi_get_rssi();
             color = 0x3AD07A;
             break;
         case WIFI_CONNECTING:
-            snprintf(buf, sizeof(buf), LV_SYMBOL_WIFI " ...");
+            snprintf(buf, sizeof(buf), LV_SYMBOL_WIFI);
             color = 0xE0C040;
             break;
         default:
@@ -312,7 +411,7 @@ static void build_player_screen(void)
 
     // WiFi status — tappable to open the setup screen.
     lv_obj_t *wbtn = lv_button_create(bar);
-    lv_obj_set_size(wbtn, 100, 22);
+    lv_obj_set_size(wbtn, 86, 22);
     lv_obj_align(wbtn, LV_ALIGN_LEFT_MID, -4, 0);
     lv_obj_set_style_bg_opa(wbtn, LV_OPA_TRANSP, 0);
     lv_obj_set_style_shadow_width(wbtn, 0, 0);
@@ -322,42 +421,74 @@ static void build_player_screen(void)
     lv_obj_set_style_text_color(w_wifi, lv_color_hex(C_DIM), 0);
     lv_obj_align(w_wifi, LV_ALIGN_LEFT_MID, 0, 0);
 
-    w_clock = lv_label_create(bar);
+    // Clock inside the same tappable button, right of the icon (Arduino).
+    w_clock = lv_label_create(wbtn);
     lv_label_set_text(w_clock, "--:--");
     lv_obj_set_style_text_color(w_clock, lv_color_hex(C_TEXT), 0);
-    lv_obj_align(w_clock, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_align(w_clock, LV_ALIGN_RIGHT_MID, -2, 0);
+
+    lv_obj_t *hdr_lbl = lv_label_create(bar);
+    lv_label_set_text(hdr_lbl, "Radiko Radio");
+    lv_obj_set_style_text_color(hdr_lbl, lv_color_hex(C_TEXT), 0);
+    lv_obj_align(hdr_lbl, LV_ALIGN_CENTER, 0, 0);
 
     lv_obj_t *bat = lv_label_create(bar);
     lv_label_set_text(bat, LV_SYMBOL_BATTERY_FULL " 100%");
     lv_obj_set_style_text_color(bat, lv_color_hex(C_TEXT), 0);
     lv_obj_align(bat, LV_ALIGN_RIGHT_MID, -2, 0);
 
-    // ---- Logo tile (tap to open station list) ----
+    // ---- Station logo (full width, Arduino layout) ----
+    // Swipe left/right anywhere on the strip = next/prev; a small tap in the
+    // centre region opens the station list (see ev_logo_pressed/released).
     w_logo_tile = lv_obj_create(s_scr_player);
-    lv_obj_set_size(w_logo_tile, 150, 60);
-    lv_obj_align(w_logo_tile, LV_ALIGN_TOP_MID, 0, 32);
+    lv_obj_set_size(w_logo_tile, 320, 68);
+    lv_obj_set_pos(w_logo_tile, 0, 28);
+    lv_obj_set_style_bg_opa(w_logo_tile, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(w_logo_tile, 0, 0);
+    lv_obj_set_style_pad_all(w_logo_tile, 0, 0);
     lv_obj_clear_flag(w_logo_tile, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(w_logo_tile, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(w_logo_tile, ev_open_list, LV_EVENT_CLICKED, NULL);
-    w_logo_img = lv_image_create(w_logo_tile);
+    lv_obj_add_event_cb(w_logo_tile, ev_logo_pressed,  LV_EVENT_PRESSED,  NULL);
+    lv_obj_add_event_cb(w_logo_tile, ev_logo_released, LV_EVENT_RELEASED, NULL);
+    // White card behind the logo (small padding); events bubble to the strip
+    // so swipes/taps still work anywhere on it.
+    w_logo_card = lv_obj_create(w_logo_tile);
+    lv_obj_set_style_bg_color(w_logo_card, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_border_width(w_logo_card, 0, 0);
+    lv_obj_set_style_radius(w_logo_card, 6, 0);
+    lv_obj_set_style_pad_all(w_logo_card, 0, 0);
+    lv_obj_clear_flag(w_logo_card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(w_logo_card, LV_OBJ_FLAG_EVENT_BUBBLE);
+    w_logo_img = lv_image_create(w_logo_card);
     lv_obj_add_flag(w_logo_img, LV_OBJ_FLAG_EVENT_BUBBLE);   // taps reach the tile
 
     // ---- Station name (JP) ----
     w_name = lv_label_create(s_scr_player);
     lv_obj_set_style_text_font(w_name, &lv_font_jp_16, 0);
     lv_obj_set_style_text_color(w_name, lv_color_hex(C_TEXT), 0);
-    lv_obj_set_width(w_name, 300);
+    lv_obj_set_size(w_name, 300, 23);   // one line, DOT if too long
+    lv_label_set_long_mode(w_name, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(w_name, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(w_name, LV_ALIGN_TOP_MID, 0, 98);
+    // Full Noto JP line height is ~23 px: name occupies ~94..117, title ~122..145,
+    // volume row starts at 146 — no overlap (name at 98 used to collide with the
+    // title at 120, which clipped/hid the title's upper part).
+    lv_obj_align(w_name, LV_ALIGN_TOP_MID, 0, 91);
 
-    // ---- Program title (stub) ----
+    // ---- Program title ("now on air") ----
+    // Circular marquee for long titles (LVGL only animates when the text
+    // overflows). Affordable only because LVGL owns core 1 outright — when the
+    // audio decoder shared this core, the per-frame marquee re-render starved it
+    // and playback died. If audio ever stutters again, suspect this first.
     w_prog = lv_label_create(s_scr_player);
     lv_obj_set_style_text_font(w_prog, &lv_font_jp_16, 0);
     lv_obj_set_style_text_color(w_prog, lv_color_hex(C_DIM), 0);
     lv_obj_set_width(w_prog, 300);
     lv_label_set_long_mode(w_prog, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    // Slow crawl (Arduino used anim_speed 8 px/s): one full scroll cycle takes
+    // this long regardless of text length. Also keeps the render load tiny.
+    lv_obj_set_style_anim_duration(w_prog, 30000, 0);
     lv_obj_set_style_text_align(w_prog, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(w_prog, LV_ALIGN_TOP_MID, 0, 120);
+    lv_obj_align(w_prog, LV_ALIGN_TOP_MID, 0, 112);
 
     // ---- Volume row ----
     lv_obj_t *vlbl = lv_label_create(s_scr_player);
@@ -380,14 +511,24 @@ static void build_player_screen(void)
     lv_obj_set_pos(w_vol_val, 286, 146);
 
     // ---- Transport buttons ----
-    lv_obj_t *bp = mk_circle_btn(s_scr_player, 44, 40,  176, C_ACCENT, ev_prev);
+    lv_obj_t *bp = mk_circle_btn(s_scr_player, 44, 16,  176, C_ACCENT, ev_prev);
     lv_obj_t *lp = lv_label_create(bp); lv_label_set_text(lp, LV_SYMBOL_PREV); lv_obj_center(lp);
 
-    lv_obj_t *bplay = mk_circle_btn(s_scr_player, 56, 132, 170, C_HL, ev_play);
+    lv_obj_t *bplay = mk_circle_btn(s_scr_player, 56, 90, 170, C_HL, ev_play);
     w_play = lv_label_create(bplay); lv_obj_center(w_play);
 
-    lv_obj_t *bn = mk_circle_btn(s_scr_player, 44, 236, 176, C_ACCENT, ev_next);
+    lv_obj_t *bn = mk_circle_btn(s_scr_player, 44, 176, 176, C_ACCENT, ev_next);
     lv_obj_t *ln = lv_label_create(bn); lv_label_set_text(ln, LV_SYMBOL_NEXT); lv_obj_center(ln);
+
+    lv_obj_t *bs = mk_circle_btn(s_scr_player, 34, 244, 181, C_ACCENT, ev_sleep_toggle);
+    s_sleep_lbl = lv_label_create(bs);
+    lv_label_set_text(s_sleep_lbl, LV_SYMBOL_BELL);
+    lv_obj_center(s_sleep_lbl);
+
+    lv_obj_t *bl2 = mk_circle_btn(s_scr_player, 34, 282, 181, C_ACCENT, ev_led_toggle);
+    s_led_lbl = lv_label_create(bl2);
+    lv_label_set_text(s_led_lbl, LV_SYMBOL_EYE_OPEN);
+    lv_obj_center(s_led_lbl);
 
     // ---- Position dots ----
     int dot_w = STATION_COUNT * 8 + (STATION_COUNT - 1) * 4;
@@ -395,7 +536,7 @@ static void build_player_screen(void)
     for (int i = 0; i < STATION_COUNT; i++) {
         w_dots[i] = lv_obj_create(s_scr_player);
         lv_obj_set_size(w_dots[i], 8, 8);
-        lv_obj_set_pos(w_dots[i], dx + i * 12, 230);
+        lv_obj_set_pos(w_dots[i], dx + i * 12, 228);
         lv_obj_set_style_radius(w_dots[i], 4, 0);
         lv_obj_set_style_border_width(w_dots[i], 0, 0);
         lv_obj_clear_flag(w_dots[i], LV_OBJ_FLAG_SCROLLABLE);
@@ -455,21 +596,38 @@ static void build_list_screen(void)
         lv_obj_set_style_bg_color(row, lv_color_hex(i & 1 ? C_PANEL : C_BG), 0);
         lv_obj_set_style_border_width(row, 0, 0);
         lv_obj_set_style_radius(row, 0, 0);
-        lv_obj_set_style_pad_all(row, 6, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(row, ev_select_station, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 
+        // Arduino row layout: logo at left; name top-right; programme bottom-right.
         lv_obj_t *logo = lv_image_create(row);
-        lv_obj_align(logo, LV_ALIGN_LEFT_MID, 4, 0);
         lv_obj_add_flag(logo, LV_OBJ_FLAG_EVENT_BUBBLE);   // taps reach the row
-        set_logo(logo, i, 110, 44);
+        int lsc = set_logo(logo, i, 138, 38, 256);   // height-bound: ~38px rows
+        int vh  = STATION_LOGOS[i]->header.h * lsc / 256;
+        // Visual pixels hang off the widget's top-left (pivot 0,0), so align
+        // the top-left and centre the *visual* height in the 54px row.
+        lv_obj_align(logo, LV_ALIGN_TOP_LEFT, 4, (54 - vh) / 2);
 
         lv_obj_t *nm = lv_label_create(row);
         lv_label_set_text(nm, s->name);
         lv_obj_set_style_text_font(nm, &lv_font_jp_16, 0);
         lv_obj_set_style_text_color(nm, lv_color_hex(C_TEXT), 0);
-        lv_obj_align(nm, LV_ALIGN_RIGHT_MID, -6, 0);
+        lv_obj_set_size(nm, 168, 22);   // fixed height: DOT, not wrap
+        lv_label_set_long_mode(nm, LV_LABEL_LONG_DOT);
+        lv_obj_set_style_text_align(nm, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_align(nm, LV_ALIGN_TOP_RIGHT, -6, 4);
+
+        s_list_prog[i] = lv_label_create(row);
+        lv_label_set_text(s_list_prog[i], "---");
+        lv_obj_set_style_text_font(s_list_prog[i], &lv_font_jp_16, 0);
+        lv_obj_set_style_text_color(s_list_prog[i], lv_color_hex(C_DIM), 0);
+        lv_obj_set_size(s_list_prog[i], 168, 22);
+        lv_label_set_long_mode(s_list_prog[i], LV_LABEL_LONG_SCROLL_CIRCULAR);
+        lv_obj_set_style_anim_duration(s_list_prog[i], 30000, 0);   // slow crawl
+        lv_obj_set_style_text_align(s_list_prog[i], LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_align(s_list_prog[i], LV_ALIGN_BOTTOM_RIGHT, -6, -4);
     }
 }
 
@@ -634,8 +792,7 @@ esp_err_t ui_init(void)
     if (!s_flush_sem) return ESP_ERR_NO_MEM;
 
     s_disp = lv_display_create(DISPLAY_H_RES, DISPLAY_V_RES);
-    lv_display_set_flush_cb(s_disp, flush_cb);
-    lv_display_set_flush_wait_cb(s_disp, flush_wait_cb);  // yield, don't busy-spin
+    lv_display_set_flush_cb(s_disp, flush_cb);   // flush_cb blocks on the DMA itself
     lv_display_set_buffers(s_disp, buf1, buf2, buf_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
     display_register_flush_ready_cb(color_done_cb, NULL);
 
@@ -648,6 +805,9 @@ esp_err_t ui_init(void)
     // One-shot debounce timer for prev/next (created paused; armed on each press).
     s_commit_timer = lv_timer_create(commit_cb, 450, NULL);
     lv_timer_pause(s_commit_timer);
+
+    s_sleep_timer = lv_timer_create(sleep_fire_cb, 60000, NULL);
+    lv_timer_pause(s_sleep_timer);
 
     // 16 KB stack: LVGL v9's image draw/decode path (Phase 13 logos) is much
     // deeper than the label/tile path, and 8 KB could overflow while rendering
