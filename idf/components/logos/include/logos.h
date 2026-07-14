@@ -16,3 +16,6 @@ extern const lv_image_dsc_t *const STATION_LOGOS[];
 // software image transform must never run at runtime (it starved the audio
 // decoder in Phase 13 and wedged the LVGL task outright in Phase 17).
 extern const lv_image_dsc_t *const STATION_LOGOS_SMALL[];
+
+// Boot splash (radiko logo pre-composited on C_BG, 300px wide).
+extern const lv_image_dsc_t SPLASH_IMG;

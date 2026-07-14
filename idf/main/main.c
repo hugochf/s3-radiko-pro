@@ -40,11 +40,13 @@ static const char *TAG = "boot";
 // authorises the stream in Phase 12; the area drives program info in Phase 14.
 static void radiko_auth_task(void *arg)
 {
+    ui_splash_status("Connecting to WiFi...");
     while (wifi_get_state() != WIFI_CONNECTED) vTaskDelay(pdMS_TO_TICKS(200));
 
     // Retry auth: a transient TLS/connection hiccup must not permanently leave
     // the radio silent. Ramp the delay (3 s → 30 s cap) so a persistent failure
     // (captive portal, Radiko outage) doesn't hammer the server forever.
+    ui_splash_status("Signing in to Radiko...");
     radiko_auth_t auth;
     esp_err_t err;
     for (int attempt = 1; (err = radiko_authenticate(&auth)) != ESP_OK; attempt++) {
@@ -52,10 +54,14 @@ static void radiko_auth_task(void *arg)
         if (delay_ms > 30000) delay_ms = 30000;
         ESP_LOGW(TAG, "Radiko auth failed (attempt %d); retrying in %d s",
                  attempt, delay_ms / 1000);
+        char s[48];
+        snprintf(s, sizeof(s), "Retrying Radiko sign-in (#%d)...", attempt + 1);
+        ui_splash_status(s);
         vTaskDelay(pdMS_TO_TICKS(delay_ms));
     }
 
     ESP_LOGI(TAG, "Radiko auth OK: area=%s", auth.area);
+    ui_splash_status("Buffering audio...");
     ui_set_playing(true);                    // auto-play the saved station
     stream_play(ui_current_station_id());    // stream gets its TLS RAM first
     vTaskDelete(NULL);
@@ -137,6 +143,9 @@ void app_main(void)
                  esp_err_to_name(perr));
     else
         audio_set_volume(settings_get()->volume);   // apply persisted volume
+    // First real PCM dismisses the boot splash (event-driven, no fixed timer;
+    // the splash's own 20 s failsafe covers the audio-never-starts case).
+    audio_on_first_audio(ui_splash_done);
 
     // WS2812 mood LED (Arduino parity; eye button on the player cycles modes).
     led_init();
@@ -167,7 +176,8 @@ void app_main(void)
     // Phase 10: authenticate with Radiko once WiFi is up.
     xTaskCreate(radiko_auth_task, "radiko_auth", 8192, NULL, 5, NULL);
 
-    ui_apply_brightness();   // persisted level, not hard-coded full duty
+    // Backlight comes on from ui's flush hook the moment the first complete
+    // frame (the splash) hits the panel — nothing to do here anymore.
     ESP_LOGI(TAG, "display + LVGL + touch + wifi + audio up");
 
 

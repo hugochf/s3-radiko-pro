@@ -75,6 +75,8 @@ static uint32_t tick_cb(void)
 // Given by the SPI DMA-done ISR, awaited once per flush in flush_cb.
 static SemaphoreHandle_t s_flush_sem = NULL;
 
+void ui_apply_brightness(void);   // defined with the settings code below
+
 static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 {
     int w = area->x2 - area->x1 + 1;
@@ -95,7 +97,17 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
         ESP_LOGE(TAG, "flush DMA-done timeout #%d (draw=%s, area %dx%d)",
                  ++timeouts, esp_err_to_name(derr), w, h);
     }
+    bool first_frame_done = lv_display_flush_is_last(disp);
     lv_display_flush_ready(disp);
+
+    // Backlight comes on the moment the FIRST complete frame (the splash) is
+    // on the glass: no dark pause at power-up, and no garbage frame either
+    // (previously app_main forced full duty much later in boot).
+    static bool s_bl_on = false;
+    if (!s_bl_on && first_frame_done) {
+        s_bl_on = true;
+        ui_apply_brightness();
+    }
 }
 
 static bool color_done_cb(esp_lcd_panel_io_handle_t io,
@@ -718,6 +730,68 @@ static void build_saver_screen(void)
     lv_obj_align(s_saver_date, LV_ALIGN_BOTTOM_MID, 0, 0);
 }
 
+// ---- Boot splash: logo + status line until audio actually starts ----
+// Event-driven, not a fixed timer: audio_write's first real PCM triggers
+// ui_splash_done(), so the splash covers exactly the not-ready period however
+// long boot takes. A minimum stops a fast boot from blinking it; a failsafe
+// stops a boot problem from trapping the user on it. If WiFi setup is needed,
+// that screen simply replaces the splash and all of this stands down.
+static lv_obj_t *s_scr_splash = NULL;
+static lv_obj_t *s_splash_lbl = NULL;
+#define SPLASH_MIN_MS      2500
+// Measured boot-to-first-PCM is 22-27 s (WiFi + auth + HLS chain + first
+// segment); the failsafe must clear that comfortably or it, not the audio,
+// ends the splash on ordinary boots.
+#define SPLASH_FAILSAFE_MS 35000
+
+static void splash_finish(void)
+{
+    if (s_scr_splash && lv_screen_active() == s_scr_splash)
+        lv_screen_load(s_scr_player);
+}
+
+static void splash_timer_cb(lv_timer_t *t) { splash_finish(); }
+
+static void build_splash_screen(void)
+{
+    s_scr_splash = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_scr_splash, lv_color_hex(C_BG), 0);
+    lv_obj_clear_flag(s_scr_splash, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *img = lv_image_create(s_scr_splash);
+    lv_image_set_src(img, &SPLASH_IMG);   // pre-composited on C_BG, 1:1
+    lv_obj_align(img, LV_ALIGN_CENTER, 0, -24);
+
+    s_splash_lbl = lv_label_create(s_scr_splash);
+    lv_label_set_text(s_splash_lbl, "Starting...");
+    lv_obj_set_style_text_color(s_splash_lbl, lv_color_hex(C_DIM), 0);
+    lv_obj_align(s_splash_lbl, LV_ALIGN_CENTER, 0, 64);
+}
+
+void ui_splash_status(const char *text)
+{
+    ui_lock(-1);
+    if (s_splash_lbl && lv_screen_active() == s_scr_splash)
+        lv_label_set_text(s_splash_lbl, text);
+    ui_unlock();
+}
+
+void ui_splash_done(void)
+{
+    ui_lock(-1);
+    if (s_scr_splash && lv_screen_active() == s_scr_splash) {
+        int64_t up_ms = esp_timer_get_time() / 1000;
+        if (up_ms >= SPLASH_MIN_MS) {
+            splash_finish();
+        } else {   // one-shot; LVGL auto-deletes when the repeat count runs out
+            lv_timer_t *t = lv_timer_create(splash_timer_cb,
+                                            (uint32_t)(SPLASH_MIN_MS - up_ms), NULL);
+            lv_timer_set_repeat_count(t, 1);
+        }
+    }
+    ui_unlock();
+}
+
 // Swipe/tap gestures on the full-width logo strip (Arduino behaviour):
 //   dx >= +25 → prev station, dx <= -25 → next station,
 //   |dx| < 8 AND released in the centre region (x 120..200) → open station list,
@@ -1326,7 +1400,13 @@ esp_err_t ui_init(void)
     build_list_screen();
     build_settings_screen();
     build_saver_screen();
-    lv_screen_load(s_scr_player);
+    build_splash_screen();
+    lv_screen_load(s_scr_splash);   // player follows via ui_splash_done()
+
+    // Failsafe: whatever happens to the boot pipeline, never trap the user
+    // on the splash (one-shot, auto-deleted).
+    lv_timer_t *fs = lv_timer_create(splash_timer_cb, SPLASH_FAILSAFE_MS, NULL);
+    lv_timer_set_repeat_count(fs, 1);
 
     lv_timer_create(status_timer_cb, 2000, NULL);  // WiFi/status bar refresh
     lv_timer_create(idle_timer_cb, 300, NULL);     // screen dim/off after idle

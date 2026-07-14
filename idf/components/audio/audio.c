@@ -131,6 +131,15 @@ void audio_set_volume(int vol)
     if (s_es) { i2c_bus_lock(); es8311_voice_volume_set(s_es, vol, NULL); i2c_bus_unlock(); }
 }
 
+// One-shot "first real PCM" notification (the boot splash keys off it).
+static void (*s_first_cb)(void) = NULL;
+static bool   s_first_fired     = false;
+
+void audio_on_first_audio(void (*cb)(void))
+{
+    s_first_cb = cb;
+}
+
 esp_err_t audio_write(const void *pcm, size_t bytes, size_t *written)
 {
     // If audio_init failed partway (codec/I2S absent) the buffer never existed;
@@ -145,6 +154,10 @@ esp_err_t audio_write(const void *pcm, size_t bytes, size_t *written)
     size_t sent = 0;
     while (sent < bytes && s_active) {
         sent += xStreamBufferSend(s_pcm, p + sent, bytes - sent, pdMS_TO_TICKS(100));
+    }
+    if (sent && !s_first_fired) {
+        s_first_fired = true;
+        if (s_first_cb) s_first_cb();   // decoder task context; cb must be quick
     }
     if (written) *written = sent;
     return ESP_OK;

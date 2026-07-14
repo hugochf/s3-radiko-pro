@@ -20,6 +20,10 @@ void      audio_set_volume(int vol);        // 0..100 (codec DAC volume)
 // Write interleaved 16-bit stereo PCM (back-pressures the caller until played).
 esp_err_t audio_write(const void *pcm, size_t bytes, size_t *written);
 
+// One-shot callback the first time real PCM enters the pipeline (boot splash
+// dismissal). Runs in the decoder task; keep it quick.
+void audio_on_first_audio(void (*cb)(void));
+
 // Instant silence: mute + drop all buffered PCM. audio_resume() restarts output.
 void audio_flush(void);
 void audio_resume(void);

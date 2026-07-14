@@ -641,3 +641,19 @@ images at runtime on this target; pre-scale at asset-generation time.**
 - Verified end-to-end: three reboots' markers + captured warnings read back
   via `parttool.py read_partition` + `tools/elog_dump.py` (ring reassembled
   oldest-first). Survives reflashes — the partition is outside the app slots.
+
+### Boot splash (polish, after Phase 20)
+
+- **A splash should end on the event it covers, not on a timer.** First
+  thought was "show it 10 s"; measured boot-to-first-audio is actually
+  22–27 s and varies with WiFi/auth. The splash is dismissed by the first
+  real PCM entering the pipeline (`audio_on_first_audio` one-shot), with a
+  2.5 s minimum (fast boots must not blink it) and a 35 s failsafe (boot
+  trouble must not trap the user — sized ABOVE the normal spread or the
+  failsafe becomes the ordinary exit). Status line tracks the boot stages.
+- Backlight now turns on from the flush hook when the first complete frame
+  is on the glass (`lv_display_flush_is_last`) — kills the 2 s black screen
+  at power-up with zero garbage-frame risk.
+- App slot now 95% full (~156 KB free): the splash bitmap (71 KB) fit, but
+  Phase 22 (OTA) should budget flash first — trim CJK font ranges or move
+  big assets to the storage partition.

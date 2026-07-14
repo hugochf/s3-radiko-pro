@@ -126,12 +126,18 @@ and the rest SPIFFS storage.
 `main/main.c` brings the system up in dependency order:
 
 ```
-nvs_flash_init → settings_init → display_init → ui_init (lv_init) →
+nvs_flash_init → elog_init → settings_init → app_watchdog_init →
+crashlog_check → display_init → ui_init (lv_init, splash screen) →
 i2c_bus_init → touch_init → audio_init (+ apply saved volume) →
 led_init (+ saved mode) → battery_init → stream_control_start →
 radiko_program_start → wifi_start → [ui_show_wifi_setup if no creds] →
-timesync_start → radiko_auth task → apply saved brightness
+timesync_start → radiko_auth task
 ```
+
+Boot UX: the splash (radiko logo + status line) is the first screen; the
+backlight turns on from the flush hook when the first complete frame is on the
+panel. The splash is dismissed by the first real PCM (`audio_on_first_audio`),
+with a 2.5 s minimum and a 35 s failsafe — measured boot-to-audio is 22–27 s.
 
 `ui_init` runs before `touch_init` because the touch input device attaches to an
 already-initialized LVGL. `stream_control_start` creates the persistent keep-alive
