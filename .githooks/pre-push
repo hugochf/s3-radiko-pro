@@ -1,0 +1,12 @@
+#!/bin/sh
+# Pre-push gate (Phase 21): the host unit tests must pass before anything
+# leaves this machine. They take ~2 s; a red CI you could have caught locally
+# is pure waste. Enable once per clone with:
+#
+#   git config core.hooksPath .githooks
+#
+# Bypass in an emergency with `git push --no-verify` (and own the red CI).
+set -e
+echo "pre-push: running host unit tests..."
+make -C "$(git rev-parse --show-toplevel)/test/host" run
+echo "pre-push: tests green — pushing."
