@@ -31,9 +31,16 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
         // Flip X here rather than via the driver's mirror_x: esp_lcd_touch mirrors
         // on the raw axis (0..240) using x_max=320 before the swap, which offsets
         // and kills the top edge. Doing it post-swap on the display axis is clean.
-        data->point.x = (DISPLAY_H_RES - 1) - x;
-        data->point.y = y;
-        data->state   = LV_INDEV_STATE_PRESSED;
+        // When the panel is flipped 180° (settings), both axes invert relative to
+        // the default map: (H-1-x, y) becomes (x, V-1-y).
+        if (display_flipped()) {
+            data->point.x = x;
+            data->point.y = (DISPLAY_V_RES - 1) - y;
+        } else {
+            data->point.x = (DISPLAY_H_RES - 1) - x;
+            data->point.y = y;
+        }
+        data->state = LV_INDEV_STATE_PRESSED;
     } else {
         data->state = LV_INDEV_STATE_RELEASED;
     }

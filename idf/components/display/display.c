@@ -162,6 +162,23 @@ esp_lcd_panel_handle_t display_panel(void)
     return s_panel;
 }
 
+// Default (false) is the upside-down mount orientation set in display_init
+// (mirror true,true); flipped inverts both mirrors for a 180° rotation. The
+// flag lives here so the touch driver can remap coordinates without depending
+// on the settings/UI layers.
+static bool s_flipped = false;
+
+void display_set_flipped(bool flipped)
+{
+    s_flipped = flipped;
+    if (s_panel) ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, !flipped, !flipped));
+}
+
+bool display_flipped(void)
+{
+    return s_flipped;
+}
+
 esp_err_t display_test_pattern(void)
 {
     ESP_RETURN_ON_FALSE(s_panel, ESP_ERR_INVALID_STATE, TAG, "not initialized");

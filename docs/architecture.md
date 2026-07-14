@@ -56,8 +56,10 @@ info, LED).** The split is deliberate — see the note below.
 | `led`         |  0   |  1   | 2.5 KB | permanent | WS2812 mood-LED effects, 20 ms tick |
 | `wifiscan`    | any  |  4   |  4 KB  | one-shot  | Wi-Fi AP scan for the setup screen |
 
-Plus LVGL timers running inside the `lvgl` task: the 2 s status-bar refresh and
-the one-shot 450 ms prev/next debounce.
+Plus LVGL timers running inside the `lvgl` task: the 2 s status-bar refresh
+(Wi-Fi, clock, battery gauge — the battery ADC on GPIO9 is polled here, no task
+of its own), the 300 ms screen dim/off idle tick, and the one-shot 450 ms
+prev/next debounce.
 
 **Why the decoder lives on core 0, not with LVGL (changed in Phase 14).** They
 originally shared core 1 (decoder prio 3 < LVGL 4). Once the full-CJK font made

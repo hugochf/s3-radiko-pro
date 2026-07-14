@@ -99,4 +99,9 @@ const char *led_cycle_mode(void)
     return MODE_NAMES[s_mode];
 }
 
+void led_set_mode(int mode)
+{
+    if (mode >= 0 && mode < LED_MODES) s_mode = mode;
+}
+
 int led_mode(void) { return s_mode; }

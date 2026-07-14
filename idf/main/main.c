@@ -19,6 +19,7 @@
 #include "nvs_flash.h"
 
 #include "audio.h"
+#include "battery.h"
 #include "led.h"
 #include "display.h"
 #include "i2c_bus.h"
@@ -104,6 +105,10 @@ void app_main(void)
 
     // WS2812 mood LED (Arduino parity; eye button on the player cycles modes).
     led_init();
+    led_set_mode(settings_get()->led_mode);   // restore the persisted mode
+
+    // Battery gauge (ADC on GPIO9); the UI polls it from the status-bar tick.
+    battery_init();
 
     // Phase 12: player-control task (UI posts play/stop commands to it).
     stream_control_start();
@@ -127,7 +132,7 @@ void app_main(void)
     // Phase 10: authenticate with Radiko once WiFi is up.
     xTaskCreate(radiko_auth_task, "radiko_auth", 8192, NULL, 5, NULL);
 
-    display_backlight_set(255);
+    ui_apply_brightness();   // persisted level, not hard-coded full duty
     ESP_LOGI(TAG, "display + LVGL + touch + wifi + audio up");
 
 

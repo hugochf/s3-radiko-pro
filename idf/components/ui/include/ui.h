@@ -23,6 +23,10 @@ void ui_show_wifi_setup(void);
 // Reflect playback state in the UI (play/pause icon). Thread-safe.
 void ui_set_playing(bool playing);
 
+// Set the backlight to the persisted brightness level (boot: called once the
+// first frame is drawn, so the panel never shows garbage at full duty).
+void ui_apply_brightness(void);
+
 // The saved/selected station id (for auto-play after auth). Never NULL.
 const char *ui_current_station_id(void);
 

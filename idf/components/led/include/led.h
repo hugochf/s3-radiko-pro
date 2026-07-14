@@ -15,7 +15,8 @@ extern "C" {
 esp_err_t   led_init(void);
 // Advance to the next mode; returns its display name (e.g. "Ocean", "OFF").
 const char *led_cycle_mode(void);
-int         led_mode(void);   // current mode index (6 = off)
+int         led_mode(void);          // current mode index (6 = off)
+void        led_set_mode(int mode);  // jump to a mode (restore from settings)
 
 #ifdef __cplusplus
 }

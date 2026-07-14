@@ -183,7 +183,7 @@ purpose. Take the time per phase.
 - [x] **Phase 12** — HLS pipeline (libhelix-aac + hand-written HLS) ✅ Radiko audio plays!
 - [x] **Phase 13** — Station logos as embedded data ✅ real logos, RGB565 via EMBED_FILES
 - [x] **Phase 14** — Program info fetch ✅ + Arduino UI parity, RGB LED, sleep timer
-- [ ] **Phase 15** — Settings page port
+- [x] **Phase 15** — Settings page port
 - [ ] **Phase 16** — Screen saver port
 - [ ] **Phase 17** — Error handling pass
 - [ ] **Phase 18** — Watchdog tuning
@@ -473,12 +473,39 @@ real phase. Eight distinct bugs, each only visible after fixing the previous:
   playlist after ~5 s of empty polls (was 12), and a 30 s PCM ring buffer.
   Verified 7 min continuous with zero stalls.
 
-### Phase 15 (WIP) — Settings screen + two concurrency bugs
+### Phase 15 — Settings screen + two concurrency bugs
 
-- Settings/Info screen (tap the centre title): Brightness + Sleep Timer sliders
-  (NVS-persisted), System Info, firmware info. Remaining for Arduino parity:
-  Screen Dim/Off, Flip 180°, Screen Saver switch (Phase 16), battery ADC,
-  LED-mode persistence.
+- Settings/Info screen (tap the centre title): Brightness, Screen Dim (1–15 min),
+  Screen Off (3 min–Never), and Sleep Timer sliders; Flip Screen 180° and Screen
+  Saver switches; System Info (incl. battery mV/%); firmware info. All persisted
+  via the settings blob. The saver's bouncing-clock screen itself is Phase 16 —
+  until then saver-on just keeps the display awake and greys out Dim/Off (the
+  saver replaces those timeouts, Arduino behaviour).
+- **LVGL's inactivity clock gives idle machinery for free.** A 300 ms
+  `lv_timer` polling `lv_display_get_inactive_time()` drives on→dim→off; a
+  *decrease* in idle time between ticks is the wake signal (any input resets the
+  clock), so the touch driver needs no hooks. Tick fast: wake latency is one
+  period, and 1 s of black screen after a touch feels broken.
+- **Flip 180° = invert both panel mirrors AND both touch axes.** The flipped
+  flag lives in the display component (`display_flipped()`), which touch already
+  depends on — putting it in the UI would create a ui↔touch dependency cycle
+  (touch needs ui_lock for indev registration).
+- **No charge-status pin (TP4054 CHRG only drives an LED)** — charging is
+  inferred from the voltage trend: >10 mV rise over a ~30 s window of smoothed
+  readings, sampled on the status bar's steady 2 s tick.
+- `esp_app_desc` build date is stamped when *esp_app_desc.c* recompiles, not on
+  every build — a stale-looking banner date does not mean a stale flash. Verify
+  flashes by a log line unique to the new build instead.
+- **Every ISR must be IRAM-safe if ANY task writes flash.** The WS2812's RMT
+  interrupt (20 ms refresh tick) wasn't; any NVS write (volume release, station
+  select, settings sliders) disables the flash cache, and an RMT interrupt in
+  that window wedged the chip. `CONFIG_RMT_ISR_IRAM_SAFE=y`. Same failure class
+  as the Phase 13 touch-INT bug — audit this for every new interrupt source.
+- **ESP-IDF's `i2c_master` is NOT thread-safe across tasks.** Touch polls (LVGL
+  task) racing ES8311 mute/volume writes (stream ctrl task) on the shared bus
+  corrupted the driver and hung both: touch dead + stream never restarted.
+  All transactions on a shared bus must hold a mutex (`i2c_bus_lock()`).
+  Repro was "press Next, then drag the volume mid-switch".
 - **Every ISR must be IRAM-safe if ANY task writes flash.** The WS2812's RMT
   interrupt (20 ms refresh tick) wasn't; any NVS write (volume release, station
   select, settings sliders) disables the flash cache, and an RMT interrupt in

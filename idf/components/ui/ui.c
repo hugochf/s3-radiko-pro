@@ -2,6 +2,7 @@
 
 #include <string.h>
 #include "audio.h"
+#include "battery.h"
 #include "display.h"
 #include "logos.h"
 #include "esp_app_desc.h"
@@ -57,6 +58,7 @@ static lv_obj_t *w_vol_val    = NULL;
 static lv_obj_t *w_play       = NULL;
 static lv_obj_t *w_wifi       = NULL;
 static lv_obj_t *w_clock      = NULL;
+static lv_obj_t *w_bat        = NULL;
 static lv_obj_t *w_dots[NUM_STATIONS];
 static lv_obj_t *s_list_prog[NUM_STATIONS];   // per-row programme labels (list)
 
@@ -234,6 +236,14 @@ static void schedule_commit(void)
     lv_timer_resume(s_commit_timer);
 }
 
+// ---- Screen dim/off state machine (Arduino screenState): 0=on 1=dimmed 2=off.
+// Driven by a 1 s LVGL timer off lv_display_get_inactive_time(); any touch
+// resets LVGL's inactivity clock, which the timer detects to restore the
+// backlight. Note the waking touch also reaches whatever widget it lands on
+// (same as the Arduino build).
+static int s_screen_state = 0;
+#define DIM_DUTY 18   // ~7% brightness when dimmed
+
 // ---- Sleep timer (Arduino bell button): cycles OFF/30/60/90 min; when it
 // fires, playback stops. Runs as a paused LVGL timer armed on selection.
 static lv_obj_t  *s_sleep_lbl  = NULL;
@@ -249,6 +259,8 @@ static void sleep_fire_cb(lv_timer_t *t)
     s_playing = false;
     refresh_player();
     apply_playback();
+    display_backlight_set(0);   // Arduino: sleep also turns the screen off
+    s_screen_state = 2;
 }
 static void ev_sleep_toggle(lv_event_t *e)
 {
@@ -275,27 +287,70 @@ static void ev_led_toggle(lv_event_t *e)
     lv_label_set_text(s_led_lbl,
         led_mode() == LED_MODES - 1 ? LV_SYMBOL_EYE_CLOSE : LV_SYMBOL_EYE_OPEN);
     lv_label_set_text(w_prog, name);  // transient, like the Arduino build
+    settings_get()->led_mode = (uint8_t)led_mode();
+    settings_save();
 }
 
 static void ev_open_list(lv_event_t *e) { lv_screen_load(s_scr_list); }
 
 // ---- Settings / Info screen (Phase 15, Arduino port) ----
 static lv_obj_t *s_scr_set = NULL;
-static lv_obj_t *s_set_info[5];          // RSSI/area, uptime, heap, ver, idf
+static lv_obj_t *s_set_info[5];          // RSSI/area, IP, uptime, heap, battery
+static lv_obj_t *s_set_bl_sl  = NULL;    // brightness slider (synced on bat-tap)
 static lv_obj_t *s_set_bl_val = NULL;
 static lv_obj_t *s_set_sl_val = NULL;
+static lv_obj_t *s_set_dim_sl  = NULL;   // dim/off rows: greyed out when the
+static lv_obj_t *s_set_dim_val = NULL;   // screen saver replaces them
+static lv_obj_t *s_set_off_sl  = NULL;
+static lv_obj_t *s_set_off_val = NULL;
 static const uint8_t BL_DUTY[4] = { 64, 128, 192, 255 };
 static const char   *BL_NAMES[4] = { "Low", "Mid", "High", "Max" };
 static const char   *SLEEP_NAMES[4] = { "Off", "30 min", "60 min", "90 min" };
+static const uint32_t DIM_MS[5]   = { 60000, 180000, 300000, 600000, 900000 };
+static const char    *DIM_NAMES[5] = { "1 min", "3 min", "5 min", "10 min", "15 min" };
+static const uint32_t OFF_MS[5]   = { 180000, 300000, 600000, 1800000, 0 };  // 0=never
+static const char    *OFF_NAMES[5] = { "3 min", "5 min", "10 min", "30 min", "Never" };
+
+static int opt_index(const uint32_t *opts, int n, uint32_t v, int dflt)
+{
+    for (int i = 0; i < n; i++) if (opts[i] == v) return i;
+    return dflt;
+}
 
 static void ev_set_back(lv_event_t *e) { lv_screen_load(s_scr_player); }
+
+static void apply_brightness(void)
+{
+    settings_t *st = settings_get();
+    display_backlight_set(BL_DUTY[st->brightness]);
+    s_screen_state = 0;
+    if (s_set_bl_val) lv_label_set_text(s_set_bl_val, BL_NAMES[st->brightness]);
+    if (s_set_bl_sl)  lv_slider_set_value(s_set_bl_sl, st->brightness, LV_ANIM_OFF);
+    // Flash the new level in the status bar (the 2 s status tick restores the
+    // battery reading) — same transient feedback as the Arduino build.
+    if (w_bat) lv_label_set_text_fmt(w_bat, LV_SYMBOL_SETTINGS " %s",
+                                     BL_NAMES[st->brightness]);
+}
 
 static void ev_set_bl(lv_event_t *e)
 {
     int idx = (int)lv_slider_get_value(lv_event_get_target(e));
-    display_backlight_set(BL_DUTY[idx]);
-    lv_label_set_text(s_set_bl_val, BL_NAMES[idx]);
     settings_get()->brightness = idx;
+    apply_brightness();
+    settings_save();
+}
+
+void ui_apply_brightness(void)
+{
+    display_backlight_set(BL_DUTY[settings_get()->brightness]);
+}
+
+// Arduino bat_btn: tapping the battery cycles the brightness level.
+static void ev_bat_cycle(lv_event_t *e)
+{
+    settings_t *st = settings_get();
+    st->brightness = (st->brightness + 1) % 4;
+    apply_brightness();
     settings_save();
 }
 
@@ -317,6 +372,59 @@ static void ev_set_sleep(lv_event_t *e)
     settings_save();
 }
 
+static void ev_set_dim(lv_event_t *e)
+{
+    int idx = (int)lv_slider_get_value(lv_event_get_target(e));
+    settings_get()->dim_ms = DIM_MS[idx];
+    lv_label_set_text(s_set_dim_val, DIM_NAMES[idx]);
+    settings_save();
+}
+
+static void ev_set_off(lv_event_t *e)
+{
+    int idx = (int)lv_slider_get_value(lv_event_get_target(e));
+    settings_get()->off_ms = OFF_MS[idx];
+    lv_label_set_text(s_set_off_val, OFF_NAMES[idx]);
+    settings_save();
+}
+
+// With the saver on it replaces dim/off entirely (Arduino behaviour), so grey
+// out those sliders. The slider's title label is stashed as its user_data.
+static void update_dim_off_state(void)
+{
+    bool saver = settings_get()->saver;
+    lv_obj_t *rows[2][2] = { { s_set_dim_sl, s_set_dim_val },
+                             { s_set_off_sl, s_set_off_val } };
+    for (int i = 0; i < 2; i++) {
+        lv_obj_t *sl = rows[i][0];
+        if (!sl) continue;
+        if (saver) lv_obj_add_state(sl, LV_STATE_DISABLED);
+        else       lv_obj_remove_state(sl, LV_STATE_DISABLED);
+        lv_obj_t *title = lv_obj_get_user_data(sl);
+        lv_obj_set_style_text_color(title,
+            lv_color_hex(saver ? 0x555577 : C_HL), 0);
+        lv_obj_set_style_text_color(rows[i][1],
+            lv_color_hex(saver ? 0x666688 : C_TEXT), 0);
+    }
+}
+
+static void ev_set_saver(lv_event_t *e)
+{
+    settings_get()->saver =
+        lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+    settings_save();
+    update_dim_off_state();
+}
+
+static void ev_set_rot(lv_event_t *e)
+{
+    bool flip = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+    settings_get()->rotation = flip ? 1 : 3;   // 3 = default upside-down mount
+    settings_save();
+    display_set_flipped(flip);                 // touch remaps via display_flipped()
+    lv_obj_invalidate(lv_screen_active());     // repaint everything the new way up
+}
+
 // Fill the System Info labels; called each time the screen opens.
 static void refresh_settings_info(void)
 {
@@ -333,6 +441,10 @@ static void refresh_settings_info(void)
              (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
              (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
     lv_label_set_text(s_set_info[3], b);
+    int mv = battery_mv();
+    if (mv >= 0) snprintf(b, sizeof(b), "Battery: %d mV (%d%%)", mv, battery_pct());
+    else         snprintf(b, sizeof(b), "Battery: n/a");
+    lv_label_set_text(s_set_info[4], b);
 }
 
 static void ev_open_settings(lv_event_t *e)
@@ -370,8 +482,39 @@ static lv_obj_t *set_slider_row(lv_obj_t *cont, const char *title, int max_idx,
     lv_obj_set_style_bg_color(sl, lv_color_hex(C_TRACK), LV_PART_MAIN);
     lv_obj_set_style_bg_color(sl, lv_color_hex(C_HL), LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(sl, lv_color_hex(C_HL), LV_PART_KNOB);
+    // Disabled look (dim/off rows grey out while the saver owns the timeouts)
+    lv_obj_set_style_bg_color(sl, lv_color_hex(0x222238), LV_PART_MAIN | LV_STATE_DISABLED);
+    lv_obj_set_style_bg_color(sl, lv_color_hex(0x444466), LV_PART_INDICATOR | LV_STATE_DISABLED);
+    lv_obj_set_style_bg_color(sl, lv_color_hex(0x555577), LV_PART_KNOB | LV_STATE_DISABLED);
     lv_obj_add_event_cb(sl, cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_set_user_data(sl, tl);   // update_dim_off_state greys the title via this
     return sl;
+}
+
+static lv_obj_t *set_switch_row(lv_obj_t *cont, const char *title, bool on,
+                                lv_event_cb_t cb)
+{
+    lv_obj_t *row = lv_obj_create(cont);
+    lv_obj_set_size(row, 300, 32);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *tl = lv_label_create(row);
+    lv_label_set_text(tl, title);
+    lv_obj_set_style_text_color(tl, lv_color_hex(C_HL), 0);
+    lv_obj_align(tl, LV_ALIGN_LEFT_MID, 4, 0);
+
+    lv_obj_t *sw = lv_switch_create(row);
+    lv_obj_set_size(sw, 44, 22);
+    lv_obj_align(sw, LV_ALIGN_RIGHT_MID, -4, 0);
+    if (on) lv_obj_add_state(sw, LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(sw, lv_color_hex(C_TRACK), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(sw, lv_color_hex(C_HL), LV_PART_INDICATOR | LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(sw, lv_color_hex(C_TEXT), LV_PART_KNOB);
+    lv_obj_add_event_cb(sw, cb, LV_EVENT_VALUE_CHANGED, NULL);
+    return sw;
 }
 
 static void build_settings_screen(void)
@@ -415,17 +558,27 @@ static void build_settings_screen(void)
     lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
 
     settings_t *st = settings_get();
-    set_slider_row(cont, "Brightness", 3, st->brightness,
-                   BL_NAMES[st->brightness], ev_set_bl, &s_set_bl_val);
+    s_set_bl_sl = set_slider_row(cont, "Brightness", 3, st->brightness,
+                                 BL_NAMES[st->brightness], ev_set_bl, &s_set_bl_val);
+    // Arduino row order: Brightness, Screen Dim, Screen Off, Sleep Timer.
+    int didx = opt_index(DIM_MS, 5, st->dim_ms, 2);
+    s_set_dim_sl = set_slider_row(cont, "Screen Dim", 4, didx,
+                                  DIM_NAMES[didx], ev_set_dim, &s_set_dim_val);
+    int oidx = opt_index(OFF_MS, 5, st->off_ms, 2);
+    s_set_off_sl = set_slider_row(cont, "Screen Off", 4, oidx,
+                                  OFF_NAMES[oidx], ev_set_off, &s_set_off_val);
     int sidx = (st->sleep_mins >= 90) ? 3 : (st->sleep_mins >= 60) ? 2
              : (st->sleep_mins >= 30) ? 1 : 0;
     set_slider_row(cont, "Sleep Timer", 3, sidx,
                    SLEEP_NAMES[sidx], ev_set_sleep, &s_set_sl_val);
 
+    set_switch_row(cont, "Flip Screen 180\xC2\xB0", st->rotation == 1, ev_set_rot);
+    set_switch_row(cont, "Screen Saver (Clock)", st->saver, ev_set_saver);
+
     lv_obj_t *sec = lv_label_create(cont);
     lv_label_set_text(sec, "System Info");
     lv_obj_set_style_text_color(sec, lv_color_hex(C_HL), 0);
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 5; i++) {
         s_set_info[i] = lv_label_create(cont);
         lv_obj_set_style_text_color(s_set_info[i], lv_color_hex(C_TEXT), 0);
         lv_label_set_text(s_set_info[i], "...");
@@ -444,6 +597,8 @@ static void build_settings_screen(void)
     lv_obj_set_style_text_color(f2, lv_color_hex(C_TEXT), 0);
     snprintf(fw, sizeof(fw), "IDF %s", app->idf_ver);
     lv_label_set_text(f2, fw);
+
+    update_dim_off_state();   // grey dim/off if the saver owns the timeouts
 }
 
 // Swipe/tap gestures on the full-width logo strip (Arduino behaviour):
@@ -546,6 +701,50 @@ static void status_timer_cb(lv_timer_t *t)
             lv_label_set_text(w_clock, "--:--");
         }
     }
+
+    // Battery icon + % on the same 2 s tick (this cadence also feeds the
+    // charging-trend window in battery_charging()).
+    if (w_bat) {
+        int pct = battery_pct();
+        if (pct >= 0) {
+            const char *icon = battery_charging() ? LV_SYMBOL_CHARGE
+                             : pct > 75 ? LV_SYMBOL_BATTERY_FULL
+                             : pct > 50 ? LV_SYMBOL_BATTERY_3
+                             : pct > 25 ? LV_SYMBOL_BATTERY_2
+                             : LV_SYMBOL_BATTERY_EMPTY;
+            lv_label_set_text_fmt(w_bat, "%s %d%%", icon, pct > 100 ? 100 : pct);
+        }
+    }
+}
+
+// Fast tick (300 ms, so a wake touch restores the backlight without a visible
+// lag): dim then switch off the backlight after inactivity; restore on the
+// next touch (LVGL's inactivity clock resets on any input event).
+static void idle_timer_cb(lv_timer_t *t)
+{
+    static uint32_t last_idle = 0;
+    settings_t *st = settings_get();
+    uint32_t idle = lv_display_get_inactive_time(NULL);
+    bool woke = idle < last_idle;   // clock reset since last tick = user touched
+    last_idle = idle;
+
+    if (woke) {
+        if (s_screen_state != 0) {
+            s_screen_state = 0;
+            display_backlight_set(BL_DUTY[st->brightness]);
+        }
+        return;
+    }
+    // Saver mode replaces dim/off with the bouncing clock — Phase 16. Until
+    // that screen exists, saver-on simply leaves the display alone.
+    if (st->saver) return;
+    if (s_screen_state == 0 && idle > st->dim_ms) {
+        s_screen_state = 1;
+        display_backlight_set(DIM_DUTY);
+    } else if (s_screen_state == 1 && st->off_ms && idle > st->off_ms) {
+        s_screen_state = 2;
+        display_backlight_set(0);
+    }
 }
 
 // =====================================================================
@@ -613,10 +812,18 @@ static void build_player_screen(void)
     lv_obj_set_style_text_color(hdr_lbl, lv_color_hex(C_TEXT), 0);
     lv_obj_center(hdr_lbl);
 
-    lv_obj_t *bat = lv_label_create(bar);
-    lv_label_set_text(bat, LV_SYMBOL_BATTERY_FULL " 100%");
-    lv_obj_set_style_text_color(bat, lv_color_hex(C_TEXT), 0);
-    lv_obj_align(bat, LV_ALIGN_RIGHT_MID, -2, 0);
+    // Battery (real reading via ADC); tapping it cycles brightness (Arduino).
+    lv_obj_t *bbtn = lv_button_create(bar);
+    lv_obj_set_size(bbtn, 86, 22);
+    lv_obj_align(bbtn, LV_ALIGN_RIGHT_MID, 4, 0);
+    lv_obj_set_style_bg_opa(bbtn, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_shadow_width(bbtn, 0, 0);
+    lv_obj_set_ext_click_area(bbtn, 16);
+    lv_obj_add_event_cb(bbtn, ev_bat_cycle, LV_EVENT_CLICKED, NULL);
+    w_bat = lv_label_create(bbtn);
+    lv_label_set_text(w_bat, LV_SYMBOL_BATTERY_FULL);
+    lv_obj_set_style_text_color(w_bat, lv_color_hex(C_TEXT), 0);
+    lv_obj_align(w_bat, LV_ALIGN_RIGHT_MID, -2, 0);
 
     // ---- Station logo (full width, Arduino layout) ----
     // Swipe left/right anywhere on the strip = next/prev; a small tap in the
@@ -962,6 +1169,7 @@ esp_err_t ui_init(void)
     settings_t *st = settings_get();
     s_cur = (st->station >= 0 && st->station < STATION_COUNT) ? st->station : 0;
     s_vol = st->volume;
+    display_set_flipped(st->rotation == 1);   // apply persisted orientation
 
     // Draw buffers in PSRAM (not internal DMA RAM) — frees ~50 KB of scarce
     // internal RAM for TLS/WiFi. esp_lcd handles cache sync for PSRAM sources.
@@ -984,6 +1192,7 @@ esp_err_t ui_init(void)
     lv_screen_load(s_scr_player);
 
     lv_timer_create(status_timer_cb, 2000, NULL);  // WiFi/status bar refresh
+    lv_timer_create(idle_timer_cb, 300, NULL);     // screen dim/off after idle
 
     // One-shot debounce timer for prev/next (created paused; armed on each press).
     s_commit_timer = lv_timer_create(commit_cb, 450, NULL);

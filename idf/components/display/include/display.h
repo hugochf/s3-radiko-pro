@@ -10,6 +10,7 @@
  */
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
 #include "esp_lcd_types.h"
@@ -32,6 +33,11 @@ esp_lcd_panel_handle_t display_panel(void);
 
 // Backlight brightness, 0 (off) .. 255 (full), via LEDC PWM on GPIO45.
 void display_backlight_set(uint8_t duty);
+
+// Flip the panel 180° (settings "rotation": 3 = default mount, 1 = flipped).
+// The touch driver reads display_flipped() to remap coordinates to match.
+void display_set_flipped(bool flipped);
+bool display_flipped(void);
 
 // Replace the panel's color-transfer-done callback. Used by the UI layer to be
 // signalled when a flush finishes (LVGL flush-ready). Overrides the internal one
