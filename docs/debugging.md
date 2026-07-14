@@ -116,7 +116,8 @@ and live inspection of every task — on the running radio.
 **Terminal flow:**
 
 ```sh
-# Terminal 1 — the bridge (leave running):
+# Terminal 1 — the bridge (leave running; stop with Ctrl+C or `pkill -f openocd`).
+# Disconnect the debugger first, and restart OpenOCD after every idf.py flash.
 source ~/esp/v5.3.5/esp-idf/export.sh
 openocd -f board/esp32s3-builtin.cfg
 
