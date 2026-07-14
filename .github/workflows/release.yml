@@ -1,0 +1,63 @@
+# Release pipeline (Phase 23): pushing a tag `vX.Y.Z` produces a GitHub
+# release whose firmware was built BY CI from THAT commit — artifact ==
+# commit, always (the Phase 22 release was hand-built on a laptop; this
+# closes that provenance gap). The OTA client consumes these releases.
+#
+# Guard rails:
+#  - host unit tests must pass first
+#  - the tag must match PROJECT_VER in idf/CMakeLists.txt (a mismatched
+#    release would break the device-side version comparison)
+#  - sha256 checksum published next to the binary (integrity; cryptographic
+#    signing arrives with secure boot in Phase 25)
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run parser unit tests
+        run: make -C test/host
+
+  release:
+    needs: host-tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the release + upload assets
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches PROJECT_VER
+        run: |
+          ver=$(sed -n 's/^set(PROJECT_VER "\(.*\)")$/\1/p' idf/CMakeLists.txt)
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$ver" != "$tag" ]; then
+            echo "::error::PROJECT_VER ($ver) != tag ($tag) — bump idf/CMakeLists.txt before tagging"
+            exit 1
+          fi
+
+      - name: Build firmware (ESP-IDF v5.3.5, target esp32s3)
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.3.5
+          target: esp32s3
+          path: idf
+
+      - name: Checksum
+        run: |
+          cd idf/build
+          sha256sum s3_radiko_pro.bin | tee s3_radiko_pro.bin.sha256
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            idf/build/s3_radiko_pro.bin \
+            idf/build/s3_radiko_pro.bin.sha256 \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes
