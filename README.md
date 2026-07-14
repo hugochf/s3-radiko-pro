@@ -23,10 +23,13 @@ Live Radiko audio plays, touchscreen-controlled. Working today:
   volume, sleep timer, WS2812 mood-LED modes
 - "Now on air" program info (title + performers) on the player and per list row,
   full-CJK font, refreshed every 5 min
+- Settings page: brightness, screen dim/off timeouts, sleep timer, flip-180°,
+  screen saver, system/firmware info — all NVS-persisted
+- Screen saver (DVD-style bouncing clock) and battery gauge (ADC, status-bar %)
 - Instant pause/switch, debounced station navigation, persisted station & volume
 
-Roadmap next: settings screen, screen saver, then the
-Tier D hardening pass (error handling, OTA, unit tests). See [PLAN.md](PLAN.md).
+Roadmap next: the Tier D hardening pass (error handling, watchdog tuning, unit
+tests, OTA). See [PLAN.md](PLAN.md).
 
 ## Hardware
 
@@ -53,11 +56,12 @@ generated and gitignored — the committed deltas live in `idf/sdkconfig.default
 
 ## Architecture (short version)
 
-Two-stage streaming pipeline across both cores: a **fetcher** task (core 0) keeps
-a queue of AAC segments full while a **decoder** task (core 1) drains it through
-libhelix into a 15-second PCM ring buffer that an I2S writer feeds to the DAC.
-This decoupling is what makes live playback keep up with a CDN that serves
-segments at ~1× real time.
+Two-stage streaming pipeline: a **fetcher** task keeps a queue of AAC segments
+full while a **decoder** task drains it through libhelix into a 30-second PCM
+ring buffer that an I2S writer feeds to the DAC. Both live on core 0 with the
+rest of the networking; core 1 belongs to LVGL and the I2S writer alone. This
+decoupling is what makes live playback keep up with a CDN that serves segments
+at ~1× real time and ride through Radiko's ~5-minute session re-resolves.
 
 Task/core/priority map, the internal-RAM-vs-PSRAM memory budget, and the full
 data flow are in [docs/architecture.md](docs/architecture.md). Debugging the
@@ -76,7 +80,7 @@ idf/
     touch  i2c_bus                          — input
     wifi  timesync  httpc  radiko           — network + auth
     stream  libhelix_aac  audio             — HLS pipeline + decode + I2S
-    settings                                — versioned NVS config
+    settings  led  battery                  — versioned NVS config, mood LED, gauge
   sdkconfig.defaults partitions.csv         — build config, dual-OTA flash map
 .github/workflows/   CI: build firmware on every push
 ```

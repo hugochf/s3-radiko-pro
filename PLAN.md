@@ -184,7 +184,7 @@ purpose. Take the time per phase.
 - [x] **Phase 13** — Station logos as embedded data ✅ real logos, RGB565 via EMBED_FILES
 - [x] **Phase 14** — Program info fetch ✅ + Arduino UI parity, RGB LED, sleep timer
 - [x] **Phase 15** — Settings page port
-- [ ] **Phase 16** — Screen saver port
+- [x] **Phase 16** — Screen saver port
 - [ ] **Phase 17** — Error handling pass
 - [ ] **Phase 18** — Watchdog tuning
 - [ ] **Phase 19** — Crash dump partition
@@ -506,13 +506,20 @@ real phase. Eight distinct bugs, each only visible after fixing the previous:
   corrupted the driver and hung both: touch dead + stream never restarted.
   All transactions on a shared bus must hold a mutex (`i2c_bus_lock()`).
   Repro was "press Next, then drag the volume mid-switch".
-- **Every ISR must be IRAM-safe if ANY task writes flash.** The WS2812's RMT
-  interrupt (20 ms refresh tick) wasn't; any NVS write (volume release, station
-  select, settings sliders) disables the flash cache, and an RMT interrupt in
-  that window wedged the chip. `CONFIG_RMT_ISR_IRAM_SAFE=y`. Same failure class
-  as the Phase 13 touch-INT bug — audit this for every new interrupt source.
-- **ESP-IDF's `i2c_master` is NOT thread-safe across tasks.** Touch polls (LVGL
-  task) racing ES8311 mute/volume writes (stream ctrl task) on the shared bus
-  corrupted the driver and hung both: touch dead + stream never restarted.
-  All transactions on a shared bus must hold a mutex (`i2c_bus_lock()`).
-  Repro was "press Next, then drag the volume mid-switch".
+
+### Phase 16 — Screen saver (bouncing clock)
+
+- The whole feature is one extra LVGL screen plus a 60 ms `lv_timer` that stays
+  paused unless the saver is showing — zero cost the rest of the time. Enter
+  only from the player screen (Arduino rule); exit is a single idempotent
+  `saver_exit()` reached from both the tap handler and the idle timer's wake
+  path, so a missed click event can't strand the saver.
+- Saver-mode timeouts invert the normal machinery: dim timeout *shows* the
+  clock at full brightness, off timeout *dims* it (~7%), and the panel never
+  fully blanks. The normal dim→off path stays untouched behind the mode check.
+- LVGL ships `lv_color_hsv_to_rgb(h, s, v)` (h 0-359, s/v 0-100) — no need to
+  port the Arduino's hand-rolled HSV for the bounce colour cycling.
+- Extra Montserrat sizes are Kconfig options (`CONFIG_LV_FONT_MONTSERRAT_48`),
+  and any `sdkconfig.defaults` change needs `rm -f sdkconfig` + rebuild to
+  actually apply — a silently stale sdkconfig looks exactly like "my change
+  did nothing".

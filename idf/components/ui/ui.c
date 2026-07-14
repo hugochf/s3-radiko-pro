@@ -601,6 +601,108 @@ static void build_settings_screen(void)
     update_dim_off_state();   // grey dim/off if the saver owns the timeouts
 }
 
+// ---- Screen saver (Phase 16, Arduino port): DVD-style bouncing clock ----
+// Entered from the player screen after the dim timeout when the saver switch is
+// on; the off timeout then dims the clock instead of blanking (never fully off).
+// Audio keeps playing throughout. Any touch returns to the player.
+static lv_obj_t   *s_scr_saver   = NULL;
+static lv_obj_t   *s_saver_box   = NULL;
+static lv_obj_t   *s_saver_clock = NULL;
+static lv_obj_t   *s_saver_date  = NULL;
+static lv_timer_t *s_saver_timer = NULL;   // 60 ms bounce tick, paused unless shown
+#define SAVER_BOX_W 168
+#define SAVER_BOX_H 80
+
+static void saver_update_clock(void)
+{
+    if (!timesync_valid()) {
+        lv_label_set_text(s_saver_clock, "--:--");
+        lv_label_set_text(s_saver_date, "");
+        return;
+    }
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    lv_label_set_text_fmt(s_saver_clock, "%02d:%02d", tm.tm_hour, tm.tm_min);
+    static const char *WDAYS[] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+    lv_label_set_text_fmt(s_saver_date, "%s  %04d-%02d-%02d",
+                          WDAYS[tm.tm_wday % 7],
+                          tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+}
+
+// One bounce step; the clock changes colour on each wall hit.
+static void saver_tick_cb(lv_timer_t *t)
+{
+    static int px = 80, py = 90, vx = 2, vy = 1;
+    static uint16_t hue = 0;
+    static int clock_div = 0;
+    px += vx;
+    py += vy;
+    bool bounced = false;
+    if (px <= 0)                             { px = 0;                             vx = -vx; bounced = true; }
+    if (px + SAVER_BOX_W >= DISPLAY_H_RES)   { px = DISPLAY_H_RES - SAVER_BOX_W;   vx = -vx; bounced = true; }
+    if (py <= 0)                             { py = 0;                             vy = -vy; bounced = true; }
+    if (py + SAVER_BOX_H >= DISPLAY_V_RES)   { py = DISPLAY_V_RES - SAVER_BOX_H;   vy = -vy; bounced = true; }
+    lv_obj_set_pos(s_saver_box, px, py);
+    if (bounced) {
+        hue = (hue + 47) % 360;   // 47° step hits every colour before repeating
+        lv_obj_set_style_text_color(s_saver_clock, lv_color_hsv_to_rgb(hue, 100, 100), 0);
+    }
+    if (++clock_div >= 167) {     // ~10 s at 60 ms/tick
+        clock_div = 0;
+        saver_update_clock();
+    }
+}
+
+// Idempotent: reached both from the tap handler and the idle timer's wake path.
+static void saver_exit(void)
+{
+    if (s_saver_timer) lv_timer_pause(s_saver_timer);
+    s_screen_state = 0;
+    display_backlight_set(BL_DUTY[settings_get()->brightness]);
+    if (lv_screen_active() == s_scr_saver) lv_screen_load(s_scr_player);
+}
+
+static void ev_saver_touched(lv_event_t *e) { saver_exit(); }
+
+static void saver_enter(void)
+{
+    saver_update_clock();
+    lv_timer_resume(s_saver_timer);
+    lv_screen_load(s_scr_saver);
+}
+
+static void build_saver_screen(void)
+{
+    s_scr_saver = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_scr_saver, lv_color_hex(0x000000), 0);
+    lv_obj_clear_flag(s_scr_saver, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_scr_saver, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_scr_saver, ev_saver_touched, LV_EVENT_CLICKED, NULL);
+
+    // Bouncing container holding the clock + date.
+    s_saver_box = lv_obj_create(s_scr_saver);
+    lv_obj_set_size(s_saver_box, SAVER_BOX_W, SAVER_BOX_H);
+    lv_obj_set_pos(s_saver_box, 80, 90);
+    lv_obj_set_style_bg_opa(s_saver_box, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_saver_box, 0, 0);
+    lv_obj_set_style_pad_all(s_saver_box, 0, 0);
+    lv_obj_clear_flag(s_saver_box, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(s_saver_box, LV_OBJ_FLAG_CLICKABLE);   // taps fall through to the screen
+
+    s_saver_clock = lv_label_create(s_saver_box);
+    lv_label_set_text(s_saver_clock, "--:--");
+    lv_obj_set_style_text_color(s_saver_clock, lv_color_hex(C_TEXT), 0);
+    lv_obj_set_style_text_font(s_saver_clock, &lv_font_montserrat_48, 0);
+    lv_obj_align(s_saver_clock, LV_ALIGN_TOP_MID, 0, 0);
+
+    s_saver_date = lv_label_create(s_saver_box);
+    lv_label_set_text(s_saver_date, "");
+    lv_obj_set_style_text_color(s_saver_date, lv_color_hex(C_DIM), 0);
+    lv_obj_set_style_text_font(s_saver_date, &lv_font_montserrat_16, 0);
+    lv_obj_align(s_saver_date, LV_ALIGN_BOTTOM_MID, 0, 0);
+}
+
 // Swipe/tap gestures on the full-width logo strip (Arduino behaviour):
 //   dx >= +25 → prev station, dx <= -25 → next station,
 //   |dx| < 8 AND released in the centre region (x 120..200) → open station list,
@@ -729,15 +831,28 @@ static void idle_timer_cb(lv_timer_t *t)
     last_idle = idle;
 
     if (woke) {
-        if (s_screen_state != 0) {
+        if (lv_screen_active() == s_scr_saver) {
+            saver_exit();   // backstop for touches the tap handler missed
+        } else if (s_screen_state != 0) {
             s_screen_state = 0;
             display_backlight_set(BL_DUTY[st->brightness]);
         }
         return;
     }
-    // Saver mode replaces dim/off with the bouncing clock — Phase 16. Until
-    // that screen exists, saver-on simply leaves the display alone.
-    if (st->saver) return;
+    if (st->saver) {
+        // Saver replaces dim/off (Arduino): dim timeout → bouncing clock at
+        // full brightness (only from the player screen), off timeout → dim
+        // the clock. Never fully off.
+        if (s_screen_state == 0 && idle > st->dim_ms &&
+            lv_screen_active() == s_scr_player) {
+            s_screen_state = 1;
+            saver_enter();
+        } else if (s_screen_state == 1 && st->off_ms && idle > st->off_ms) {
+            s_screen_state = 2;
+            display_backlight_set(DIM_DUTY);
+        }
+        return;
+    }
     if (s_screen_state == 0 && idle > st->dim_ms) {
         s_screen_state = 1;
         display_backlight_set(DIM_DUTY);
@@ -1189,6 +1304,7 @@ esp_err_t ui_init(void)
     build_player_screen();
     build_list_screen();
     build_settings_screen();
+    build_saver_screen();
     lv_screen_load(s_scr_player);
 
     lv_timer_create(status_timer_cb, 2000, NULL);  // WiFi/status bar refresh
@@ -1200,6 +1316,9 @@ esp_err_t ui_init(void)
 
     s_sleep_timer = lv_timer_create(sleep_fire_cb, 60000, NULL);
     lv_timer_pause(s_sleep_timer);
+
+    s_saver_timer = lv_timer_create(saver_tick_cb, 60, NULL);   // bounce step
+    lv_timer_pause(s_saver_timer);
 
     // 16 KB stack: LVGL v9's image draw/decode path (Phase 13 logos) is much
     // deeper than the label/tile path, and 8 KB could overflow while rendering

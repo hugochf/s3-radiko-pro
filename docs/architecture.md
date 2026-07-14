@@ -58,8 +58,9 @@ info, LED).** The split is deliberate — see the note below.
 
 Plus LVGL timers running inside the `lvgl` task: the 2 s status-bar refresh
 (Wi-Fi, clock, battery gauge — the battery ADC on GPIO9 is polled here, no task
-of its own), the 300 ms screen dim/off idle tick, and the one-shot 450 ms
-prev/next debounce.
+of its own), the 300 ms screen dim/off idle tick, the 60 ms screen-saver bounce
+tick (paused unless the saver is showing), and the one-shot 450 ms prev/next
+debounce.
 
 **Why the decoder lives on core 0, not with LVGL (changed in Phase 14).** They
 originally shared core 1 (decoder prio 3 < LVGL 4). Once the full-CJK font made
@@ -125,8 +126,9 @@ storage. The layout was fixed at Phase 0 so it never has to change in the field.
 ```
 nvs_flash_init → settings_init → display_init → ui_init (lv_init) →
 i2c_bus_init → touch_init → audio_init (+ apply saved volume) →
-stream_control_start → wifi_start → [ui_show_wifi_setup if no creds] →
-timesync_start → radiko_auth task
+led_init (+ saved mode) → battery_init → stream_control_start →
+radiko_program_start → wifi_start → [ui_show_wifi_setup if no creds] →
+timesync_start → radiko_auth task → apply saved brightness
 ```
 
 `ui_init` runs before `touch_init` because the touch input device attaches to an

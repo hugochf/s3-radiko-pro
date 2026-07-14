@@ -26,6 +26,9 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 
 # --- LVGL (v9, configured via Kconfig): RGB565 to match the ILI9341. ---
 CONFIG_LV_COLOR_DEPTH_16=y
+# Screen-saver clock (Phase 16): 48 pt for HH:MM, 16 pt for the date line.
+CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_48=y
 
 # --- Crash diagnostics (added while debugging the Phase 13 logo hang; keep for
 #     the Tier D crash-dump work) ---
