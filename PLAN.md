@@ -191,7 +191,7 @@ purpose. Take the time per phase.
 - [x] **Phase 20** — Logging to flash ring buffer ✅ elog partition + esp_log hook, host dump tool
 - [x] **Phase 21** — Unit tests ✅ Unity host tests for the parsers (16 green), CI job runs them per push
 - [x] **Phase 22** — OTA from GitHub releases ✅ v0.22.0→v0.22.1 updated over the air, rollback-armed
-- [ ] **Phase 23** — CI/CD: build + test + release
+- [x] **Phase 23** — CI/CD: build + test + release ✅ tag → tested, CI-built GitHub release; v0.23.0 delivered OTA
 - [ ] **Phase 24** — JTAG debug session
 - [ ] **Phase 25** — Secure boot v2 + flash encryption
 
@@ -713,3 +713,25 @@ images at runtime on this target; pre-scale at asset-generation time.**
   from tags so artifact == commit, always.
 - Also: montserrat has no em-dash — a "—" in a UI string renders as tofu.
   ASCII hyphens in UI text.
+
+### Phase 23 — CI/CD release pipeline
+
+- **The provenance bug bit before the pipeline could prevent it** — a
+  perfect demonstration. The hand-built v0.22.1 release binary predated
+  its own TX-buffer fix (built → released → bug found → fixed → flashed
+  locally), so the device that OTA'd onto v0.22.1 got the UNFIXED code
+  back and failed to update again. Hand-built artifacts drift from
+  source; that is the whole disease. Cure: releases are built only by CI
+  from the tagged commit (`release.yml`) — artifact == commit, always.
+- Guard rails in the workflow: host tests must pass before the build;
+  the tag must equal PROJECT_VER (a mismatch would poison the device's
+  version comparison); sha256 published beside the .bin. Cryptographic
+  signing is Phase 25's.
+- **CI failures are the product working**: the first release run went red
+  because `idf/build` is root-owned (the IDF action builds inside Docker
+  as root) and the non-root checksum step couldn't write there. A class
+  of bug that cannot exist on the dev machine — exactly what the fresh
+  runner is for. Write derived files to the runner-owned workspace root.
+- Full loop verified live: `git tag v0.23.0` + push → tests → guarded
+  build → release with checksum → device OTA'd onto it (30 s self-test,
+  rollback armed). One manual step between source and speaker.
