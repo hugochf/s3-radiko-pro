@@ -183,9 +183,9 @@ purpose. Take the time per phase.
 - [x] **Phase 12** — HLS pipeline (libhelix-aac + hand-written HLS) ✅ Radiko audio plays!
 - [x] **Phase 13** — Station logos as embedded data ✅ real logos, RGB565 via EMBED_FILES
 - [x] **Phase 14** — Program info fetch ✅ + Arduino UI parity, RGB LED, sleep timer
-- [x] **Phase 15** — Settings page port
-- [x] **Phase 16** — Screen saver port
-- [x] **Phase 17** — Error handling pass
+- [x] **Phase 15** — Settings page port ✅ full Arduino parity: dim/off, flip 180°, battery gauge, LED persist
+- [x] **Phase 16** — Screen saver port ✅ bouncing rainbow clock, saver-mode dim/off
+- [x] **Phase 17** — Error handling pass ✅ re-auth/backoff/degrade + fixed SPI-DMA freeze & LVGL transform wedge
 - [ ] **Phase 18** — Watchdog tuning
 - [ ] **Phase 19** — Crash dump partition
 - [ ] **Phase 20** — Logging to NVS ring buffer
