@@ -189,7 +189,7 @@ purpose. Take the time per phase.
 - [x] **Phase 18** — Watchdog tuning ✅ TWDT 15 s panic-on-starve, critical tasks subscribed (app_watchdog)
 - [x] **Phase 19** — Crash dump partition ✅ crashlog boot summary + Settings line, flow proven with forced crash
 - [x] **Phase 20** — Logging to flash ring buffer ✅ elog partition + esp_log hook, host dump tool
-- [ ] **Phase 21** — Unit tests
+- [x] **Phase 21** — Unit tests ✅ Unity host tests for the parsers (16 green), CI job runs them per push
 - [ ] **Phase 22** — OTA from GitHub releases
 - [ ] **Phase 23** — CI/CD: build + test + release
 - [ ] **Phase 24** — JTAG debug session
@@ -657,3 +657,30 @@ images at runtime on this target; pre-scale at asset-generation time.**
 - App slot now 95% full (~156 KB free): the splash bitmap (71 KB) fit, but
   Phase 22 (OTA) should budget flash first — trim CJK font ranges or move
   big assets to the storage partition.
+
+### Phase 21 — Unit tests (host-side Unity)
+
+- **Testability drove a real refactor, and that's the point.** The parsers
+  were `static` functions buried inside components that #include half of
+  ESP-IDF. Extracting them into libc-only units (`hls_parse.c`,
+  `radiko_parse.c`) made them compilable with plain `cc` on any machine —
+  the same separation that makes code testable makes it portable and
+  reviewable. Firmware call sites just renamed; behaviour re-verified
+  on-device after the refactor.
+- **The tests found a real bug immediately**: the backoff doubled 8000 →
+  16000 before capping (`cur >= 10000 ? 10000 : cur * 2`) — present since
+  Phase 14 in its original form. Writing the assertion "8000 → 10000" is
+  what surfaced it.
+- Test what the field will throw at it: gzip FNAME-flag headers, truncated
+  bodies, wrong magic, an id that prefixes another (JOAK vs JOAK-FM), an
+  empty `<pfm></pfm>`, and a real gzip fixture round-tripped through the
+  vendored puff. The fixture bytes were generated once with Python and
+  embedded — deterministic, no test-time dependencies.
+- Unity (v2.6.1, MIT) is vendored as three files under test/host/unity —
+  no submodule, no package manager, nothing to break in CI. The CI job is
+  plain `make -C test/host` on ubuntu: seconds of feedback next to the
+  minutes-long firmware build.
+- On-target tests (HW-dependent components: audio path, display, touch)
+  are deliberately out of scope here — they need a runner attached to the
+  device and come with the JTAG work (Phase 24) if at all. Host tests
+  cover the logic that actually regresses.

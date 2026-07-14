@@ -19,6 +19,7 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "puff.h"           // zlib's minimal inflate: ~2 KB stack, no heap
+#include "radiko_parse.h"
 #include "httpc.h"
 #include "stations.h"
 
@@ -33,83 +34,14 @@ static char             s_prog[NUM_STATIONS][PROG_MAX];
 static SemaphoreHandle_t s_lock;
 static void (*s_on_update)(void);
 
-// Decode the handful of XML entities that show up in Japanese programme titles.
-// Full-width text is UTF-8 and passes through untouched. In-place, shrink-only.
-static void xml_unescape(char *s)
-{
-    char *w = s;
-    for (char *r = s; *r; ) {
-        if (*r != '&') { *w++ = *r++; continue; }
-        if      (!strncmp(r, "&amp;",  5)) { *w++ = '&';  r += 5; }
-        else if (!strncmp(r, "&lt;",   4)) { *w++ = '<';  r += 4; }
-        else if (!strncmp(r, "&gt;",   4)) { *w++ = '>';  r += 4; }
-        else if (!strncmp(r, "&quot;", 6)) { *w++ = '"';  r += 6; }
-        else if (!strncmp(r, "&apos;", 6)) { *w++ = '\''; r += 6; }
-        else if (!strncmp(r, "&#39;",  5)) { *w++ = '\''; r += 5; }
-        else                               { *w++ = *r++; }
-    }
-    *w = '\0';
-}
-
-// Strip the gzip wrapper, returning a pointer to the raw DEFLATE stream and its
-// length (excluding the 8-byte CRC/size trailer). NULL if not a gzip member.
-static const uint8_t *gzip_body(const uint8_t *b, size_t len, size_t *out_len)
-{
-    if (len < 18 || b[0] != 0x1f || b[1] != 0x8b) return NULL;
-    size_t h = 10;
-    uint8_t flg = b[3];
-    if (flg & 0x04) { if (h + 2 > len) return NULL; h += 2 + b[h] + (b[h + 1] << 8); }  // FEXTRA
-    if (flg & 0x08) { while (h < len && b[h]) h++; h++; }   // FNAME
-    if (flg & 0x10) { while (h < len && b[h]) h++; h++; }   // FCOMMENT
-    if (flg & 0x02) h += 2;                                 // FHCRC
-    if (h + 8 >= len) return NULL;
-    *out_len = len - h - 8;
-    return b + h;
-}
-
-// Pull each station's current programme out of the flat XML. The "now" feed
-// lists the current programme first, so the first <prog> per <station> is
-// what's on air. Extracts <title> plus <pfm> (performers/出演者), matching the
-// Arduino UI. All matches are bounded to their own <station>/<prog> block.
+// Pull each station's current programme out of the flat XML. The extraction
+// itself (title + 出演者, entity decoding, block bounding) is pure and lives
+// in radiko_parse.c — host-unit-tested in test/host.
 static void parse_all(const char *xml)
 {
     for (int i = 0; i < STATION_COUNT; i++) {
-        char tag[40];
-        snprintf(tag, sizeof(tag), "<station id=\"%s\"", STATIONS[i].id);  // trailing
-        const char *st  = strstr(xml, tag);        // quote in %s distinguishes JOAK / JOAK-FM
-        char text[PROG_MAX] = "";
-        size_t len = 0;
-        if (st) {
-            const char *next = strstr(st + 1, "<station id=");
-            const char *pend = strstr(st, "</prog>");      // end of the on-air prog
-            const char *ts   = strstr(st, "<title>");
-            const char *te   = ts ? strstr(ts, "</title>") : NULL;
-            if (ts && te && (!next || te < next)) {
-                ts += 7;
-                size_t n = (size_t)(te - ts);
-                if (n >= PROG_MAX) n = PROG_MAX - 1;
-                memcpy(text, ts, n);
-                text[n] = '\0';
-                xml_unescape(text);
-                len = strlen(text);
-
-                // Performers, if present within this same prog block.
-                const char *ps = strstr(te, "<pfm>");
-                const char *pe = ps ? strstr(ps, "</pfm>") : NULL;
-                if (ps && pe && pe > ps + 5 &&   // non-empty (avoid trailing " / ")
-                    (!pend || pe < pend) && (!next || pe < next) &&
-                    len + 3 < PROG_MAX - 1) {
-                    ps += 5;
-                    memcpy(text + len, " / ", 3);
-                    len += 3;
-                    size_t n2 = (size_t)(pe - ps);
-                    if (len + n2 >= PROG_MAX) n2 = PROG_MAX - 1 - len;
-                    memcpy(text + len, ps, n2);
-                    text[len + n2] = '\0';
-                    xml_unescape(text + len);
-                }
-            }
-        }
+        char text[PROG_MAX];
+        radiko_parse_now(xml, STATIONS[i].id, text, sizeof(text));
         xSemaphoreTake(s_lock, portMAX_DELAY);
         strcpy(s_prog[i], text);
         xSemaphoreGive(s_lock);
@@ -142,7 +74,7 @@ esp_err_t radiko_program_refresh(void)
     if (!xml) { free(gz); return ESP_ERR_NO_MEM; }
 
     size_t xlen = 0, dlen = 0;
-    const uint8_t *deflate = gzip_body(gz, req.body_len, &dlen);
+    const uint8_t *deflate = radiko_gzip_body(gz, req.body_len, &dlen);
     if (deflate) {
         // puff inflates raw DEFLATE using the output buffer itself as the history
         // window and only ~2 KB of stack — no multi-KB decompressor object. That

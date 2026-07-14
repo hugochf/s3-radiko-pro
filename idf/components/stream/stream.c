@@ -5,6 +5,7 @@
 #include "aacdec.h"
 #include "app_watchdog.h"
 #include "audio.h"
+#include "hls_parse.h"
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
@@ -75,35 +76,8 @@ static int fetch(const char *url, const char *token, char *buf, size_t cap)
     return (st == 200) ? (int)s_ctx.len : -st;
 }
 
-// Capped exponential backoff for transient failures at any stage of the HLS
-// chain, so a persistent outage never hammers Radiko at 1 Hz forever.
-static int next_backoff(int cur)
-{
-    return cur == 0 ? 1000 : (cur >= 10000 ? 10000 : cur * 2);
-}
-
-// 401/403 mean the auth token was rejected — retrying with the same token can
-// never succeed (fetch() returns -status for HTTP errors).
-static bool auth_rejected(int fetch_ret)
-{
-    return fetch_ret == -401 || fetch_ret == -403;
-}
-
-static bool first_url_line(const char *body, char *out, size_t cap)
-{
-    for (const char *p = body; *p; ) {
-        const char *nl = strpbrk(p, "\r\n");
-        size_t len = nl ? (size_t)(nl - p) : strlen(p);
-        if (len > 0 && p[0] != '#') {
-            if (len >= cap) len = cap - 1;
-            memcpy(out, p, len); out[len] = '\0';
-            return true;
-        }
-        if (!nl) break;
-        p = nl + 1;
-    }
-    return false;
-}
+// Backoff / auth / playlist-line helpers live in hls_parse.c (pure libc,
+// host-unit-tested — see test/host).
 
 // ---- Fetcher: resolve the HLS chain, push new segments onto the queue ----
 static void fetcher_task(void *arg)
@@ -141,7 +115,7 @@ static void fetcher_task(void *arg)
                 backoff = 0;
                 token = radiko_token();
             } else {
-                backoff = next_backoff(backoff);
+                backoff = hls_next_backoff(backoff);
                 ESP_LOGW(TAG, "re-auth failed; retry in %d ms", backoff);
                 app_watchdog_feed();
                 vTaskDelay(pdMS_TO_TICKS(backoff));
@@ -166,7 +140,7 @@ static void fetcher_task(void *arg)
                 memcpy(base, p, n); base[n] = '\0';
                 backoff = 0;
             } else {
-                backoff = next_backoff(backoff);
+                backoff = hls_next_backoff(backoff);
                 ESP_LOGW(TAG, "stream-info failed; retry in %d ms", backoff);
                 app_watchdog_feed();
                 vTaskDelay(pdMS_TO_TICKS(backoff));
@@ -180,9 +154,9 @@ static void fetcher_task(void *arg)
             snprintf(purl, sizeof(purl), "%s?station_id=%s&l=30&lsid=%s&type=b",
                      base, s_station, lsid);
             int r = fetch(purl, token, plist, PLIST_BYTES);
-            if (r <= 0 || !first_url_line(plist, media_url, sizeof(media_url))) {
-                if (auth_rejected(r)) auth_fail++;
-                backoff = next_backoff(backoff);
+            if (r <= 0 || !hls_first_url_line(plist, media_url, sizeof(media_url))) {
+                if (hls_auth_rejected(r)) auth_fail++;
+                backoff = hls_next_backoff(backoff);
                 ESP_LOGW(TAG, "master playlist failed (%d); retry in %d ms", r, backoff);
                 app_watchdog_feed();
                 vTaskDelay(pdMS_TO_TICKS(backoff));
@@ -196,7 +170,7 @@ static void fetcher_task(void *arg)
             // fresh live window with different segment names, so keeping the old
             // one means seen_last never matches and every segment is skipped
             // forever (audio dies after the first batch). Resync to the live edge.
-            if (auth_rejected(r)) auth_fail++;
+            if (hls_auth_rejected(r)) auth_fail++;
             media_url[0] = '\0';
             last_seg[0] = '\0';
             continue;
@@ -217,7 +191,7 @@ static void fetcher_task(void *arg)
             if (!buf) { ESP_LOGW(TAG, "seg buf alloc fail"); vTaskDelay(pdMS_TO_TICKS(200)); continue; }
             int slen = fetch(line, token, buf, SEG_BUF_BYTES);
             if (slen <= 0) {
-                if (auth_rejected(slen)) auth_fail++;
+                if (hls_auth_rejected(slen)) auth_fail++;
                 ESP_LOGW(TAG, "seg fetch failed (%d)", slen);
                 free(buf);
                 continue;

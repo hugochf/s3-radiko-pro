@@ -9,6 +9,15 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Host-side unit tests (Phase 21): pure parsers, plain cc + Unity — fast
+  # feedback in seconds, no toolchain container needed.
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run parser unit tests
+        run: make -C test/host
+
   build:
     runs-on: ubuntu-latest
     steps:
