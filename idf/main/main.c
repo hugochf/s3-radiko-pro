@@ -18,6 +18,7 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 
+#include "app_watchdog.h"
 #include "audio.h"
 #include "battery.h"
 #include "led.h"
@@ -96,6 +97,10 @@ void app_main(void)
 
     // Phase 7: load persistent settings (before UI so it starts from saved state).
     ESP_ERROR_CHECK(settings_init());
+
+    // Phase 18: task watchdog policy — 15 s, panic (-> coredump -> reboot) on
+    // starvation. Critical tasks subscribe themselves as they start.
+    app_watchdog_init();
 
     // Phase 1: ILI9341 panel. Phase 2: LVGL. Without a working display there is
     // no usable product, so these two still abort into the (visible) boot loop.

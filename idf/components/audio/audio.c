@@ -1,6 +1,7 @@
 #include "audio.h"
 
 #include <math.h>
+#include "app_watchdog.h"
 #include "driver/gpio.h"
 #include "driver/i2s_std.h"
 #include "es8311.h"
@@ -44,7 +45,12 @@ static volatile bool        s_flush_req = false;  // ask the writer to discard b
 static void i2s_writer_task(void *arg)
 {
     static uint8_t chunk[4096];
+    // Watchdog: i2s_channel_write blocking forever (dead DMA) = silent radio;
+    // panic+reboot recovers it. A 4 KB chunk is ~21 ms of audio, so feeding
+    // once per loop is orders of magnitude inside the timeout.
+    app_watchdog_add();
     while (true) {
+        app_watchdog_feed();
         if (s_flush_req) {
             while (xStreamBufferReceive(s_pcm, chunk, sizeof(chunk), 0) > 0) { }  // discard
             s_flush_req = false;

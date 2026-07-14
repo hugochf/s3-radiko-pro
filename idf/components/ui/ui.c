@@ -1,6 +1,7 @@
 #include "ui.h"
 
 #include <string.h>
+#include "app_watchdog.h"
 #include "audio.h"
 #include "battery.h"
 #include "display.h"
@@ -132,7 +133,11 @@ const char *ui_current_station_id(void)
 static void lvgl_task(void *arg)
 {
     ESP_LOGI(TAG, "LVGL task started");
+    // Watchdog: a wedged render pass (Phase 17: lv_timer_handler never
+    // returned) must panic+reboot into a working radio, not freeze forever.
+    app_watchdog_add();
     while (true) {
+        app_watchdog_feed();
         uint32_t next_ms = 5;
         if (ui_lock(-1)) {
             next_ms = lv_timer_handler();

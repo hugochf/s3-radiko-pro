@@ -186,7 +186,7 @@ purpose. Take the time per phase.
 - [x] **Phase 15** — Settings page port ✅ full Arduino parity: dim/off, flip 180°, battery gauge, LED persist
 - [x] **Phase 16** — Screen saver port ✅ bouncing rainbow clock, saver-mode dim/off
 - [x] **Phase 17** — Error handling pass ✅ re-auth/backoff/degrade + fixed SPI-DMA freeze & LVGL transform wedge
-- [ ] **Phase 18** — Watchdog tuning
+- [x] **Phase 18** — Watchdog tuning ✅ TWDT 15 s panic-on-starve, critical tasks subscribed (app_watchdog)
 - [ ] **Phase 19** — Crash dump partition
 - [ ] **Phase 20** — Logging to NVS ring buffer
 - [ ] **Phase 21** — Unit tests
@@ -570,3 +570,25 @@ images at runtime on this target; pre-scale at asset-generation time.**
   timeout counter + draw error code), long passive serial capture while the
   user reproduces, then read the driver source at the failing line instead of
   guessing. `task_wdt` backtraces + addr2line pinpointed the wedge.
+
+### Phase 18 — Watchdog tuning (app_watchdog)
+
+- **Default TWDT policy is "print and carry on" — useless for a headless
+  appliance.** The Phase 17 wedge logged a warning every 5 s to a serial port
+  nobody watches while the radio sat frozen. Now `CONFIG_ESP_TASK_WDT_PANIC=y`:
+  starvation → panic → coredump to flash (already enabled) → reboot into a
+  working radio, with the evidence preserved for Phase 19 to read back.
+- **The timeout is set by the worst-case *legitimate* silence, not by desired
+  detection speed.** The fetcher can sit 10 s in one esp_http_client timeout
+  with no chance to feed; 15 s clears that with margin. A wedge that lasted
+  14 s was going to last forever — fast detection buys nothing.
+- **Who gets watched = whose silent death bricks the product**: lvgl (frozen
+  UI+touch), i2s_wr (silent audio), seg_fetch/seg_dec (dead stream). Placement
+  of feeds is part of the design: every retry path feeds before its backoff
+  sleep, the queue-full pacing loop feeds every 200 ms, and per-play tasks
+  MUST `esp_task_wdt_delete` before `vTaskDelete` — a watched dead handle
+  trips the watchdog for everyone. Verified across station switches
+  (subscribe/unsubscribe cycles clean).
+- Tasks that block indefinitely BY DESIGN (stream_ctl on its command queue,
+  the LED tick) are not subscribed — a watchdog on a legitimately-idle task
+  just forces fake heartbeat churn.

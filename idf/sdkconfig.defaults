@@ -63,6 +63,14 @@ CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
 # 160 kbps stream bitrate.
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 
+# --- Watchdogs (Phase 18) ---
+# A starved task watchdog PANICS instead of printing forever: with coredump-to-
+# flash enabled the wedge is preserved for post-mortem and the radio reboots
+# back to playing. The Phase 17 LVGL wedge sat frozen for minutes under the
+# default print-only policy. Timeout + subscriptions are set at runtime in
+# components/app_watchdog (15 s — must clear the fetcher's 10 s HTTP timeout).
+CONFIG_ESP_TASK_WDT_PANIC=y
+
 # The WS2812 mood LED refreshes via RMT every 20 ms. Its ISR must live in IRAM:
 # a non-IRAM RMT interrupt firing during an NVS flash write (cache disabled)
 # wedges the chip — same failure class as the Phase 13 touch-INT bug, seen as

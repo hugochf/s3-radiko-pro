@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "aacdec.h"
+#include "app_watchdog.h"
 #include "audio.h"
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
@@ -107,6 +108,11 @@ static bool first_url_line(const char *body, char *out, size_t cap)
 // ---- Fetcher: resolve the HLS chain, push new segments onto the queue ----
 static void fetcher_task(void *arg)
 {
+    // Watchdog: a wedged HTTP client = silent radio with no other symptom.
+    // Feeds are placed so the longest un-fed stretch is ONE fetch() (10 s HTTP
+    // timeout) — every retry path feeds before its backoff sleep.
+    app_watchdog_add();
+
     char *plist = heap_caps_malloc(PLIST_BYTES, MALLOC_CAP_SPIRAM);
     if (!plist || !s_client) { ESP_LOGE(TAG, "fetcher init failed"); goto done; }
 
@@ -122,6 +128,8 @@ static void fetcher_task(void *arg)
     int empty = 0;      // consecutive live-playlist polls that yielded no new segment
     int auth_fail = 0;  // consecutive 401/403s — the token has expired/been revoked
     while (!s_stop) {
+        app_watchdog_feed();
+
         // Token rejected twice in a row → it's dead (Radiko can invalidate it at
         // any time). Re-authenticate in place and resync to the live edge; every
         // other recovery path would just loop forever with the same dead token.
@@ -135,6 +143,7 @@ static void fetcher_task(void *arg)
             } else {
                 backoff = next_backoff(backoff);
                 ESP_LOGW(TAG, "re-auth failed; retry in %d ms", backoff);
+                app_watchdog_feed();
                 vTaskDelay(pdMS_TO_TICKS(backoff));
             }
             media_url[0] = '\0';
@@ -159,6 +168,7 @@ static void fetcher_task(void *arg)
             } else {
                 backoff = next_backoff(backoff);
                 ESP_LOGW(TAG, "stream-info failed; retry in %d ms", backoff);
+                app_watchdog_feed();
                 vTaskDelay(pdMS_TO_TICKS(backoff));
                 continue;
             }
@@ -174,6 +184,7 @@ static void fetcher_task(void *arg)
                 if (auth_rejected(r)) auth_fail++;
                 backoff = next_backoff(backoff);
                 ESP_LOGW(TAG, "master playlist failed (%d); retry in %d ms", r, backoff);
+                app_watchdog_feed();
                 vTaskDelay(pdMS_TO_TICKS(backoff));
                 continue;
             }
@@ -200,6 +211,7 @@ static void fetcher_task(void *arg)
              line = strtok_r(NULL, "\r\n", &save)) {
             if (!line[0] || line[0] == '#') continue;
             if (!seen_last) { if (!strcmp(line, last_seg)) seen_last = true; continue; }
+            app_watchdog_feed();   // once per segment (each fetch can take 10 s)
 
             char *buf = heap_caps_malloc(SEG_BUF_BYTES, MALLOC_CAP_SPIRAM);
             if (!buf) { ESP_LOGW(TAG, "seg buf alloc fail"); vTaskDelay(pdMS_TO_TICKS(200)); continue; }
@@ -212,8 +224,11 @@ static void fetcher_task(void *arg)
             }
 
             seg_t seg = { buf, slen };
-            // Blocks when the queue is full -> paces the fetcher to real time.
-            while (!s_stop && xQueueSend(s_q, &seg, pdMS_TO_TICKS(200)) != pdTRUE) { }
+            // Blocks when the queue is full -> paces the fetcher to real time
+            // (legitimately minutes at the live edge, so feed while waiting).
+            while (!s_stop && xQueueSend(s_q, &seg, pdMS_TO_TICKS(200)) != pdTRUE) {
+                app_watchdog_feed();
+            }
             if (s_stop) { free(buf); break; }
             strncpy(last_seg, line, sizeof(last_seg) - 1);
             last_seg[sizeof(last_seg) - 1] = '\0';
@@ -235,7 +250,8 @@ static void fetcher_task(void *arg)
     }
 
 done:
-    free(plist);   // s_client persists across stations (keep-alive)
+    app_watchdog_remove();   // MUST precede delete: dead handles stay watched
+    free(plist);             // s_client persists across stations (keep-alive)
     s_fetch_task = NULL;
     vTaskDelete(NULL);
 }
@@ -243,6 +259,8 @@ done:
 // ---- Decoder: drain the queue, decode ADTS AAC, feed audio ----
 static void decoder_task(void *arg)
 {
+    app_watchdog_add();   // a wedged decode loop = silent radio; panic+reboot
+
     HAACDecoder dec = AACInitDecoder();
     if (!dec) {
         // Should never happen (decoder state is a small fixed alloc), but if it
@@ -250,9 +268,11 @@ static void decoder_task(void *arg)
         // a full queue with stale segments.
         ESP_LOGE(TAG, "AAC decoder alloc failed — no audio this session");
         while (!s_stop) {
+            app_watchdog_feed();
             seg_t seg;
             if (xQueueReceive(s_q, &seg, pdMS_TO_TICKS(300)) == pdTRUE) free(seg.buf);
         }
+        app_watchdog_remove();
         s_dec_task = NULL;
         vTaskDelete(NULL);
     }
@@ -261,6 +281,7 @@ static void decoder_task(void *arg)
     bool logged = false;
 
     while (!s_stop) {
+        app_watchdog_feed();
         seg_t seg;
         if (xQueueReceive(s_q, &seg, pdMS_TO_TICKS(300)) != pdTRUE) continue;
 
@@ -288,6 +309,7 @@ static void decoder_task(void *arg)
         vTaskDelay(1);   // idle/watchdog breather between segments too
     }
 
+    app_watchdog_remove();   // MUST precede delete: dead handles stay watched
     if (dec) AACFreeDecoder(dec);
     s_dec_task = NULL;
     vTaskDelete(NULL);
