@@ -187,7 +187,7 @@ purpose. Take the time per phase.
 - [x] **Phase 16** — Screen saver port ✅ bouncing rainbow clock, saver-mode dim/off
 - [x] **Phase 17** — Error handling pass ✅ re-auth/backoff/degrade + fixed SPI-DMA freeze & LVGL transform wedge
 - [x] **Phase 18** — Watchdog tuning ✅ TWDT 15 s panic-on-starve, critical tasks subscribed (app_watchdog)
-- [ ] **Phase 19** — Crash dump partition
+- [x] **Phase 19** — Crash dump partition ✅ crashlog boot summary + Settings line, flow proven with forced crash
 - [ ] **Phase 20** — Logging to NVS ring buffer
 - [ ] **Phase 21** — Unit tests
 - [ ] **Phase 22** — OTA from GitHub releases
@@ -602,3 +602,21 @@ images at runtime on this target; pre-scale at asset-generation time.**
   so priority 6 above the whole decode pipeline costs the audio nothing and
   makes the cadence exact. Also matched the Arduino's 30 ms tick so every
   effect runs at the reference speed.
+
+### Phase 19 — Crash dump recovery flow (crashlog)
+
+- The partition + coredump config existed since Phase 13; the phase's real
+  content is the RECOVERY FLOW: `esp_core_dump_image_check()` +
+  `esp_core_dump_get_summary()` at boot decode the stored dump with no host
+  attached — task name, PC, addr2line-ready backtrace into the log, a
+  `Last crash:` line into Settings. Field failures now self-report.
+- **Test the disaster path by causing the disaster.** A deliberate NULL-store
+  proved the whole loop: panic → ELF dump to flash (~29 KB, CRC-checked) →
+  reboot → on-device summary naming the exact task and PC →
+  `idf.py coredump-info` resolving to the exact source line. Infrastructure
+  you've never fired is a hope, not a capability.
+- Gotchas: the panic handler runs the dump on a RESERVED stack (~1.9 KB used —
+  don't fatten it); `coredump-info` symbolizes against the CURRENT build's
+  ELF, so read dumps out before reflashing new code; an ERASED partition
+  after a reboot means the panic handler never ran at all — that's the hard-
+  wedge signature (see Phase 13/15 IRAM-ISR lessons).

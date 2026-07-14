@@ -21,6 +21,7 @@
 #include "app_watchdog.h"
 #include "audio.h"
 #include "battery.h"
+#include "crashlog.h"
 #include "led.h"
 #include "display.h"
 #include "i2c_bus.h"
@@ -101,6 +102,10 @@ void app_main(void)
     // Phase 18: task watchdog policy — 15 s, panic (-> coredump -> reboot) on
     // starvation. Critical tasks subscribe themselves as they start.
     app_watchdog_init();
+
+    // Phase 19: if the last boot ended in a panic, decode and log the stored
+    // coredump summary (also surfaced in Settings > System Info).
+    crashlog_check();
 
     // Phase 1: ILI9341 panel. Phase 2: LVGL. Without a working display there is
     // no usable product, so these two still abort into the (visible) boot loop.

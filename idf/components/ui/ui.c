@@ -4,6 +4,7 @@
 #include "app_watchdog.h"
 #include "audio.h"
 #include "battery.h"
+#include "crashlog.h"
 #include "display.h"
 #include "logos.h"
 #include "esp_app_desc.h"
@@ -307,7 +308,7 @@ static void ev_open_list(lv_event_t *e) { lv_screen_load(s_scr_list); }
 
 // ---- Settings / Info screen (Phase 15, Arduino port) ----
 static lv_obj_t *s_scr_set = NULL;
-static lv_obj_t *s_set_info[5];          // RSSI/area, IP, uptime, heap, battery
+static lv_obj_t *s_set_info[6];          // RSSI/area, IP, uptime, heap, battery, last crash
 static lv_obj_t *s_set_bl_sl  = NULL;    // brightness slider (synced on bat-tap)
 static lv_obj_t *s_set_bl_val = NULL;
 static lv_obj_t *s_set_sl_val = NULL;
@@ -457,6 +458,8 @@ static void refresh_settings_info(void)
     if (mv >= 0) snprintf(b, sizeof(b), "Battery: %d mV (%d%%)", mv, battery_pct());
     else         snprintf(b, sizeof(b), "Battery: n/a");
     lv_label_set_text(s_set_info[4], b);
+    snprintf(b, sizeof(b), "Last crash: %s", crashlog_last());
+    lv_label_set_text(s_set_info[5], b);
 }
 
 static void ev_open_settings(lv_event_t *e)
@@ -590,7 +593,7 @@ static void build_settings_screen(void)
     lv_obj_t *sec = lv_label_create(cont);
     lv_label_set_text(sec, "System Info");
     lv_obj_set_style_text_color(sec, lv_color_hex(C_HL), 0);
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 6; i++) {
         s_set_info[i] = lv_label_create(cont);
         lv_obj_set_style_text_color(s_set_info[i], lv_color_hex(C_TEXT), 0);
         lv_label_set_text(s_set_info[i], "...");

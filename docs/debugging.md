@@ -68,7 +68,17 @@ xtensa-esp32s3-elf-addr2line -pfiaC -e build/s3_radiko_pro.elf 0x4201e1b1 0x4201
 ### Coredump from flash
 
 Coredump-to-flash is enabled (`CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH`, ELF format;
-256 KB `coredump` partition). After a crash that reboots, read it back:
+256 KB `coredump` partition). Since Phase 18, task-watchdog starvation also
+panics, so wedges land here too instead of freezing silently.
+
+**On-device (no host needed):** every boot, `crashlog_check()` looks for a
+stored dump and logs the decoded summary — crashed task, PC, and an
+addr2line-ready backtrace line — and Settings ▸ System Info shows a
+`Last crash:` one-liner. The dump stays in flash until the next crash
+overwrites it. (Verified end-to-end with a deliberate NULL-store: panic →
+dump saved → reboot → summary named the exact task and source line.)
+
+**Host-side, for the full post-mortem:**
 
 ```sh
 idf.py -p /dev/cu.usbmodem2101 coredump-info      # summary + backtrace
@@ -78,6 +88,8 @@ idf.py -p /dev/cu.usbmodem2101 coredump-debug     # GDB session on the dump
 If it reports `Core dump version "0xffff"` / incorrect size, the partition is
 **erased** — no dump was written, i.e. the panic handler never ran (hard wedge, or
 the reboot came from a USB re-enumeration rather than a caught fault).
+`coredump-info` must run against the **same build's ELF** that crashed — after a
+reflash with new code, the stored dump symbolizes wrong.
 
 ## Diagnostic build options
 
