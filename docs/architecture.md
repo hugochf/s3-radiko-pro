@@ -53,7 +53,7 @@ info, LED).** The split is deliberate — see the note below.
 | `lvgl`        |  1   |  4   | 16 KB  | permanent | `lv_timer_handler`: render, poll touch, run UI events |
 | `radiko_prog` |  0   |  4   |  6 KB  | permanent | "Now on air" fetch + puff gunzip every 5 min (waits for auth) |
 | `radiko_auth` | any  |  5   |  8 KB  | one-shot  | auth1/auth2 at boot (with retry), then exits |
-| `led`         |  0   |  1   | 2.5 KB | permanent | WS2812 mood-LED effects, 20 ms tick |
+| `led`         |  0   |  6   | 2.5 KB | permanent | WS2812 mood-LED effects, 30 ms tick (~30 µs work — high prio for smoothness, see PLAN Phase 18) |
 | `wifiscan`    | any  |  4   |  4 KB  | one-shot  | Wi-Fi AP scan for the setup screen |
 
 Plus LVGL timers running inside the `lvgl` task: the 2 s status-bar refresh

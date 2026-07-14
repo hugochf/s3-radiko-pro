@@ -592,3 +592,13 @@ images at runtime on this target; pre-scale at asset-generation time.**
 - Tasks that block indefinitely BY DESIGN (stream_ctl on its command queue,
   the LED tick) are not subscribed — a watchdog on a legitimately-idle task
   just forces fake heartbeat churn.
+- **LED smoothness, a scheduling case study.** The mood LED ran "one effect
+  step per 20 ms tick" at priority 1 on the decoder's core: decode bursts
+  starved it, so the animations ran SLOW (lost ticks) and CHOPPY (bursty
+  wake-ups). Two orthogonal fixes: (1) derive the animation phase from the
+  wall clock, never from counted invocations — a starved task then shows the
+  right colour late instead of falling behind; (2) priority reflects LATENCY
+  NEED, not importance: the tick is ~30 µs of work every 30 ms (~0.1% CPU),
+  so priority 6 above the whole decode pipeline costs the audio nothing and
+  makes the cadence exact. Also matched the Arduino's 30 ms tick so every
+  effect runs at the reference speed.

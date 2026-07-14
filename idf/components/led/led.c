@@ -5,6 +5,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "led_strip.h"
 
 static const char *TAG = "led";
@@ -35,12 +36,17 @@ static void hsv_to_rgb(int h, uint8_t s, uint8_t v, uint8_t *r, uint8_t *g, uint
     }
 }
 
-// 20 ms tick — same effect math as the Arduino rgb_update().
+// Same effect math as the Arduino rgb_update(), but the phase derives from
+// the wall clock, not from counting invocations: this task is priority 1 on
+// the decoder's core, and decode bursts starve it. A counted phase then
+// falls behind and every effect visibly slows; a clock-derived phase stays
+// at the right point (worst case slightly choppy under load, never slow).
 static void led_task(void *arg)
 {
-    uint16_t phase = 0;
     for (;;) {
-        phase++;
+        // 30 ms units — the Arduino build's exact tick, so every effect runs at
+        // the same speed (rainbow breath 7.7 s, full hue cycle 32.4 s).
+        uint16_t phase = (uint16_t)(esp_timer_get_time() / 1000 / 30);
         uint8_t r = 0, g = 0, b = 0;
         float breath;
         switch (s_mode) {
@@ -73,7 +79,7 @@ static void led_task(void *arg)
         }
         led_strip_set_pixel(s_strip, 0, r, g, b);
         led_strip_refresh(s_strip);
-        vTaskDelay(pdMS_TO_TICKS(20));
+        vTaskDelay(pdMS_TO_TICKS(30));   // update cadence = Arduino tick
     }
 }
 
@@ -87,8 +93,12 @@ esp_err_t led_init(void)
     esp_err_t err = led_strip_new_rmt_device(&cfg, &rmt, &s_strip);
     if (err != ESP_OK) return err;
     led_strip_clear(s_strip);
-    // Priority 1 on core 0: cosmetic; must never compete with audio or UI.
-    xTaskCreatePinnedToCore(led_task, "led", 2560, NULL, 1, NULL, 0);
+    // Priority 6 on core 0 — ABOVE the decode pipeline, on purpose. At prio 1
+    // the decoder's bursts starved this task and the breathing turned visibly
+    // choppy (smooth only in the gaps between segments). The tick's work is
+    // ~30 µs of RMT transmit every 30 ms (~0.1% CPU), so outranking the
+    // decoder costs the audio nothing while making the effect run on schedule.
+    xTaskCreatePinnedToCore(led_task, "led", 2560, NULL, 6, NULL, 0);
     ESP_LOGI(TAG, "WS2812 up (GPIO%d)", PIN_RGB_LED);
     return ESP_OK;
 }

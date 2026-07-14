@@ -1,6 +1,8 @@
 /*
  * WS2812B mood LED (GPIO42), ported from the Arduino build: 7 modes cycled by
- * the player-screen eye button. Effects run on a low-priority 20 ms tick task.
+ * the player-screen eye button. Effects run on a low-priority 30 ms tick task
+ * (the Arduino's exact cadence); the phase derives from the wall clock so
+ * scheduling pressure can never slow the animations down.
  */
 #pragma once
 
