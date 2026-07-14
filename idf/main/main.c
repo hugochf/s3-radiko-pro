@@ -22,6 +22,7 @@
 #include "audio.h"
 #include "battery.h"
 #include "crashlog.h"
+#include "elog.h"
 #include "led.h"
 #include "display.h"
 #include "i2c_bus.h"
@@ -95,6 +96,10 @@ void app_main(void)
         ESP_ERROR_CHECK(nvs_flash_erase());
         ESP_ERROR_CHECK(nvs_flash_init());
     }
+
+    // Phase 20: persistent W/E log to the elog flash ring. Installed first so
+    // every later subsystem's warnings are captured from this boot onward.
+    elog_init();
 
     // Phase 7: load persistent settings (before UI so it starts from saved state).
     ESP_ERROR_CHECK(settings_init());

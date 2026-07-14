@@ -91,6 +91,22 @@ the reboot came from a USB re-enumeration rather than a caught fault).
 `coredump-info` must run against the **same build's ELF** that crashed — after a
 reflash with new code, the stored dump symbolizes wrong.
 
+### Persistent event log (elog)
+
+Warnings/errors plus a boot marker (reset reason, version) are captured into a
+64 KB raw flash ring (`elog` partition) that survives reboots, crashes, and
+reflashes — "what happened before it died" is answerable after the fact:
+
+```sh
+parttool.py -p /dev/cu.usbmodem2101 read_partition --partition-name=elog --output elog.bin
+python3 tools/elog_dump.py elog.bin      # oldest-first, ring reassembled
+```
+
+INFO chatter is deliberately excluded (rate + flash wear); the console stream
+itself is unaffected. Staged lines flush to flash every 10 s, so the very last
+seconds before a hard power cut can be missing — a crash via panic is fine
+(the coredump covers it).
+
 ## Diagnostic build options
 
 Enabled in `idf/sdkconfig.defaults` (were the tools that isolated the Phase 13

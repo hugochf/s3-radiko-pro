@@ -188,7 +188,7 @@ purpose. Take the time per phase.
 - [x] **Phase 17** — Error handling pass ✅ re-auth/backoff/degrade + fixed SPI-DMA freeze & LVGL transform wedge
 - [x] **Phase 18** — Watchdog tuning ✅ TWDT 15 s panic-on-starve, critical tasks subscribed (app_watchdog)
 - [x] **Phase 19** — Crash dump partition ✅ crashlog boot summary + Settings line, flow proven with forced crash
-- [ ] **Phase 20** — Logging to NVS ring buffer
+- [x] **Phase 20** — Logging to flash ring buffer ✅ elog partition + esp_log hook, host dump tool
 - [ ] **Phase 21** — Unit tests
 - [ ] **Phase 22** — OTA from GitHub releases
 - [ ] **Phase 23** — CI/CD: build + test + release
@@ -620,3 +620,24 @@ images at runtime on this target; pre-scale at asset-generation time.**
   ELF, so read dumps out before reflashing new code; an ERASED partition
   after a reboot means the panic handler never ran at all — that's the hard-
   wedge signature (see Phase 13/15 IRAM-ISR lessons).
+
+### Phase 20 — Persistent event log (elog)
+
+- **The plan said "NVS ring buffer"; the right tool was a raw flash ring.**
+  Our NVS partition is 20 KB shared with WiFi creds/settings, and NVS
+  key-value semantics fit config, not append-only logs. A dedicated 64 KB
+  raw partition (carved from the head of the unused storage area — nothing
+  existing moved) gives plain-text records readable with `strings`, one
+  sector erase per 4 KB of text, and zero interference with real NVS.
+- `esp_log_set_vprintf()` intercepts EVERYTHING once — format privately
+  (va_copy!) before forwarding, filter to W/E by prefix after stripping the
+  ANSI colour code, and stage into RAM under a mutex. Flash writes happen in
+  a low-prio task every 10 s so no logging call ever blocks on flash. When
+  the staging buffer is full, DROP — a log path must never apply
+  back-pressure to the code it observes.
+- Head recovery = scan for the first 0xFF at boot; no index metadata to
+  corrupt. Boot marker records reset reason + version, so the ring doubles
+  as a reboot history (crash loops become visible after the fact).
+- Verified end-to-end: three reboots' markers + captured warnings read back
+  via `parttool.py read_partition` + `tools/elog_dump.py` (ring reassembled
+  oldest-first). Survives reflashes — the partition is outside the app slots.

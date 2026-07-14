@@ -113,11 +113,13 @@ asymmetric record buffers (IN 16 KB / OUT 4 KB) are kept to save PSRAM churn.
 
 ### Flash (16 MB, dual-OTA)
 
-The full-CJK UI font (`lv_font_jp_16`, bpp2, ~1.05 MB) and the station logos
-(~290 KB at up-to-56 px, regenerated in Phase 14) are embedded RGB565/bitmap blobs
-(DROM) via `EMBED_FILES` — they cost flash, not RAM. Partition map
-(`idf/partitions.csv`): two 3 MB OTA app slots, 256 KB coredump, the rest SPIFFS
-storage. The layout was fixed at Phase 0 so it never has to change in the field.
+The full-CJK UI font (`lv_font_jp_16`, bpp2, ~1.05 MB) and both station-logo
+sets (~410 KB: player-size plus pre-scaled list-size, Phase 17) are embedded
+RGB565/bitmap blobs (DROM) via `EMBED_FILES` — they cost flash, not RAM.
+Partition map (`idf/partitions.csv`): two 3 MB OTA app slots, 256 KB coredump,
+a 64 KB raw `elog` ring for the persistent W/E log (Phase 20, carved from the
+front of the previously-unused storage area — no existing partition moved),
+and the rest SPIFFS storage.
 
 ## Init sequence
 
