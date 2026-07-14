@@ -192,7 +192,7 @@ purpose. Take the time per phase.
 - [x] **Phase 21** — Unit tests ✅ Unity host tests for the parsers (16 green), CI job runs them per push
 - [x] **Phase 22** — OTA from GitHub releases ✅ v0.22.0→v0.22.1 updated over the air, rollback-armed
 - [x] **Phase 23** — CI/CD: build + test + release ✅ tag → tested, CI-built GitHub release; v0.23.0 delivered OTA
-- [ ] **Phase 24** — JTAG debug session
+- [x] **Phase 24** — JTAG debug session ✅ OpenOCD+GDB walkthrough live on the radio; IDE attach configured
 - [ ] **Phase 25** — Secure boot v2 + flash encryption
 
 ## Lessons learned
@@ -735,3 +735,25 @@ images at runtime on this target; pre-scale at asset-generation time.**
 - Full loop verified live: `git tag v0.23.0` + push → tests → guarded
   build → release with checksum → device OTA'd onto it (30 s self-test,
   rollback armed). One manual step between source and speaker.
+
+### Phase 24 — JTAG debug session (walkthrough, no new code)
+
+- One USB cable = console + JTAG (USB-Serial-JTAG exposes both). OpenOCD
+  bridges the chip to GDB's port 3333; `info threads` shows the entire
+  task map LIVE — we caught seg_dec running on CPU0 and lvgl on CPU1 at
+  the halt instant, the designed core split photographed in the act.
+- Breakpoint on `ev_next` + a real finger tap captured the full input
+  pipeline as a call stack (touch release → LV_EVENT_CLICKED → handler)
+  with `s_cur=6 / TOKYO FM` at entry; single-step showed the increment
+  poised. CPU0 was frozen inside `raac_QMFAnalysis` — mid-audio-frame.
+- **Audio keeps playing while both CPUs are halted**: I2S DMA is hardware
+  and drains the 30 s PCM ring. You can HEAR the memory architecture.
+- Three self-inflicted lessons, all field-relevant: (1) discarding stderr
+  hid "No such file" — the first breakpoint silently never existed;
+  (2) with no live target GDB `print` answers from the ELF's initializers
+  — plausible and fake; (3) **the ELF must match the running build
+  exactly** — the device was on the CI-built v0.23.0 while GDB held the
+  local ELF, so the trap sat at an address where nothing lived. Fix
+  applied: releases now archive the ELF beside the .bin.
+- IDE attach (.vscode/launch.json, cppdbg → OpenOCD): gutter breakpoints
+  on the live radio, verified pausing on the heartbeat every 10 s.

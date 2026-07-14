@@ -107,6 +107,47 @@ itself is unaffected. Staged lines flush to flash every 10 s, so the very last
 seconds before a hard power cut can be missing — a crash via panic is fine
 (the coredump covers it).
 
+### Live debugging over USB-JTAG (Phase 24)
+
+The board's one USB cable also carries JTAG (the USB-Serial-JTAG peripheral
+exposes both interfaces). This gives breakpoints, watchpoints, single-step,
+and live inspection of every task — on the running radio.
+
+**Terminal flow:**
+
+```sh
+# Terminal 1 — the bridge (leave running):
+source ~/esp/v5.3.5/esp-idf/export.sh
+openocd -f board/esp32s3-builtin.cfg
+
+# Terminal 2 — the debugger:
+xtensa-esp32s3-elf-gdb idf/build/s3_radiko_pro.elf \
+    -ex "target extended-remote :3333"
+```
+
+Essentials at the `(gdb)` prompt: `break ev_next` / `break ui.c:899`,
+`continue`, `bt`, `info threads`, `print 'ui.c'::s_cur` (file-qualify
+statics), `next`/`step`, `watch var`, `delete`, `detach`.
+
+**IDE flow:** `.vscode/launch.json` (machine-specific, untracked) attaches
+Cursor/VS Code's visual debugger to OpenOCD — gutter breakpoints, variable
+hover, thread list. Needs the C/C++ extension and OpenOCD already running.
+
+**Rules learned the hard way:**
+
+- **The ELF must be the EXACT build running on the chip.** A mismatched ELF
+  sets breakpoints at addresses where nothing lives — they simply never fire
+  (an OTA'd device runs the CI build, not your last local build: reflash
+  locally before debugging, or fetch the release ELF). Same law as
+  `coredump-info`.
+- **GDB answers `print` from the ELF file when no target is attached** —
+  plausible-looking values (the compile-time initializers) that are
+  completely fake. Check for "The program is not being run".
+- Halting the CPUs does NOT stop audio immediately: I2S DMA is hardware and
+  drains the 30 s PCM ring while both cores stand frozen.
+- A killed GDB can leave OpenOCD's gdb port stale ("Remote connection
+  closed" on reconnect) — restart OpenOCD.
+
 ## Diagnostic build options
 
 Enabled in `idf/sdkconfig.defaults` (were the tools that isolated the Phase 13

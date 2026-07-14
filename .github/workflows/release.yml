@@ -56,11 +56,14 @@ jobs:
           (cd idf/build && sha256sum s3_radiko_pro.bin) | tee s3_radiko_pro.bin.sha256
 
       - name: Create GitHub release
+        # The ELF ships too (Phase 24 lesson): coredump decoding and JTAG
+        # debugging of a fielded release need the EXACT matching symbol file.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
             idf/build/s3_radiko_pro.bin \
             s3_radiko_pro.bin.sha256 \
+            idf/build/s3_radiko_pro.elf \
             --title "$GITHUB_REF_NAME" \
             --generate-notes
