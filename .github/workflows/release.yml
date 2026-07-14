@@ -48,9 +48,12 @@ jobs:
           path: idf
 
       - name: Checksum
+        # idf/build is root-owned (the IDF action builds inside Docker as
+        # root), so write the checksum into the runner-owned workspace root.
+        # Subshell cd keeps the standard "hash  bare-filename" format so
+        # `sha256sum -c` works next to a downloaded .bin.
         run: |
-          cd idf/build
-          sha256sum s3_radiko_pro.bin | tee s3_radiko_pro.bin.sha256
+          (cd idf/build && sha256sum s3_radiko_pro.bin) | tee s3_radiko_pro.bin.sha256
 
       - name: Create GitHub release
         env:
@@ -58,6 +61,6 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" \
             idf/build/s3_radiko_pro.bin \
-            idf/build/s3_radiko_pro.bin.sha256 \
+            s3_radiko_pro.bin.sha256 \
             --title "$GITHUB_REF_NAME" \
             --generate-notes
