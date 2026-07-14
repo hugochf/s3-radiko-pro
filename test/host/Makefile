@@ -5,14 +5,17 @@ CFLAGS  = -Wall -Wextra -O1 -g \
           -I unity \
           -I ../../idf/components/stream/include \
           -I ../../idf/components/radiko/include \
-          -I ../../idf/components/radiko
+          -I ../../idf/components/radiko \
+          -I ../../idf/components/ota/include
 
 SRCS = unity/unity.c \
        ../../idf/components/stream/hls_parse.c \
        ../../idf/components/radiko/radiko_parse.c \
        ../../idf/components/radiko/puff.c \
+       ../../idf/components/ota/ota_parse.c \
        test_hls_parse.c \
        test_radiko_parse.c \
+       test_ota_parse.c \
        main.c
 
 all: run

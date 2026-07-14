@@ -19,6 +19,7 @@
 #include <time.h>
 #include "led.h"
 #include "lvgl.h"
+#include "ota.h"
 #include "radiko.h"
 #include "settings.h"
 #include "stations.h"
@@ -480,6 +481,57 @@ static void ev_open_settings(lv_event_t *e)
     lv_screen_load(s_scr_set);
 }
 
+// ---- OTA check/update from Settings (Phase 22) ----
+static lv_obj_t *s_ota_btn = NULL;
+static lv_obj_t *s_ota_lbl = NULL;
+
+// Progress marshalled from the OTA task into LVGL under the lock.
+static void ota_cb(const char *status, int pct)
+{
+    ui_lock(-1);
+    if (pct >= 0) lv_label_set_text_fmt(s_ota_lbl, "%s  %d%%", status, pct);
+    else          lv_label_set_text(s_ota_lbl, status);
+    ui_unlock();
+}
+
+static void ota_task(void *arg)
+{
+    char tag[32], url[256];
+    bool newer = false;
+    esp_err_t err = ota_check(tag, sizeof(tag), url, sizeof(url), &newer);
+    if (err != ESP_OK) {
+        ota_cb(err == ESP_ERR_NOT_FOUND ? "No release with a .bin found"
+                                        : "Check failed - network?", -1);
+    } else if (!newer) {
+        char b[48];
+        snprintf(b, sizeof(b), "Up to date (v%s)",
+                 esp_app_get_description()->version);
+        ota_cb(b, -1);
+    } else {
+        // Playback stops for the download: a 3 MB TLS transfer wants the
+        // bandwidth and the CPU. ota_update() reboots on success, so the
+        // line below it only runs on failure.
+        char b[48];
+        snprintf(b, sizeof(b), "Updating to %s...", tag);
+        ota_cb(b, -1);
+        stream_stop();
+        ota_update(url, ota_cb);
+        ota_cb("Update failed - press play to resume", -1);
+    }
+    ui_lock(-1);
+    if (s_ota_btn) lv_obj_remove_state(s_ota_btn, LV_STATE_DISABLED);
+    ui_unlock();
+    vTaskDelete(NULL);
+}
+
+static void ev_ota_check(lv_event_t *e)
+{
+    lv_obj_add_state(s_ota_btn, LV_STATE_DISABLED);   // no re-entry
+    lv_label_set_text(s_ota_lbl, "Checking...");
+    // 8 KB stack: TLS + esp_https_ota run inside this task.
+    xTaskCreate(ota_task, "ota", 8192, NULL, 5, NULL);
+}
+
 static lv_obj_t *set_slider_row(lv_obj_t *cont, const char *title, int max_idx,
                                 int cur, const char *cur_name,
                                 lv_event_cb_t cb, lv_obj_t **out_val)
@@ -624,6 +676,21 @@ static void build_settings_screen(void)
     lv_obj_set_style_text_color(f2, lv_color_hex(C_TEXT), 0);
     snprintf(fw, sizeof(fw), "IDF %s", app->idf_ver);
     lv_label_set_text(f2, fw);
+
+    // OTA (Phase 22): check GitHub releases, update in place.
+    s_ota_btn = lv_button_create(cont);
+    lv_obj_set_size(s_ota_btn, 288, 30);
+    lv_obj_set_style_bg_color(s_ota_btn, lv_color_hex(C_ACCENT), 0);
+    lv_obj_set_style_bg_color(s_ota_btn, lv_color_hex(C_HL), LV_STATE_PRESSED);
+    lv_obj_set_style_shadow_width(s_ota_btn, 0, 0);
+    lv_obj_add_event_cb(s_ota_btn, ev_ota_check, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *ol = lv_label_create(s_ota_btn);
+    lv_label_set_text(ol, LV_SYMBOL_DOWNLOAD "  Check for Update");
+    lv_obj_center(ol);
+
+    s_ota_lbl = lv_label_create(cont);
+    lv_obj_set_style_text_color(s_ota_lbl, lv_color_hex(C_DIM), 0);
+    lv_label_set_text(s_ota_lbl, "");
 
     update_dim_off_state();   // grey dim/off if the saver owns the timeouts
 }

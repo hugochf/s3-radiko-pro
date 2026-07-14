@@ -27,9 +27,14 @@ Live Radiko audio plays, touchscreen-controlled. Working today:
   screen saver, system/firmware info — all NVS-persisted
 - Screen saver (DVD-style bouncing clock) and battery gauge (ADC, status-bar %)
 - Instant pause/switch, debounced station navigation, persisted station & volume
+- Boot splash with live status, dismissed when audio actually starts
+- Self-healing failure stack: task-watchdog panics on wedges, coredump +
+  boot-time crash summary, persistent W/E event log (flash ring)
+- OTA updates from GitHub releases with automatic bootloader rollback
+  (Settings ▸ Check for Update); parsers covered by host unit tests + CI
 
-Roadmap next: the Tier D hardening pass (error handling, watchdog tuning, unit
-tests, OTA). See [PLAN.md](PLAN.md).
+Roadmap next: CI/CD release pipeline, JTAG walkthrough, secure boot. See
+[PLAN.md](PLAN.md).
 
 ## Hardware
 

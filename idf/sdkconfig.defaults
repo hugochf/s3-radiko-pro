@@ -63,6 +63,13 @@ CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
 # 160 kbps stream bitrate.
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 
+# --- OTA rollback (Phase 22) ---
+# An OTA-installed image boots as PENDING_VERIFY; unless the app marks itself
+# valid (main does so after 30 s alive), the NEXT reset rolls back to the
+# previous slot. Pairs with the task watchdog: a wedge in fresh firmware
+# panics within 15 s -> reboot -> automatic downgrade. Self-healing updates.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
 # --- Watchdogs (Phase 18) ---
 # A starved task watchdog PANICS instead of printing forever: with coredump-to-
 # flash enabled the wedge is preserved for post-mortem and the radio reboots

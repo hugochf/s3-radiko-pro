@@ -13,6 +13,7 @@
 #include "esp_heap_caps.h"
 #include "esp_app_desc.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
 #include "esp_psram.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -185,6 +186,18 @@ void app_main(void)
     uint32_t tick = 0;
     while (true) {
         vTaskDelay(pdMS_TO_TICKS(10000));
+        // Phase 22 rollback self-test: 30 s alive (UI up, no watchdog panic)
+        // is our "this image works" bar. Until this runs, any reset rolls the
+        // bootloader back to the previous firmware.
+        if (tick == 2) {
+            const esp_partition_t *run = esp_ota_get_running_partition();
+            esp_ota_img_states_t st;
+            if (esp_ota_get_state_partition(run, &st) == ESP_OK &&
+                st == ESP_OTA_IMG_PENDING_VERIFY) {
+                esp_ota_mark_app_valid_cancel_rollback();
+                ESP_LOGI(TAG, "OTA image passed self-test — marked valid");
+            }
+        }
         ESP_LOGI(TAG, "alive (%" PRIu32 "), free internal %u KB (largest %u), PSRAM %u KB",
                  ++tick,
                  (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),

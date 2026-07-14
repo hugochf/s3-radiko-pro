@@ -190,7 +190,7 @@ purpose. Take the time per phase.
 - [x] **Phase 19** — Crash dump partition ✅ crashlog boot summary + Settings line, flow proven with forced crash
 - [x] **Phase 20** — Logging to flash ring buffer ✅ elog partition + esp_log hook, host dump tool
 - [x] **Phase 21** — Unit tests ✅ Unity host tests for the parsers (16 green), CI job runs them per push
-- [ ] **Phase 22** — OTA from GitHub releases
+- [x] **Phase 22** — OTA from GitHub releases ✅ v0.22.0→v0.22.1 updated over the air, rollback-armed
 - [ ] **Phase 23** — CI/CD: build + test + release
 - [ ] **Phase 24** — JTAG debug session
 - [ ] **Phase 25** — Secure boot v2 + flash encryption
@@ -684,3 +684,32 @@ images at runtime on this target; pre-scale at asset-generation time.**
   are deliberately out of scope here — they need a runner attached to the
   device and come with the JTAG work (Phase 24) if at all. Host tests
   cover the logic that actually regresses.
+
+### Phase 22 — OTA from GitHub releases
+
+- **The device stores a URL, not an account.** `/releases/latest` on a
+  public repo is anonymous + read-only; TLS (cert bundle) proves it's
+  GitHub. What TLS does NOT prove is that the firmware came from us —
+  until secure boot (Phase 25) signs images, repo write access IS
+  firmware access. Documented trust anchor, not an accident.
+- **Two-phase API on purpose**: ota_check() is cheap and leaves playback
+  alone; only a confirmed-newer release stops the stream for the ~3 MB
+  download. Release JSON parsing + dotted-version compare are libc-pure
+  (`ota_parse.c`) and host-tested like the other parsers.
+- **Rollback = bootloader + watchdog working together.**
+  `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`: the new image boots
+  PENDING_VERIFY; main marks it valid after 30 s alive. A crash/wedge in
+  fresh firmware → Phase 18 panic → reboot → automatic downgrade. Verified
+  by resetting after the update: v0.22.1 stayed (slot B, 0x320000).
+- **First field failure was diagnosed BY the Tier D tooling**: the update
+  died with a status line on screen; the elog ring had the exact chain
+  (`HTTP_CLIENT: Out of buffer`). Root cause: GitHub redirects assets to
+  objects.githubusercontent.com with a >1 KB signed URL — the redirected
+  request must fit the http client's TX buffer (default 1 KB). Fix:
+  `.buffer_size_tx = 4096`. Lesson: size BOTH http buffers when a service
+  uses signed redirect URLs.
+- Provenance gap flagged for Phase 23: this release's .bin was built on a
+  laptop from momentarily-uncommitted state. CI should build releases
+  from tags so artifact == commit, always.
+- Also: montserrat has no em-dash — a "—" in a UI string renders as tofu.
+  ASCII hyphens in UI text.
