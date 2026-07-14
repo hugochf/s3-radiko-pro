@@ -59,6 +59,11 @@ Wi-Fi credentials seed from a gitignored `components/wifi/wifi_secrets.h` on fir
 boot (copy `wifi_secrets.h.example`), or enter them on-screen. `sdkconfig` is
 generated and gitignored — the committed deltas live in `idf/sdkconfig.defaults`.
 
+**Releases & updates:** bump `PROJECT_VER` in `idf/CMakeLists.txt`, tag `vX.Y.Z`,
+push the tag — CI tests, builds, and publishes the release. Devices update from
+Settings ▸ Check for Update (A/B slots, automatic bootloader rollback if the new
+image fails its 30 s self-test). USB flashing always remains the recovery path.
+
 ## Architecture (short version)
 
 Two-stage streaming pipeline: a **fetcher** task keeps a queue of AAC segments
@@ -86,8 +91,12 @@ idf/
     wifi  timesync  httpc  radiko           — network + auth
     stream  libhelix_aac  audio             — HLS pipeline + decode + I2S
     settings  led  battery                  — versioned NVS config, mood LED, gauge
+    app_watchdog  crashlog  elog  ota       — watchdog policy, post-mortem, event log, updates
   sdkconfig.defaults partitions.csv         — build config, dual-OTA flash map
-.github/workflows/   CI: build firmware on every push
+test/host/           Unity unit tests for the parsers (run locally, pre-push, and in CI)
+tools/               asset generators (logos, splash) + elog dump
+.githooks/           pre-push gate — enable with: git config core.hooksPath .githooks
+.github/workflows/   CI per push (tests + firmware build); tag-driven releases (vX.Y.Z)
 ```
 
 ## Licensing notes

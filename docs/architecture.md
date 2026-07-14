@@ -54,7 +54,9 @@ info, LED).** The split is deliberate — see the note below.
 | `radiko_prog` |  0   |  4   |  6 KB  | permanent | "Now on air" fetch + puff gunzip every 5 min (waits for auth) |
 | `radiko_auth` | any  |  5   |  8 KB  | one-shot  | auth1/auth2 at boot (with retry), then exits |
 | `led`         |  0   |  6   | 2.5 KB | permanent | WS2812 mood-LED effects, 30 ms tick (~30 µs work — high prio for smoothness, see PLAN Phase 18) |
+| `elog`        | any  |  1   |  3 KB  | permanent | Flush staged W/E log lines to the flash ring every 10 s |
 | `wifiscan`    | any  |  4   |  4 KB  | one-shot  | Wi-Fi AP scan for the setup screen |
+| `ota`         | any  |  5   |  8 KB  | on-demand | Release check / update download (Settings button) |
 
 Plus LVGL timers running inside the `lvgl` task: the 2 s status-bar refresh
 (Wi-Fi, clock, battery gauge — the battery ADC on GPIO9 is polled here, no task
@@ -93,6 +95,8 @@ PSRAM.**
 | User | Approx | Why internal |
 |------|-------:|--------------|
 | libhelix decoder state | ~20–30 KB | CPU-bound; `helix_malloc` → plain `malloc` (internal). Routing it to PSRAM once caused an IDLE-starve watchdog — it was too slow there |
+| LVGL draw buffers | 2 × 12.8 KB | MALLOC_CAP_DMA: GPSPI can't DMA from PSRAM — PSRAM buffers made spi_master bounce EVERY flush through a fresh internal alloc, which froze the screen under fragmentation (Phase 17) |
+| elog staging + task | ~6 KB | log capture must never touch flash in the caller's context |
 | Task stacks, FreeRTOS objects, Wi-Fi | — | Kernel + driver requirements |
 
 **mbedtls buffers live in PSRAM** (`CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y`, Phase 14).
@@ -106,10 +110,14 @@ asymmetric record buffers (IN 16 KB / OUT 4 KB) are kept to save PSRAM churn.
 
 | User | Size | Notes |
 |------|-----:|-------|
-| PCM ring buffer | ~2.75 MB | `48000 × 4 bytes × 15 s`, static `StreamBuffer` |
+| PCM ring buffer | ~5.5 MB | `48000 × 4 bytes × 30 s` — rides out Radiko's ~5-min session re-resolve gaps (Phase 14) |
 | AAC segment buffers | up to ~320 KB | 64 KB × (queue depth 4 + in-flight) |
-| LVGL draw buffers | ~50 KB | 2 × (320 × 40 lines × 2 B), partial render. Freed the internal RAM TLS needed |
+| mbedtls TLS sessions | ~100 KB each | `EXTERNAL_MEM_ALLOC` — all TLS memory here since Phase 14 |
+| Programme XML scratch | 176 KB transient | 48 KB gzip + 128 KB inflated, freed after each 5-min parse |
+| OTA release JSON | 16 KB transient | /releases/latest body during a manual update check |
 | Playlist scratch | 4 KB | m3u8 text |
+
+(The LVGL draw buffers moved OUT of PSRAM in Phase 17 — see the internal table.)
 
 ### Flash (16 MB, dual-OTA)
 
