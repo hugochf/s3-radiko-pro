@@ -472,3 +472,20 @@ real phase. Eight distinct bugs, each only visible after fixing the previous:
   audio. Fixes: request `l=30` (30 s live backlog instead of 15), detect a stale
   playlist after ~5 s of empty polls (was 12), and a 30 s PCM ring buffer.
   Verified 7 min continuous with zero stalls.
+
+### Phase 15 (WIP) — Settings screen + two concurrency bugs
+
+- Settings/Info screen (tap the centre title): Brightness + Sleep Timer sliders
+  (NVS-persisted), System Info, firmware info. Remaining for Arduino parity:
+  Screen Dim/Off, Flip 180°, Screen Saver switch (Phase 16), battery ADC,
+  LED-mode persistence.
+- **Every ISR must be IRAM-safe if ANY task writes flash.** The WS2812's RMT
+  interrupt (20 ms refresh tick) wasn't; any NVS write (volume release, station
+  select, settings sliders) disables the flash cache, and an RMT interrupt in
+  that window wedged the chip. `CONFIG_RMT_ISR_IRAM_SAFE=y`. Same failure class
+  as the Phase 13 touch-INT bug — audit this for every new interrupt source.
+- **ESP-IDF's `i2c_master` is NOT thread-safe across tasks.** Touch polls (LVGL
+  task) racing ES8311 mute/volume writes (stream ctrl task) on the shared bus
+  corrupted the driver and hung both: touch dead + stream never restarted.
+  All transactions on a shared bus must hold a mutex (`i2c_bus_lock()`).
+  Repro was "press Next, then drag the volume mid-switch".
