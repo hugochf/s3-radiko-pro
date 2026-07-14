@@ -195,8 +195,10 @@ static void prog_task(void *arg)
     while (radiko_area()[0] == '\0') vTaskDelay(pdMS_TO_TICKS(500));
     vTaskDelay(pdMS_TO_TICKS(8000));
     for (;;) {
-        radiko_program_refresh();
-        vTaskDelay(pdMS_TO_TICKS(5 * 60 * 1000));
+        // On failure retry in 30 s, not 5 min — one bad fetch at boot would
+        // otherwise leave every title blank for the whole first interval.
+        esp_err_t err = radiko_program_refresh();
+        vTaskDelay(pdMS_TO_TICKS(err == ESP_OK ? 5 * 60 * 1000 : 30 * 1000));
     }
 }
 

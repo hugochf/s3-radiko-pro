@@ -26,7 +26,7 @@
 
 static const char *TAG = "ui";
 
-#define LVGL_BUF_LINES 40
+#define LVGL_BUF_LINES 20
 
 // Dark palette (ported from the Arduino build).
 #define C_BG     0x1A1A2E
@@ -78,14 +78,21 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
     int w = area->x2 - area->x1 + 1;
     int h = area->y2 - area->y1 + 1;
     lv_draw_sw_rgb565_swap(px_map, w * h);
-    esp_lcd_panel_draw_bitmap(display_panel(), area->x1, area->y1,
-                              area->x2 + 1, area->y2 + 1, px_map);
+    esp_err_t derr = esp_lcd_panel_draw_bitmap(display_panel(), area->x1, area->y1,
+                                               area->x2 + 1, area->y2 + 1, px_map);
     // Block (yielding) until the DMA finishes, then hand the buffer back to LVGL.
     // Exactly one take per flush pairs with one give per completion — no desync,
     // no frame drops. Yielding (vs LVGL's default busy-spin) lets the lower-prio
     // audio decoder on this core run, so playback doesn't stutter. The timeout
     // self-heals a lost completion instead of hanging.
-    xSemaphoreTake(s_flush_sem, pdMS_TO_TICKS(1000));
+    if (xSemaphoreTake(s_flush_sem, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        // Track the failure shape: a one-off lost completion self-heals on the
+        // next give; a run of these with draw errors means the SPI queue is
+        // wedged (seen rarely after station switches — under investigation).
+        static int timeouts = 0;
+        ESP_LOGE(TAG, "flush DMA-done timeout #%d (draw=%s, area %dx%d)",
+                 ++timeouts, esp_err_to_name(derr), w, h);
+    }
     lv_display_flush_ready(disp);
 }
 
@@ -1105,13 +1112,12 @@ static void build_list_screen(void)
         lv_obj_add_event_cb(row, ev_select_station, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 
         // Arduino row layout: logo at left; name top-right; programme bottom-right.
+        // Pre-scaled asset, blitted 1:1 — no runtime lv_image scale anywhere in
+        // the UI (the sw-transform path wedged the LVGL task; see logos.h).
         lv_obj_t *logo = lv_image_create(row);
         lv_obj_add_flag(logo, LV_OBJ_FLAG_EVENT_BUBBLE);   // taps reach the row
-        int lsc = set_logo(logo, i, 138, 38, 256);   // height-bound: ~38px rows
-        int vh  = STATION_LOGOS[i]->header.h * lsc / 256;
-        // Visual pixels hang off the widget's top-left (pivot 0,0), so align
-        // the top-left and centre the *visual* height in the 54px row.
-        lv_obj_align(logo, LV_ALIGN_TOP_LEFT, 4, (54 - vh) / 2);
+        lv_image_set_src(logo, STATION_LOGOS_SMALL[i]);
+        lv_obj_align(logo, LV_ALIGN_LEFT_MID, 4, 0);
 
         lv_obj_t *nm = lv_label_create(row);
         lv_label_set_text(nm, s->name);
@@ -1286,11 +1292,18 @@ esp_err_t ui_init(void)
     s_vol = st->volume;
     display_set_flipped(st->rotation == 1);   // apply persisted orientation
 
-    // Draw buffers in PSRAM (not internal DMA RAM) — frees ~50 KB of scarce
-    // internal RAM for TLS/WiFi. esp_lcd handles cache sync for PSRAM sources.
+    // Draw buffers MUST be internal DMA-capable RAM. They lived in PSRAM for a
+    // while (sparing internal RAM for TLS, pre-Phase-14): GPSPI can't DMA from
+    // PSRAM on the S3, so spi_master silently bounced EVERY flush through a
+    // freshly-malloc'd MALLOC_CAP_DMA buffer + a 25 KB memcpy — hidden per-flush
+    // cost, and once heap fragmentation dropped the largest internal block below
+    // the chunk size the alloc failed and the SCREEN FROZE (tx_color NO_MEM,
+    // which the ili9341 driver swallows). With mbedtls in PSRAM since Phase 14
+    // there's headroom to do this right: 2×20 lines internal = zero-copy DMA,
+    // no allocation in the flush path at all.
     size_t buf_bytes = DISPLAY_H_RES * LVGL_BUF_LINES * sizeof(uint16_t);
-    uint8_t *buf1 = heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM);
-    uint8_t *buf2 = heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM);
+    uint8_t *buf1 = heap_caps_malloc(buf_bytes, MALLOC_CAP_DMA);
+    uint8_t *buf2 = heap_caps_malloc(buf_bytes, MALLOC_CAP_DMA);
     if (!buf1 || !buf2) return ESP_ERR_NO_MEM;
 
     s_flush_sem = xSemaphoreCreateBinary();

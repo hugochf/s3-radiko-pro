@@ -185,7 +185,7 @@ purpose. Take the time per phase.
 - [x] **Phase 14** — Program info fetch ✅ + Arduino UI parity, RGB LED, sleep timer
 - [x] **Phase 15** — Settings page port
 - [x] **Phase 16** — Screen saver port
-- [ ] **Phase 17** — Error handling pass
+- [x] **Phase 17** — Error handling pass
 - [ ] **Phase 18** — Watchdog tuning
 - [ ] **Phase 19** — Crash dump partition
 - [ ] **Phase 20** — Logging to NVS ring buffer
@@ -523,3 +523,50 @@ real phase. Eight distinct bugs, each only visible after fixing the previous:
   and any `sdkconfig.defaults` change needs `rm -f sdkconfig` + rebuild to
   actually apply — a silently stale sdkconfig looks exactly like "my change
   did nothing".
+
+### Phase 17 — Error handling pass + two root-caused display failures
+
+Recovery work (replace every dead-end error path with retry/degrade):
+
+- **Radiko can invalidate the auth token at any time; every retry loop that
+  keeps the dead token is an infinite loop.** The fetcher now counts 401/403s
+  (fetch() returns -status) and after two in a row re-authenticates in place,
+  then resyncs to the live edge. Any success resets the counter.
+- All HLS retry paths share one capped exponential backoff (1 s → 10 s); the
+  master-playlist path used to retry at a fixed 1 Hz forever.
+- Program-info failures retry in 30 s, not the full 5 min refresh interval.
+- Peripheral init failures (I2C bus, touch, codec) log and degrade instead of
+  `ESP_ERROR_CHECK`-aborting into a boot loop — a silent or touchless radio
+  that still boots (and can be flashed/OTA'd) beats a brick. Display/LVGL
+  still abort: with no screen there is no product.
+- `settings_save()` failures are logged; `audio_write()` guards a NULL ring
+  buffer; boot auth backs off 3 s → 30 s.
+
+Root cause #1 — **screen froze when internal RAM fragmented (SPI DMA bounce).**
+LVGL draw buffers lived in PSRAM since Phase 2. GPSPI on the S3 cannot DMA
+from PSRAM, and IDF's spi_master hides that by allocating a MALLOC_CAP_DMA
+bounce buffer and memcpy'ing EVERY transaction (spi_master.c `setup_priv_desc`).
+So every flush silently cost a 25 KB internal alloc + copy, and when station-
+switch TLS churn dropped the largest internal free block under the chunk size
+(heartbeats showed "largest 15 KB"), the alloc failed → `spi transmit (queue)
+color failed` → frozen screen while audio played on. The ili9341 driver
+swallows tx_color errors (draw_bitmap returned ESP_OK), which hid the cause.
+Fix: draw buffers now live in internal DMA RAM (2×20 lines, affordable since
+mbedtls moved to PSRAM) — zero-copy DMA, no allocation in the flush path.
+Lesson: **know which memory your DMA can actually reach; "it works" may be a
+hidden per-transfer bounce that fails only under fragmentation.**
+
+Root cause #2 — **LVGL task wedged inside `lv_draw_sw_img` transform.** With
+the smaller draw buffers, torture-testing hung the LVGL task permanently in
+`transform_and_recolor` (task watchdog on IDLE1 every 5 s, identical
+backtrace for minutes; `lv_timer_handler` never returned). The only runtime-
+scaled images were the 15 station-list logos. Rather than debug LVGL's
+software transform, we removed the dependency: a second pre-scaled asset set
+(fit 138×38, ~118 KB) generated offline, so every image in the UI blits 1:1
+and the transform path is unreachable. Second strike for runtime transforms
+(Phase 13: starved the decoder; here: wedged the UI) → **rule: never scale
+images at runtime on this target; pre-scale at asset-generation time.**
+- Debug flow that cracked both: instrument the exact failure boundary (flush
+  timeout counter + draw error code), long passive serial capture while the
+  user reproduces, then read the driver source at the failing line instead of
+  guessing. `task_wdt` backtraces + addr2line pinpointed the wedge.

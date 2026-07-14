@@ -72,10 +72,15 @@ esp_err_t settings_save(void)
 {
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
-    if (err != ESP_OK) return err;
-    s.version = SETTINGS_VERSION;
-    err = nvs_set_blob(h, NVS_KEY, &s, sizeof(s));
-    if (err == ESP_OK) err = nvs_commit(h);
-    nvs_close(h);
+    if (err == ESP_OK) {
+        s.version = SETTINGS_VERSION;
+        err = nvs_set_blob(h, NVS_KEY, &s, sizeof(s));
+        if (err == ESP_OK) err = nvs_commit(h);
+        nvs_close(h);
+    }
+    // Callers fire-and-forget from UI events, so a failed persist (NVS full,
+    // flash wear) must at least be visible in the log — the RAM copy stays
+    // active either way; only the next boot would revert.
+    if (err != ESP_OK) ESP_LOGE(TAG, "save failed (%s)", esp_err_to_name(err));
     return err;
 }

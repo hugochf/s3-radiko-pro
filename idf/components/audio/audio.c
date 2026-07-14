@@ -127,6 +127,12 @@ void audio_set_volume(int vol)
 
 esp_err_t audio_write(const void *pcm, size_t bytes, size_t *written)
 {
+    // If audio_init failed partway (codec/I2S absent) the buffer never existed;
+    // drop the PCM so the decoder keeps running instead of crashing the stream.
+    if (!s_pcm) {
+        if (written) *written = 0;
+        return ESP_ERR_INVALID_STATE;
+    }
     // Back-pressure when full (paces the decoder), but bounded so a flush can
     // unblock us quickly: while flushing/stopped (!s_active), drop the data.
     const uint8_t *p = pcm;

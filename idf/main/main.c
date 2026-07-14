@@ -40,12 +40,16 @@ static void radiko_auth_task(void *arg)
     while (wifi_get_state() != WIFI_CONNECTED) vTaskDelay(pdMS_TO_TICKS(200));
 
     // Retry auth: a transient TLS/connection hiccup must not permanently leave
-    // the radio silent. Back off between attempts so we don't hammer Radiko.
+    // the radio silent. Ramp the delay (3 s → 30 s cap) so a persistent failure
+    // (captive portal, Radiko outage) doesn't hammer the server forever.
     radiko_auth_t auth;
     esp_err_t err;
     for (int attempt = 1; (err = radiko_authenticate(&auth)) != ESP_OK; attempt++) {
-        ESP_LOGW(TAG, "Radiko auth failed (attempt %d); retrying", attempt);
-        vTaskDelay(pdMS_TO_TICKS(3000));
+        int delay_ms = attempt * 3000;
+        if (delay_ms > 30000) delay_ms = 30000;
+        ESP_LOGW(TAG, "Radiko auth failed (attempt %d); retrying in %d s",
+                 attempt, delay_ms / 1000);
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
     }
 
     ESP_LOGI(TAG, "Radiko auth OK: area=%s", auth.area);
@@ -93,15 +97,31 @@ void app_main(void)
     // Phase 7: load persistent settings (before UI so it starts from saved state).
     ESP_ERROR_CHECK(settings_init());
 
-    // Phase 1: ILI9341 panel. Phase 2: LVGL. Phase 3: shared I2C bus + FT6336 touch.
+    // Phase 1: ILI9341 panel. Phase 2: LVGL. Without a working display there is
+    // no usable product, so these two still abort into the (visible) boot loop.
     ESP_ERROR_CHECK(display_init());
     ESP_ERROR_CHECK(ui_init());          // lv_init happens here, before touch indev
-    ESP_ERROR_CHECK(i2c_bus_init());
-    ESP_ERROR_CHECK(touch_init());
+
+    // Phase 17: peripheral failures degrade instead of aborting. A radio with a
+    // flaky touch controller or codec should still boot, show the UI, and (once
+    // OTA lands) stay updatable — a boot loop is the worst possible field state.
+    esp_err_t perr = i2c_bus_init();
+    if (perr != ESP_OK)
+        ESP_LOGE(TAG, "I2C bus init failed (%s) — touch and codec unavailable",
+                 esp_err_to_name(perr));
+
+    perr = touch_init();
+    if (perr != ESP_OK)
+        ESP_LOGE(TAG, "touch init failed (%s) — running without touch input",
+                 esp_err_to_name(perr));
 
     // Phase 11: I2S + ES8311 audio output.
-    ESP_ERROR_CHECK(audio_init());
-    audio_set_volume(settings_get()->volume);   // apply persisted volume
+    perr = audio_init();
+    if (perr != ESP_OK)
+        ESP_LOGE(TAG, "audio init failed (%s) — radio will be silent",
+                 esp_err_to_name(perr));
+    else
+        audio_set_volume(settings_get()->volume);   // apply persisted volume
 
     // WS2812 mood LED (Arduino parity; eye button on the player cycles modes).
     led_init();

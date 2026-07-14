@@ -146,6 +146,11 @@ UI calls `stream_play`.
   `lv_display_flush_ready` — exactly one take per flush, one give per completion.
   LVGL's default busy-spin starved the idle task; a separate `flush_wait_cb`
   variant desynced under load and dropped frames.
+- **Draw buffers are internal DMA RAM (2×20 lines), and images are never scaled
+  at runtime.** GPSPI can't DMA from PSRAM (spi_master silently bounces through
+  a per-transfer internal alloc that fails under heap fragmentation → frozen
+  screen), and LVGL's software image transform wedged the LVGL task outright —
+  list logos are a pre-scaled asset set instead (Phase 17 lessons in PLAN.md).
 - **Station navigation is debounced.** Prev/next update the UI instantly but defer
   the NVS write and the actual stream switch until ~450 ms after the user settles,
   so mashing the buttons doesn't hammer flash or restart the pipeline repeatedly.

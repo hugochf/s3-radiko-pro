@@ -74,6 +74,20 @@ static int fetch(const char *url, const char *token, char *buf, size_t cap)
     return (st == 200) ? (int)s_ctx.len : -st;
 }
 
+// Capped exponential backoff for transient failures at any stage of the HLS
+// chain, so a persistent outage never hammers Radiko at 1 Hz forever.
+static int next_backoff(int cur)
+{
+    return cur == 0 ? 1000 : (cur >= 10000 ? 10000 : cur * 2);
+}
+
+// 401/403 mean the auth token was rejected — retrying with the same token can
+// never succeed (fetch() returns -status for HTTP errors).
+static bool auth_rejected(int fetch_ret)
+{
+    return fetch_ret == -401 || fetch_ret == -403;
+}
+
 static bool first_url_line(const char *body, char *out, size_t cap)
 {
     for (const char *p = body; *p; ) {
@@ -104,9 +118,30 @@ static void fetcher_task(void *arg)
 
     ESP_LOGI(TAG, "streaming %s", s_station);
 
-    int backoff = 0;   // grows on repeated resolve failures (don't hammer Radiko)
-    int empty = 0;     // consecutive live-playlist polls that yielded no new segment
+    int backoff = 0;    // grows on repeated failures at any stage (don't hammer Radiko)
+    int empty = 0;      // consecutive live-playlist polls that yielded no new segment
+    int auth_fail = 0;  // consecutive 401/403s — the token has expired/been revoked
     while (!s_stop) {
+        // Token rejected twice in a row → it's dead (Radiko can invalidate it at
+        // any time). Re-authenticate in place and resync to the live edge; every
+        // other recovery path would just loop forever with the same dead token.
+        if (auth_fail >= 2) {
+            ESP_LOGW(TAG, "auth token rejected; re-authenticating");
+            radiko_auth_t a;
+            if (radiko_authenticate(&a) == ESP_OK) {
+                auth_fail = 0;
+                backoff = 0;
+                token = radiko_token();
+            } else {
+                backoff = next_backoff(backoff);
+                ESP_LOGW(TAG, "re-auth failed; retry in %d ms", backoff);
+                vTaskDelay(pdMS_TO_TICKS(backoff));
+            }
+            media_url[0] = '\0';
+            last_seg[0] = '\0';
+            continue;
+        }
+
         // base (playlist_create_url) resolves once and is reused across stations.
         // Retry transient failures here rather than killing the fetcher — a brief
         // TLS/network hiccup at startup must not permanently stop audio.
@@ -122,9 +157,7 @@ static void fetcher_task(void *arg)
                 memcpy(base, p, n); base[n] = '\0';
                 backoff = 0;
             } else {
-                // Exponential backoff, capped at 10 s, so a persistent outage
-                // (or rate-limiting) doesn't retry once a second forever.
-                if (backoff < 10000) backoff = backoff ? backoff * 2 : 1000;
+                backoff = next_backoff(backoff);
                 ESP_LOGW(TAG, "stream-info failed; retry in %d ms", backoff);
                 vTaskDelay(pdMS_TO_TICKS(backoff));
                 continue;
@@ -136,23 +169,29 @@ static void fetcher_task(void *arg)
             char purl[320];
             snprintf(purl, sizeof(purl), "%s?station_id=%s&l=30&lsid=%s&type=b",
                      base, s_station, lsid);
-            if (fetch(purl, token, plist, PLIST_BYTES) <= 0 ||
-                !first_url_line(plist, media_url, sizeof(media_url))) {
-                ESP_LOGW(TAG, "master playlist failed; retry");
-                vTaskDelay(pdMS_TO_TICKS(1000));
+            int r = fetch(purl, token, plist, PLIST_BYTES);
+            if (r <= 0 || !first_url_line(plist, media_url, sizeof(media_url))) {
+                if (auth_rejected(r)) auth_fail++;
+                backoff = next_backoff(backoff);
+                ESP_LOGW(TAG, "master playlist failed (%d); retry in %d ms", r, backoff);
+                vTaskDelay(pdMS_TO_TICKS(backoff));
                 continue;
             }
         }
 
-        if (fetch(media_url, token, plist, PLIST_BYTES) <= 0) {
+        int r = fetch(media_url, token, plist, PLIST_BYTES);
+        if (r <= 0) {
             // Session gone — re-resolve. Clear last_seg too: the new session has a
             // fresh live window with different segment names, so keeping the old
             // one means seen_last never matches and every segment is skipped
             // forever (audio dies after the first batch). Resync to the live edge.
+            if (auth_rejected(r)) auth_fail++;
             media_url[0] = '\0';
             last_seg[0] = '\0';
             continue;
         }
+        auth_fail = 0;   // token accepted — any earlier 401/403 was transient
+        backoff = 0;
 
         bool seen_last = (last_seg[0] == '\0');
         int pushed = 0;
@@ -165,7 +204,12 @@ static void fetcher_task(void *arg)
             char *buf = heap_caps_malloc(SEG_BUF_BYTES, MALLOC_CAP_SPIRAM);
             if (!buf) { ESP_LOGW(TAG, "seg buf alloc fail"); vTaskDelay(pdMS_TO_TICKS(200)); continue; }
             int slen = fetch(line, token, buf, SEG_BUF_BYTES);
-            if (slen <= 0) { ESP_LOGW(TAG, "seg fetch failed"); free(buf); continue; }
+            if (slen <= 0) {
+                if (auth_rejected(slen)) auth_fail++;
+                ESP_LOGW(TAG, "seg fetch failed (%d)", slen);
+                free(buf);
+                continue;
+            }
 
             seg_t seg = { buf, slen };
             // Blocks when the queue is full -> paces the fetcher to real time.
@@ -200,6 +244,18 @@ done:
 static void decoder_task(void *arg)
 {
     HAACDecoder dec = AACInitDecoder();
+    if (!dec) {
+        // Should never happen (decoder state is a small fixed alloc), but if it
+        // does, keep draining the queue so the fetcher doesn't block forever on
+        // a full queue with stale segments.
+        ESP_LOGE(TAG, "AAC decoder alloc failed — no audio this session");
+        while (!s_stop) {
+            seg_t seg;
+            if (xQueueReceive(s_q, &seg, pdMS_TO_TICKS(300)) == pdTRUE) free(seg.buf);
+        }
+        s_dec_task = NULL;
+        vTaskDelete(NULL);
+    }
     static int16_t pcm[2048 * 2];
     AACFrameInfo fi;
     bool logged = false;
