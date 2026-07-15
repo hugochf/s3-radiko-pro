@@ -29,12 +29,16 @@ CONFIG_LV_COLOR_DEPTH_16=y
 # Screen-saver clock (Phase 16): 48 pt for HH:MM, 16 pt for the date line.
 CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_MONTSERRAT_48=y
-# JP font is 3 bpp compressed (Phase 30): smoother than 2 bpp at a fraction of
-# the flash of 4 bpp. Needs LVGL's font decompressor; the full-CJK glyph tables
-# exceed 16-bit offsets, so enable large-font format too. Text render cost is
-# negligible (images, not glyphs, were ever the bottleneck).
-CONFIG_LV_USE_FONT_COMPRESSED=y
-CONFIG_LV_FONT_FMT_TXT_LARGE=y
+# 12 pt for the status-bar title (Phase 30): "Radiko - <area>" — 14 pt clips
+# on long names like Kanagawa in the 140 px header.
+CONFIG_LV_FONT_MONTSERRAT_12=y
+# JP font: 2 bpp UNCOMPRESSED (the proven-stable config used all project).
+# NOTE: 3 bpp compressed (LV_USE_FONT_COMPRESSED + LV_FONT_FMT_TXT_LARGE) was
+# tried for smoothness and caused HEAP CORRUPTION — crashes across unrelated
+# tasks (led, lvgl) with garbage backtraces, watchdog reboots. Reverted. If
+# smoother JP text is ever wanted again, move the font to its own partition
+# and load it as a runtime binary font, don't flip the global compressed/large
+# flags (they change LVGL's glyph-draw machinery for every font).
 
 # --- Crash diagnostics (added while debugging the Phase 13 logo hang; keep for
 #     the Tier D crash-dump work) ---

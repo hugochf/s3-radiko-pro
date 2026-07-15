@@ -221,6 +221,18 @@ public app key, same as the PC key we already ship.
   arrow → tofu; used U+25BC ▼ which our font carries). Screensaver-on now
   means NO dimming (moving clock handles burn-in), and "Screen Dim" stays live
   as the saver-appear delay while "Screen Off" greys out.
+- **`LV_USE_FONT_COMPRESSED` + `LV_FONT_FMT_TXT_LARGE` corrupted the heap.**
+  Enabled for the 3 bpp JP font; the radio then crashed intermittently with
+  the classic corruption signature — panics in UNRELATED tasks (`led`, `lvgl`)
+  with GARBAGE backtraces (an led-task trace containing `argb8888_image_blend`
+  is impossible unless the stack was overwritten), watchdog reboots. These are
+  GLOBAL flags — they change the glyph-decode/draw path for EVERY font (the
+  fatal draw was even a built-in Montserrat label). The Tier D stack paid off:
+  coredump + crashlog + elog together showed the multi-task/garbage-backtrace
+  pattern that fingerprinted corruption vs a plain logic bug. Fix: reverted to
+  the proven 2 bpp uncompressed font. **Lesson: to ship a smoother/bigger
+  font, put it in its own partition and load it as a runtime binary font — do
+  NOT flip the global compressed/large `lv_conf` flags.**
 
 ## Workflow rules
 
