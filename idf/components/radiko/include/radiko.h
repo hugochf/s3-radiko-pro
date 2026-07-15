@@ -31,8 +31,9 @@ const char *radiko_area(void);
 void radiko_set_area(int jp_area);
 int  radiko_area_num(void);
 
-// Romanised prefecture name for a JP number (e.g. 13 -> "Tokyo"). For the UI.
+// Prefecture name for a JP number (e.g. 13 -> "Tokyo" / "東京"). For the UI.
 const char *radiko_area_name(int jp_area);
+const char *radiko_area_name_jp(int jp_area);
 
 // --- Program info ("now on air"), Phase 14 -----------------------------------
 

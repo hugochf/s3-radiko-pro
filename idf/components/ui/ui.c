@@ -63,8 +63,9 @@ static lv_obj_t *w_wifi       = NULL;
 static lv_obj_t *w_clock      = NULL;
 static lv_obj_t *w_bat        = NULL;
 static lv_obj_t *w_hdr        = NULL;   // centre title: "Radiko - <area>"
-static lv_obj_t *w_dots[NUM_STATIONS];
-static lv_obj_t *s_list_prog[NUM_STATIONS];   // per-row programme labels (list)
+static lv_obj_t *w_dots[MAX_STATIONS];
+static lv_obj_t *s_list_prog[MAX_STATIONS];   // per-row programme labels (list)
+static lv_obj_t *s_list_cont = NULL;          // scroll container, rows rebuilt per area
 
 // =====================================================================
 // LVGL <-> display glue
@@ -141,8 +142,8 @@ void ui_set_playing(bool playing)
 
 const char *ui_current_station_id(void)
 {
-    int i = (s_cur >= 0 && s_cur < STATION_COUNT) ? s_cur : 0;
-    return STATIONS[i].id;
+    int i = (s_cur >= 0 && s_cur < stations_count()) ? s_cur : 0;
+    return station_id(i);
 }
 
 static void lvgl_task(void *arg)
@@ -167,24 +168,17 @@ static void lvgl_task(void *arg)
 // =====================================================================
 // Small helpers
 // =====================================================================
-// Show a station logo in `img`, scaled to fit within box_w x box_h (never
-// upscaled beyond 1x, to keep it crisp). Logos are embedded RGB565 (Phase 13).
-static int set_logo(lv_obj_t *img, int station, int box_w, int box_h, int max_scale)
+// Player logo: a pre-scaled asset from the logos partition (fit 300x56),
+// blitted 1:1 — no runtime image transform anywhere in the UI (Phase 17). The
+// white card is sized to the logo plus a little padding.
+static void set_player_logo(void)
 {
-    const lv_image_dsc_t *L = STATION_LOGOS[station];
-    lv_image_set_src(img, L);
-    int sw = box_w * 256 / L->header.w;
-    int sh = box_h * 256 / L->header.h;
-    int sc = sw < sh ? sw : sh;
-    if (sc > max_scale) sc = max_scale;   // 256 = never upscale (list rows)
-    // v9 transforms are visual-only AND shrinking the widget crops the source
-    // before the transform. So: keep the widget at its natural size, scale
-    // around the top-left pivot, and let callers align by the visual box
-    // (top-left of the widget + w*sc/256 x h*sc/256).
-    lv_image_set_pivot(img, 0, 0);
-    lv_image_set_scale(img, sc);
-    lv_obj_center(img);
-    return sc;
+    const lv_image_dsc_t *L = station_logo_big(s_cur);
+    if (!L) return;
+    lv_image_set_src(w_logo_img, L);
+    lv_obj_set_size(w_logo_card, L->header.w + 12, L->header.h + 8);
+    lv_obj_center(w_logo_card);
+    lv_obj_center(w_logo_img);
 }
 
 // Show the cached "now on air" title for the current station (empty until the
@@ -192,7 +186,7 @@ static int set_logo(lv_obj_t *img, int station, int box_w, int box_h, int max_sc
 static void set_program_label(void)
 {
     char title[256];   // title + " / " + performers (pfm)
-    radiko_program_title(STATIONS[s_cur].id, title, sizeof(title));
+    radiko_program_title(station_id(s_cur), title, sizeof(title));
     lv_label_set_text(w_prog, title[0] ? title : "");
 }
 
@@ -202,29 +196,41 @@ void ui_program_updated(void)
     if (w_prog) set_program_label();
     // Refresh the station-list rows too (Arduino shows the programme per row).
     char buf[256];
-    for (int i = 0; i < STATION_COUNT; i++) {
+    for (int i = 0; i < stations_count(); i++) {
         if (!s_list_prog[i]) continue;
-        radiko_program_title(STATIONS[i].id, buf, sizeof(buf));
+        radiko_program_title(station_id(i), buf, sizeof(buf));
         lv_label_set_text(s_list_prog[i], buf[0] ? buf : "---");
     }
     ui_unlock();
 }
 
+// Position the active dots centred; hide the unused ones (count is per-area).
+static void layout_dots(void)
+{
+    int n = stations_count();
+    int dot_w = n > 0 ? n * 8 + (n - 1) * 4 : 0;
+    int dx = (320 - dot_w) / 2;
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        if (!w_dots[i]) continue;
+        if (i < n) {
+            lv_obj_clear_flag(w_dots[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_pos(w_dots[i], dx + i * 12, 228);
+        } else {
+            lv_obj_add_flag(w_dots[i], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
 static void refresh_player(void)
 {
-    const station_t *s = &STATIONS[s_cur];
-    const lv_image_dsc_t *L = STATION_LOGOS[s_cur];
-    int sc = set_logo(w_logo_img, s_cur, 300, 56, 512);
-    lv_obj_set_size(w_logo_card,
-                    L->header.w * sc / 256 + 12, L->header.h * sc / 256 + 8);
-    lv_obj_center(w_logo_card);
-    lv_obj_center(w_logo_img);
-    lv_label_set_text(w_name, s->name);
+    if (s_cur >= stations_count()) s_cur = 0;
+    set_player_logo();
+    lv_label_set_text(w_name, station_name(s_cur));
     set_program_label();
     lv_label_set_text(w_play, s_playing ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
     lv_slider_set_value(w_vol_slider, s_vol, LV_ANIM_OFF);
     lv_label_set_text_fmt(w_vol_val, "%d", s_vol);
-    for (int i = 0; i < STATION_COUNT; i++) {
+    for (int i = 0; i < stations_count(); i++) {
         lv_obj_set_style_bg_color(w_dots[i],
             lv_color_hex(i == s_cur ? C_HL : 0x3A3A5A), 0);
     }
@@ -241,7 +247,7 @@ static void persist_volume(void)  { settings_get()->volume  = s_vol; settings_sa
 // Reflect s_playing/s_cur onto the actual stream (non-blocking requests).
 static void apply_playback(void)
 {
-    if (s_playing) stream_play(STATIONS[s_cur].id);
+    if (s_playing) stream_play(station_id(s_cur));
     else           stream_stop();
 }
 
@@ -419,19 +425,22 @@ static void ev_set_off(lv_event_t *e)
 // out those sliders. The slider's title label is stashed as its user_data.
 static void update_dim_off_state(void)
 {
+    // With the saver on, "Screen Dim" still controls WHEN the clock appears, so
+    // it stays active; only "Screen Off" is unused (the saver never blanks).
     bool saver = settings_get()->saver;
+    bool grey[2] = { false, saver };   // {dim, off}
     lv_obj_t *rows[2][2] = { { s_set_dim_sl, s_set_dim_val },
                              { s_set_off_sl, s_set_off_val } };
     for (int i = 0; i < 2; i++) {
         lv_obj_t *sl = rows[i][0];
         if (!sl) continue;
-        if (saver) lv_obj_add_state(sl, LV_STATE_DISABLED);
-        else       lv_obj_remove_state(sl, LV_STATE_DISABLED);
+        if (grey[i]) lv_obj_add_state(sl, LV_STATE_DISABLED);
+        else         lv_obj_remove_state(sl, LV_STATE_DISABLED);
         lv_obj_t *title = lv_obj_get_user_data(sl);
         lv_obj_set_style_text_color(title,
-            lv_color_hex(saver ? 0x555577 : C_HL), 0);
+            lv_color_hex(grey[i] ? 0x555577 : C_HL), 0);
         lv_obj_set_style_text_color(rows[i][1],
-            lv_color_hex(saver ? 0x666688 : C_TEXT), 0);
+            lv_color_hex(grey[i] ? 0x666688 : C_TEXT), 0);
     }
 }
 
@@ -450,6 +459,44 @@ static void ev_set_rot(lv_event_t *e)
     settings_save();
     display_set_flipped(flip);                 // touch remaps via display_flipped()
     lv_obj_invalidate(lv_screen_active());     // repaint everything the new way up
+}
+
+// ---- Listen-area picker (Phase 30): which prefecture to authenticate AS ----
+static void rebuild_list_rows(void);   // fwd (defined with the list screen)
+
+// Re-auth as the newly chosen area and restart the stream. Blocking TLS +
+// program fetch, so it runs in its own task off the LVGL thread.
+static void area_apply_task(void *arg)
+{
+    radiko_auth_t a;
+    if (radiko_authenticate(&a) == ESP_OK) {
+        ui_lock(-1);
+        if (w_hdr) lv_label_set_text_fmt(w_hdr, "Radiko - %s",
+                                         radiko_area_name(radiko_area_num()));
+        ui_unlock();
+        stream_play(station_id(s_cur));
+        radiko_program_refresh();   // the new area's titles now, not in 5 min
+    }
+    vTaskDelete(NULL);
+}
+
+static void ev_area_changed(lv_event_t *e)
+{
+    int jp = (int)lv_dropdown_get_selected(lv_event_get_target(e)) + 1;  // JP1..47
+    settings_get()->area    = (uint8_t)jp;
+    settings_get()->station = 0;   // active list changes; start at its first
+    settings_save();
+    radiko_set_area(jp);
+    stations_set_area(jp);
+    s_cur = 0;
+    s_playing = true;
+    // Rebuild the per-area UI now; re-auth + restream happens in the task.
+    layout_dots();
+    rebuild_list_rows();
+    refresh_player();
+    ui_program_updated();
+    stream_stop();
+    xTaskCreate(area_apply_task, "area", 8192, NULL, 5, NULL);
 }
 
 // Fill the System Info labels; called each time the screen opens.
@@ -638,6 +685,56 @@ static void build_settings_screen(void)
     lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
 
     settings_t *st = settings_get();
+
+    // ---- Listen Area (Phase 30): authenticate as any prefecture, VPN-free ----
+    {
+        lv_obj_t *row = lv_obj_create(cont);
+        lv_obj_set_size(row, 300, 40);
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_t *tl = lv_label_create(row);
+        lv_label_set_text(tl, "Listen Area");
+        lv_obj_set_style_text_color(tl, lv_color_hex(C_HL), 0);
+        lv_obj_align(tl, LV_ALIGN_LEFT_MID, 4, 0);
+
+        static char opts[640];   // 47 JP names, \n-joined; static: dropdown keeps the ptr
+        opts[0] = '\0';
+        for (int i = 1; i <= 47; i++) {
+            strcat(opts, radiko_area_name_jp(i));
+            if (i < 47) strcat(opts, "\n");
+        }
+        lv_obj_t *dd = lv_dropdown_create(row);
+        lv_dropdown_set_options_static(dd, opts);
+        lv_dropdown_set_selected(dd, (st->area >= 1 && st->area <= 47) ? st->area - 1 : 12);
+        // The default LVGL arrow symbol isn't in our JP font (tofu), but the
+        // font does carry U+25BC ▼ (geometric-shapes range) — use that.
+        lv_dropdown_set_symbol(dd, "\xE2\x96\xBC");
+        lv_obj_set_width(dd, 118);
+        lv_obj_align(dd, LV_ALIGN_RIGHT_MID, -4, 0);
+        // Match the app's dark palette — the stock LVGL dropdown theme is light
+        // and clashes. Button: accent tile like our other buttons.
+        lv_obj_set_style_text_font(dd, &lv_font_jp_16, 0);
+        lv_obj_set_style_bg_color(dd, lv_color_hex(C_ACCENT), 0);
+        lv_obj_set_style_text_color(dd, lv_color_hex(C_TEXT), 0);
+        lv_obj_set_style_border_width(dd, 0, 0);
+        lv_obj_set_style_radius(dd, 6, 0);
+        lv_obj_set_style_shadow_width(dd, 0, 0);
+        // Open list: dark panel, tight rows, accent highlight on the selection.
+        lv_obj_t *list = lv_dropdown_get_list(dd);
+        lv_obj_set_style_text_font(list, &lv_font_jp_16, 0);
+        lv_obj_set_style_text_line_space(list, 2, 0);
+        lv_obj_set_style_pad_ver(list, 2, 0);
+        lv_obj_set_style_bg_color(list, lv_color_hex(C_PANEL), 0);
+        lv_obj_set_style_text_color(list, lv_color_hex(C_TEXT), 0);
+        lv_obj_set_style_border_width(list, 0, 0);
+        lv_obj_set_style_radius(list, 6, 0);
+        lv_obj_set_style_bg_color(list, lv_color_hex(C_HL), LV_PART_SELECTED | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_opa(list, LV_OPA_COVER, LV_PART_SELECTED | LV_STATE_CHECKED);
+        lv_obj_add_event_cb(dd, ev_area_changed, LV_EVENT_VALUE_CHANGED, NULL);
+    }
+
     s_set_bl_sl = set_slider_row(cont, "Brightness", 3, st->brightness,
                                  BL_NAMES[st->brightness], ev_set_bl, &s_set_bl_val);
     // Arduino row order: Brightness, Screen Dim, Screen Off, Sleep Timer.
@@ -891,13 +988,13 @@ static void ev_open_wifi_setup(lv_event_t *e) { ui_show_wifi_setup(); }
 
 static void ev_prev(lv_event_t *e)
 {
-    s_cur = (s_cur + STATION_COUNT - 1) % STATION_COUNT;
+    s_cur = (s_cur + stations_count() - 1) % stations_count();
     refresh_player();
     schedule_commit();   // debounced: persist + switch stream once user settles
 }
 static void ev_next(lv_event_t *e)
 {
-    s_cur = (s_cur + 1) % STATION_COUNT;
+    s_cur = (s_cur + 1) % stations_count();
     refresh_player();
     schedule_commit();
 }
@@ -997,16 +1094,14 @@ static void idle_timer_cb(lv_timer_t *t)
         return;
     }
     if (st->saver) {
-        // Saver replaces dim/off (Arduino): dim timeout → bouncing clock at
-        // full brightness (only from the player screen), off timeout → dim
-        // the clock. Never fully off.
+        // Saver fully replaces dim/off: after the dim timeout, show the
+        // bouncing clock at full brightness and leave it there — no dimming
+        // (the moving clock avoids burn-in, and dimming a screensaver is what
+        // the user explicitly does NOT want). Any touch exits via the wake path.
         if (s_screen_state == 0 && idle > st->dim_ms &&
             lv_screen_active() == s_scr_player) {
             s_screen_state = 1;
             saver_enter();
-        } else if (s_screen_state == 1 && st->off_ms && idle > st->off_ms) {
-            s_screen_state = 2;
-            display_backlight_set(DIM_DUTY);
         }
         return;
     }
@@ -1079,7 +1174,7 @@ static void build_player_screen(void)
     lv_obj_set_style_bg_color(hdr_btn, lv_color_hex(C_HL), LV_STATE_PRESSED);
     lv_obj_set_style_shadow_width(hdr_btn, 0, 0);
     lv_obj_add_event_cb(hdr_btn, ev_open_settings, LV_EVENT_CLICKED, NULL);
-    w_hdr = lv_label_create(hdr_btn);
+    w_hdr = lv_label_create(hdr_btn);   // English + default font (small, Arduino size)
     lv_label_set_text_fmt(w_hdr, "Radiko - %s", radiko_area_name(radiko_area_num()));
     lv_obj_set_style_text_color(w_hdr, lv_color_hex(C_TEXT), 0);
     lv_obj_center(w_hdr);
@@ -1190,17 +1285,17 @@ static void build_player_screen(void)
     lv_label_set_text(s_led_lbl, LV_SYMBOL_EYE_OPEN);
     lv_obj_center(s_led_lbl);
 
-    // ---- Position dots ----
-    int dot_w = STATION_COUNT * 8 + (STATION_COUNT - 1) * 4;
-    int dx = (320 - dot_w) / 2;
-    for (int i = 0; i < STATION_COUNT; i++) {
+    // ---- Position dots ---- (created for the max; layout_dots shows the
+    // active per-area subset, repositioned when the area changes)
+    for (int i = 0; i < MAX_STATIONS; i++) {
         w_dots[i] = lv_obj_create(s_scr_player);
         lv_obj_set_size(w_dots[i], 8, 8);
-        lv_obj_set_pos(w_dots[i], dx + i * 12, 228);
+        lv_obj_set_pos(w_dots[i], 0, 228);
         lv_obj_set_style_radius(w_dots[i], 4, 0);
         lv_obj_set_style_border_width(w_dots[i], 0, 0);
         lv_obj_clear_flag(w_dots[i], LV_OBJ_FLAG_SCROLLABLE);
     }
+    layout_dots();
 
     refresh_player();
 }
@@ -1208,6 +1303,8 @@ static void build_player_screen(void)
 // =====================================================================
 // Station list screen
 // =====================================================================
+static void rebuild_list_rows(void);   // repopulates rows for the current area
+
 static void build_list_screen(void)
 {
     s_scr_list = lv_obj_create(NULL);
@@ -1238,20 +1335,29 @@ static void build_list_screen(void)
     lv_obj_set_style_text_color(ttl, lv_color_hex(C_TEXT), 0);
     lv_obj_align(ttl, LV_ALIGN_CENTER, 24, 0);
 
-    // Scrollable rows
-    lv_obj_t *cont = lv_obj_create(s_scr_list);
-    lv_obj_set_size(cont, 320, 210);
-    lv_obj_set_pos(cont, 0, 30);
-    lv_obj_set_style_bg_color(cont, lv_color_hex(C_BG), 0);
-    lv_obj_set_style_border_width(cont, 0, 0);
-    lv_obj_set_style_radius(cont, 0, 0);
-    lv_obj_set_style_pad_all(cont, 0, 0);
-    lv_obj_set_style_pad_row(cont, 0, 0);
-    lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
+    // Scrollable rows (populated per-area by rebuild_list_rows)
+    s_list_cont = lv_obj_create(s_scr_list);
+    lv_obj_set_size(s_list_cont, 320, 210);
+    lv_obj_set_pos(s_list_cont, 0, 30);
+    lv_obj_set_style_bg_color(s_list_cont, lv_color_hex(C_BG), 0);
+    lv_obj_set_style_border_width(s_list_cont, 0, 0);
+    lv_obj_set_style_radius(s_list_cont, 0, 0);
+    lv_obj_set_style_pad_all(s_list_cont, 0, 0);
+    lv_obj_set_style_pad_row(s_list_cont, 0, 0);
+    lv_obj_set_flex_flow(s_list_cont, LV_FLEX_FLOW_COLUMN);
+    rebuild_list_rows();
+}
 
-    for (int i = 0; i < STATION_COUNT; i++) {
-        const station_t *s = &STATIONS[i];
-        lv_obj_t *row = lv_obj_create(cont);
+// (Re)build the station-list rows for the current area. Called at boot and
+// whenever the area changes (the active station set changes with it).
+static void rebuild_list_rows(void)
+{
+    if (!s_list_cont) return;
+    lv_obj_clean(s_list_cont);   // frees old rows + their labels
+    for (int i = 0; i < MAX_STATIONS; i++) s_list_prog[i] = NULL;
+
+    for (int i = 0; i < stations_count(); i++) {
+        lv_obj_t *row = lv_obj_create(s_list_cont);
         lv_obj_set_size(row, 320, 54);
         lv_obj_set_style_bg_color(row, lv_color_hex(i & 1 ? C_PANEL : C_BG), 0);
         lv_obj_set_style_border_width(row, 0, 0);
@@ -1263,14 +1369,14 @@ static void build_list_screen(void)
 
         // Arduino row layout: logo at left; name top-right; programme bottom-right.
         // Pre-scaled asset, blitted 1:1 — no runtime lv_image scale anywhere in
-        // the UI (the sw-transform path wedged the LVGL task; see logos.h).
+        // the UI (the sw-transform path wedged the LVGL task; see Phase 17).
         lv_obj_t *logo = lv_image_create(row);
         lv_obj_add_flag(logo, LV_OBJ_FLAG_EVENT_BUBBLE);   // taps reach the row
-        lv_image_set_src(logo, STATION_LOGOS_SMALL[i]);
+        lv_image_set_src(logo, station_logo_small(i));
         lv_obj_align(logo, LV_ALIGN_LEFT_MID, 4, 0);
 
         lv_obj_t *nm = lv_label_create(row);
-        lv_label_set_text(nm, s->name);
+        lv_label_set_text(nm, station_name(i));
         lv_obj_set_style_text_font(nm, &lv_font_jp_16, 0);
         lv_obj_set_style_text_color(nm, lv_color_hex(C_TEXT), 0);
         lv_obj_set_size(nm, 168, 22);   // fixed height: DOT, not wrap
@@ -1438,7 +1544,7 @@ esp_err_t ui_init(void)
 
     // Start from persisted settings (Phase 7).
     settings_t *st = settings_get();
-    s_cur = (st->station >= 0 && st->station < STATION_COUNT) ? st->station : 0;
+    s_cur = (st->station >= 0 && st->station < stations_count()) ? st->station : 0;
     s_vol = st->volume;
     display_set_flipped(st->rotation == 1);   // apply persisted orientation
 
@@ -1495,6 +1601,6 @@ esp_err_t ui_init(void)
     xTaskCreatePinnedToCore(lvgl_task, "lvgl", 16384, NULL, 4, NULL, 1);
 
     ESP_LOGI(TAG, "LVGL v%d.%d.%d, %d stations, player UI up",
-             lv_version_major(), lv_version_minor(), lv_version_patch(), STATION_COUNT);
+             lv_version_major(), lv_version_minor(), lv_version_patch(), stations_count());
     return ESP_OK;
 }

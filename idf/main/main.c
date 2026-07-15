@@ -29,6 +29,7 @@
 #include "led.h"
 #include "radiko.h"
 #include "settings.h"
+#include "stations.h"
 #include "stream.h"
 #include "timesync.h"
 #include "touch.h"
@@ -115,6 +116,13 @@ void app_main(void) {
   // state).
   ESP_ERROR_CHECK(settings_init());
 
+  // Phase 30: nationwide station DB + mmap the logo partition, then filter to
+  // the saved listening area. Must precede ui_init, which sizes the player and
+  // list from the active station count.
+  stations_init();
+  stations_set_area(settings_get()->area);
+  radiko_set_area(settings_get()->area);
+
   // Phase 18: task watchdog policy — 15 s, panic (-> coredump -> reboot) on
   // starvation. Critical tasks subscribe themselves as they start.
   app_watchdog_init();
@@ -178,11 +186,8 @@ void app_main(void) {
   // Phase 8: SNTP (JST) — syncs in the background once WiFi is up.
   timesync_start();
 
-  // Phase 30: authenticate AS the saved area (spoofed GPS), so Radiko streams
-  // that area from any IP with no VPN. Default Tokyo (JP13).
-  radiko_set_area(settings_get()->area);
-
-  // Phase 10: authenticate with Radiko once WiFi is up.
+  // Phase 10: authenticate with Radiko (as the saved area — set above) once
+  // WiFi is up.
   xTaskCreate(radiko_auth_task, "radiko_auth", 8192, NULL, 5, NULL);
 
   // Backlight comes on from ui's flush hook the moment the first complete

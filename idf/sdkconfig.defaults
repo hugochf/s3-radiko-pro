@@ -29,6 +29,12 @@ CONFIG_LV_COLOR_DEPTH_16=y
 # Screen-saver clock (Phase 16): 48 pt for HH:MM, 16 pt for the date line.
 CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_MONTSERRAT_48=y
+# JP font is 3 bpp compressed (Phase 30): smoother than 2 bpp at a fraction of
+# the flash of 4 bpp. Needs LVGL's font decompressor; the full-CJK glyph tables
+# exceed 16-bit offsets, so enable large-font format too. Text render cost is
+# negligible (images, not glyphs, were ever the bottleneck).
+CONFIG_LV_USE_FONT_COMPRESSED=y
+CONFIG_LV_FONT_FMT_TXT_LARGE=y
 
 # --- Crash diagnostics (added while debugging the Phase 13 logo hang; keep for
 #     the Tier D crash-dump work) ---

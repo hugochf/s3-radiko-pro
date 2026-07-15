@@ -21,4 +21,7 @@ elog,       data, 0xfe,     0x660000,  0x10000,
 # too big for the near-full app slot, so it lives here as data (not in the
 # OTA image). Flashed once via parttool; re-flash only if Radiko rotates it.
 radikokey,  data, 0xfe,     0x670000,  0x20000,
-storage,    data, spiffs,   0x690000,  0x970000,
+# Nationwide station logos (Phase 30): ~2.7 MB packed RGB565 blob (all 109
+# stations, big+small), mmap'd read-only at runtime. Flashed via parttool.
+logos,      data, 0xfe,     0x690000,  0x300000,
+storage,    data, spiffs,   0x990000,  0x670000,

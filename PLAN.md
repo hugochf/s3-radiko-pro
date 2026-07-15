@@ -133,7 +133,7 @@ back to esp-adf only if libhelix proves unworkable.
 | 27 | Better volume curve, equalizer | Audio quality |
 | 28 | Bluetooth output | A2DP source |
 | 29 | Time-free recording | Persistent storage to SD |
-| 30 | **VPN-free geo-auth + area picker** | Android-app auth so any area streams from any IP; Settings area selector |
+| 30 | **VPN-free geo-auth + area picker** ✅ | Android-app auth so any area streams from any IP; Settings area selector (built) |
 
 #### Phase 30 design — VPN-free Radiko via Android-app geo-auth
 
@@ -194,6 +194,33 @@ app; failures are fixed by refreshing two constants. (b) Scope: same method the
 owner already uses via rajiko, for personal listening to free-to-air radio.
 (c) The full key is embedded firmware data, not a secret of ours — it's the
 public app key, same as the PC key we already ship.
+
+**Built + verified (VPN-free from a Hong Kong IP).** Delta from the outline:
+
+- The v8 app key is ~123 KB (a JPEG-disguised blob, an anti-extraction move —
+  the old 7a key was 16 KB) and the nationwide logo set is ~2.7 MB. Both are
+  too big for the near-full app slot, so each lives in its OWN data partition
+  (`radikokey`, `logos`), flashed via parttool and mmap'd read-only. Removing
+  the old 15 embedded Kanto logos actually freed the app slot from 4% → 17%.
+- Full multi-area (109 stations, all 47 prefectures) via an offline asset
+  pipeline (`tools/gen_stationdb.py`): fetch every area's station list + logos,
+  downscale to big/small RGB565 on white, pack + emit the C DB with a logo
+  index. The `stations` component filters to the active area and hands the UI
+  pre-scaled logos straight from the mmap'd partition. Player/list/dots rebuild
+  on area change; `settings.area` (schema v2) persists it.
+- **The "same font name" trap.** Our `lv_font_jp_16` ≠ the Arduino's: ours is
+  Noto Sans JP (open) regenerated full-CJK; the Arduino's was Hiragino W3, a
+  132 KB 13-glyph SUBSET. We MUST use full-CJK (any station/area name), which
+  forces the size/bpp trade: 4 bpp full-CJK is >3 MB (won't fit the app slot,
+  Noto or Hiragino) — settled on 3 bpp compressed (`LV_USE_FONT_COMPRESSED` +
+  `LV_FONT_FMT_TXT_LARGE`). Hiragino is Apple-proprietary → never committed to
+  the public repo. Title reverted to English/default font; area picker stays
+  Japanese.
+- LVGL widgets need explicit theming: the stock dropdown is light and clashed
+  with the dark palette; a Noto JP font has no LVGL symbol glyphs (dropdown
+  arrow → tofu; used U+25BC ▼ which our font carries). Screensaver-on now
+  means NO dimming (moving clock handles burn-in), and "Screen Dim" stays live
+  as the saver-appear delay while "Screen Off" greys out.
 
 ## Workflow rules
 

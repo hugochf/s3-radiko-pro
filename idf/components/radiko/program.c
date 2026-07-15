@@ -29,8 +29,8 @@ static const char *TAG = "radiko_prog";
 #define XML_CAP  (128 * 1024)   // decompressed XML (~68 KB) + headroom
 #define PROG_MAX 256            // programme title + performers (pfm), UTF-8
 
-// Current-programme titles, parallel to STATIONS[]. Guarded by s_lock.
-static char             s_prog[NUM_STATIONS][PROG_MAX];
+// Current-programme titles, parallel to the active station list. Guarded by s_lock.
+static char             s_prog[MAX_STATIONS][PROG_MAX];
 static SemaphoreHandle_t s_lock;
 static void (*s_on_update)(void);
 
@@ -39,9 +39,9 @@ static void (*s_on_update)(void);
 // in radiko_parse.c — host-unit-tested in test/host.
 static void parse_all(const char *xml)
 {
-    for (int i = 0; i < STATION_COUNT; i++) {
+    for (int i = 0; i < stations_count(); i++) {
         char text[PROG_MAX];
-        radiko_parse_now(xml, STATIONS[i].id, text, sizeof(text));
+        radiko_parse_now(xml, station_id(i), text, sizeof(text));
         xSemaphoreTake(s_lock, portMAX_DELAY);
         strcpy(s_prog[i], text);
         xSemaphoreGive(s_lock);
@@ -101,12 +101,12 @@ esp_err_t radiko_program_refresh(void)
     return ESP_OK;
 }
 
-void radiko_program_title(const char *station_id, char *out, size_t out_len)
+void radiko_program_title(const char *sid, char *out, size_t out_len)
 {
     if (out_len) out[0] = '\0';
-    if (!s_lock || !station_id) return;
-    for (int i = 0; i < STATION_COUNT; i++) {
-        if (strcmp(STATIONS[i].id, station_id) != 0) continue;
+    if (!s_lock || !sid) return;
+    for (int i = 0; i < stations_count(); i++) {
+        if (strcmp(station_id(i), sid) != 0) continue;
         xSemaphoreTake(s_lock, portMAX_DELAY);
         snprintf(out, out_len, "%s", s_prog[i]);
         xSemaphoreGive(s_lock);
