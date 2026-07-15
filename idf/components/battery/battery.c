@@ -79,9 +79,16 @@ int battery_pct(void)
 
 bool battery_charging(void)
 {
-    // No charge-status input, so infer from the trend: at the ~2 s call cadence
-    // the 15-slot ring holds ~30 s of history; a >10 mV rise over that window
-    // (or sitting above the 4.25 V float ceiling) reads as charging.
+    // This board exposes NO charge-status pin (TP4054 CHRG -> LED only; the
+    // Q3 USB-power signal isn't on a GPIO — verified against the schematic and
+    // BSP). So charging can only be INFERRED from voltage, which is honest only
+    // when the cell is clearly climbing (CC charge of a not-full battery). Near
+    // full the charger holds voltage flat (CV), indistinguishable from idle —
+    // there we deliberately report "not charging" rather than guess wrong.
+    //
+    // 15-slot ring at the ~2 s status-bar cadence ≈ 30 s window; require a
+    // clear >30 mV rise so ADC noise (±5 mV) and brief load-recovery bumps
+    // don't trigger a false "charging".
     static int  history[15] = { 0 };
     static int  idx = 0;
     static bool filled = false;
@@ -91,7 +98,7 @@ bool battery_charging(void)
     idx = (idx + 1) % 15;
     if (idx == 0) filled = true;
 
-    if (!filled) return mv > 4250;
+    if (!filled) return false;
     int oldest = history[idx];   // next write slot = oldest sample
-    return (mv > oldest + 10) || mv > 4250;
+    return mv > oldest + 30;
 }

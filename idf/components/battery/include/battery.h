@@ -23,8 +23,10 @@ int battery_mv(void);
 // 0..100 from the discharge curve, or -1 if unavailable.
 int battery_pct(void);
 
-// True if the voltage trend says we're charging. Call at a steady cadence
-// (~2 s, the status-bar refresh) — the trend window assumes it.
+// True only when the cell voltage is CLEARLY rising (charging a not-full
+// battery). This board has no charge-status pin, so a full battery topping off
+// on the charger reads as "not charging" — see battery.c. Call at a steady
+// ~2 s cadence (the status-bar refresh); the trend window assumes it.
 bool battery_charging(void);
 
 #ifdef __cplusplus
