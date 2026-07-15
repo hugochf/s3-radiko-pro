@@ -47,13 +47,28 @@ jobs:
           target: esp32s3
           path: idf
 
-      - name: Checksum
-        # idf/build is root-owned (the IDF action builds inside Docker as
-        # root), so write the checksum into the runner-owned workspace root.
-        # Subshell cd keeps the standard "hash  bare-filename" format so
-        # `sha256sum -c` works next to a downloaded .bin.
+      - name: Sign firmware (Phase 25 Stage A)
+        # Every release binary carries an RSA-3072 signature block. Radios on
+        # the default profile ignore it (fully backward compatible); radios on
+        # the signed profile (sdkconfig.signed) verify it before installing.
+        # The private key exists only as a GitHub secret + the offline backup.
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
         run: |
-          (cd idf/build && sha256sum s3_radiko_pro.bin) | tee s3_radiko_pro.bin.sha256
+          pip install --quiet esptool==4.11.0   # pinned, matches local
+          printf '%s\n' "$SIGNING_KEY" > "$RUNNER_TEMP/sk.pem"
+          python -m espsecure sign_data --version 2 \
+            --keyfile "$RUNNER_TEMP/sk.pem" \
+            --output s3_radiko_pro.bin \
+            idf/build/s3_radiko_pro.bin
+          rm -f "$RUNNER_TEMP/sk.pem"
+          python -m espsecure signature_info_v2 s3_radiko_pro.bin
+
+      - name: Checksum
+        # Hash the SIGNED binary (the asset we ship), written to the
+        # runner-owned workspace root (idf/build is root-owned via Docker).
+        run: |
+          sha256sum s3_radiko_pro.bin | tee s3_radiko_pro.bin.sha256
 
       - name: Create GitHub release
         # The ELF ships too (Phase 24 lesson): coredump decoding and JTAG
@@ -62,7 +77,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            idf/build/s3_radiko_pro.bin \
+            s3_radiko_pro.bin \
             s3_radiko_pro.bin.sha256 \
             idf/build/s3_radiko_pro.elf \
             --title "$GITHUB_REF_NAME" \

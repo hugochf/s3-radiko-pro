@@ -6,3 +6,8 @@
 build/
 .cache/
 test/host/build/
+
+# Signing keys must NEVER enter the repo (Phase 25). The real key lives in
+# ~/.s3-radiko/; idf/signing_key.pem is a local symlink to it.
+*.pem
+signing_key.pem

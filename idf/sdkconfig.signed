@@ -1,0 +1,29 @@
+# Phase 25 Stage A — OPTIONAL overlay: signed-app OTA enforcement.
+# NO eFuses involved; this is firmware config only, fully reversible.
+#
+# Default build (today's behavior, accepts any OTA image):
+#   idf.py build
+# Signed-enforcement build (rejects OTA images not signed with our key):
+#   idf.py -B build_signed -DSDKCONFIG="build_signed/sdkconfig" \
+#          -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.signed" build
+# The -DSDKCONFIG is NOT optional: without it both profiles share the root
+# sdkconfig file, and since SDKCONFIG_DEFAULTS only applies when that file is
+# absent, the overlay gets SILENTLY IGNORED on any tree that has built before.
+#
+# Switching a radio between profiles = USB-flash the other build. CI-signed
+# releases boot on BOTH profiles (the signature block is ignored by the
+# default profile, verified by this one).
+#
+# Requires signing_key.pem in this directory (local: symlink to
+# ~/.s3-radiko/signing_key.pem; gitignored — the key never enters the repo).
+
+# Verify app signatures WITHOUT secure boot (no bootloader/eFuse involvement).
+CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT=y
+# RSA (secure-boot-v2 style) signature scheme — same key Stage B would burn.
+CONFIG_SECURE_SIGNED_APPS_RSA_SCHEME=y
+# Check signatures on OTA updates (esp_https_ota rejects unsigned images).
+CONFIG_SECURE_SIGNED_ON_UPDATE=y
+# Sign this build's own image so a signed-profile radio can be USB-flashed
+# and later verified consistently.
+CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES=y
+CONFIG_SECURE_BOOT_SIGNING_KEY="signing_key.pem"

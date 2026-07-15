@@ -767,3 +767,31 @@ images at runtime on this target; pre-scale at asset-generation time.**
   applied: releases now archive the ELF beside the .bin.
 - IDE attach (.vscode/launch.json, cppdbg → OpenOCD): gutter breakpoints
   on the live radio, verified pausing on the heartbeat every 10 s.
+
+### Phase 25 Stage A — Signed OTA (reversible, no eFuses)
+
+- **Signature verification has a software-only mode**
+  (`SECURE_SIGNED_APPS_NO_SECURE_BOOT`) — the app checks OTA signatures with
+  the public key, zero eFuse involvement. Flash encryption has NO such mode
+  (its key MUST live in eFuse), which is why encryption is Stage B by
+  definition and signing can be Stage A.
+- **A signed image is a superset**: signing appends a block that
+  non-verifying radios ignore. So ONE CI release stream serves both profiles
+  — no dual artifacts (which our "first .bin in the release" OTA picker
+  couldn't disambiguate anyway).
+- Delivered as a **switchable overlay** (`sdkconfig.signed`), not a branch:
+  default `idf.py build` is byte-for-byte today's radio; the signed profile
+  is opt-in per build. Both coexist in the repo permanently — there is no
+  "before" to revert to.
+- **Overlay gotcha that cost a rebuild**: `SDKCONFIG_DEFAULTS` is consulted
+  ONLY when the target `sdkconfig` is absent. Two profiles sharing the root
+  `sdkconfig` means the second silently inherits the first's config. Fix:
+  give each profile its own `-DSDKCONFIG=<build_dir>/sdkconfig`.
+- Key hygiene: private key in `~/.s3-radiko/` (never the repo), a `*.pem`
+  gitignore tripwire, `idf/signing_key.pem` a gitignored symlink for local
+  builds, and the key as a GitHub Actions secret for CI signing. The key is
+  the same one Stage B would burn — generate it once, back it up now.
+- Threat-model honesty (in the runbook): Stage A closes the *software* gap
+  (repo access ≠ firmware access). Stage B's hardware burn defends against a
+  *physical* attacker with a soldering iron — not this project's threat, and
+  irreversible on a one-of-one board. Parked deliberately, documented fully.

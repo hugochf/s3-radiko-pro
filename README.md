@@ -60,9 +60,24 @@ boot (copy `wifi_secrets.h.example`), or enter them on-screen. `sdkconfig` is
 generated and gitignored — the committed deltas live in `idf/sdkconfig.defaults`.
 
 **Releases & updates:** bump `PROJECT_VER` in `idf/CMakeLists.txt`, tag `vX.Y.Z`,
-push the tag — CI tests, builds, and publishes the release. Devices update from
-Settings ▸ Check for Update (A/B slots, automatic bootloader rollback if the new
-image fails its 30 s self-test). USB flashing always remains the recovery path.
+push the tag — CI tests, builds, **RSA-3072 signs**, and publishes the release.
+Devices update from Settings ▸ Check for Update (A/B slots, automatic bootloader
+rollback if the new image fails its 30 s self-test). USB flashing always remains
+the recovery path.
+
+**Signed firmware (Phase 25 Stage A, optional profile):** signed releases boot
+on any build; a radio flashed with the signed profile *rejects* unsigned OTA
+images. It's a switchable overlay — the default build is unchanged:
+
+```sh
+idf.py build                                                # default: accepts any image
+idf.py -B build_signed -DSDKCONFIG="build_signed/sdkconfig" \
+       -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.signed" build   # enforces signatures
+```
+
+Hardware enforcement (secure boot + flash encryption, the irreversible eFuse
+burn) is written up but **not executed** — see
+[docs/secure-boot-runbook.md](docs/secure-boot-runbook.md).
 
 ## Architecture (short version)
 
