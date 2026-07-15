@@ -173,3 +173,29 @@ UI calls `stream_play`.
 - **Touch is polled, not interrupt-driven.** The FT6336 INT line is left
   unconnected (`GPIO_NUM_NC`) on purpose — a non-IRAM GPIO ISR firing during a
   flash write (cache disabled) would hard-wedge the chip.
+
+## Update & security model
+
+Three independent layers, each answering a different question:
+
+- **Channel** — OTA runs over HTTPS with certificate-bundle validation, so the
+  device knows it's really talking to GitHub. TCP + TLS + the image's built-in
+  SHA-256 guarantee the bytes arrive complete and uncorrupted.
+- **Authorship** — releases are RSA-3072 **signed** in CI (Phase 25 Stage A).
+  A radio built with the default profile ignores the signature; one built with
+  the `sdkconfig.signed` profile verifies it and rejects unsigned images. This
+  is *software* enforcement — no eFuses — so it's fully reversible and leaves
+  JTAG and USB flashing intact.
+- **Recoverability** — an OTA image boots `PENDING_VERIFY` and is marked valid
+  only after 30 s alive; a wedge in that window (caught by the task watchdog)
+  triggers an automatic bootloader rollback to the previous slot.
+
+**Not enabled (by choice):** hardware secure boot and flash encryption (the
+irreversible eFuse burn). They'd defend a *physical* attacker — someone
+desoldering the flash to read the NVS-stored Wi-Fi password, or flashing
+unsigned code over USB — which is outside this project's threat model for a
+single personal device. Because they're off, `esptool.py erase_flash` + USB
+reflash is always available: the board stays general-purpose hardware, and
+wiping flash before repurposing it also clears the plaintext Wi-Fi password.
+The full burn procedure lives in
+[secure-boot-runbook.md](secure-boot-runbook.md).

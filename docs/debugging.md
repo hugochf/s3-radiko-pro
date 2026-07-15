@@ -54,6 +54,25 @@ immediately. There is no software reset that recovers a fully wedged S3.
 > uncached flash during a flash write). A normal exception prints a *Guru
 > Meditation* backtrace and writes a coredump — see below.
 
+## Full erase / repurpose
+
+The board has **no secure boot or flash encryption burned** (Phase 25 Stage B
+was not run), so it stays general-purpose hardware — any framework, any
+firmware, always USB-flashable:
+
+```sh
+esptool.py -p /dev/cu.usbmodem2101 erase_flash   # wipes EVERYTHING
+```
+
+That clears both app slots, the partition table, and the NVS partition — which
+holds the **Wi-Fi password in plaintext** (flash isn't encrypted). Erase before
+handing the board on or repurposing it. The radio firmware is fully
+reproducible from this repo (`idf.py flash`), so wiping loses nothing permanent.
+
+**Signed-profile builds** (Phase 25 Stage A) are opt-in and don't change any of
+this — see the README build section. The default build accepts any image and
+keeps JTAG live.
+
 ## Reading a crash
 
 ### Live backtrace

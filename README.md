@@ -32,9 +32,15 @@ Live Radiko audio plays, touchscreen-controlled. Working today:
   boot-time crash summary, persistent W/E event log (flash ring)
 - OTA updates from GitHub releases with automatic bootloader rollback
   (Settings ▸ Check for Update); parsers covered by host unit tests + CI
+- Tag-driven CI release pipeline: test → build → **RSA-3072 sign** → publish
+- Optional signed-OTA enforcement profile (Phase 25 Stage A); JTAG live-debug
 
-Roadmap next: CI/CD release pipeline, JTAG walkthrough, secure boot. See
-[PLAN.md](PLAN.md).
+**All 25 planned phases complete.** The hardware secure-boot / flash-encryption
+burn (Phase 25 Stage B) is documented as a factory-ready runbook but
+deliberately not executed on this single in-use board — see
+[docs/secure-boot-runbook.md](docs/secure-boot-runbook.md) for the reasoning.
+Optional polish ideas (localization, EQ, Bluetooth output) live in
+[PLAN.md](PLAN.md) Tier E.
 
 ## Hardware
 

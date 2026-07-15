@@ -49,7 +49,9 @@ Same as the Arduino prototype:
       a clean BSD license, reuse our httpc/audio components, and actually own the
       pipeline (the project's whole point). **Fallback:** if libhelix hits an
       unfixable wall, switch this phase to esp-adf.
-- [ ] **Secure boot timing**: final phase (Phase 25) — keep debugging easy until then.
+- [x] **Secure boot timing**: final phase (Phase 25) — kept debugging easy the
+      whole way; Stage A (signed OTA) is reversible and left JTAG/USB flashing
+      intact, and the irreversible Stage B burn was consciously not run.
 
 ## The hard problem: replacing ESP32-audioI2S
 
@@ -193,18 +195,21 @@ purpose. Take the time per phase.
 - [x] **Phase 22** — OTA from GitHub releases ✅ v0.22.0→v0.22.1 updated over the air, rollback-armed
 - [x] **Phase 23** — CI/CD: build + test + release ✅ tag → tested, CI-built GitHub release; v0.23.0 delivered OTA
 - [x] **Phase 24** — JTAG debug session ✅ OpenOCD+GDB walkthrough live on the radio; IDE attach configured
-- [ ] **Phase 25** — Secure boot v2 + flash encryption — split by reversibility:
+- [x] **Phase 25** — Secure boot v2 + flash encryption — split by reversibility:
   - [x] **Stage A (reversible, no eFuses):** signing key + backup ritual; signed
         OTA enforcement as a *switchable build profile* (`sdkconfig.signed`
         overlay — default build stays exactly as today); CI signs every release
         (signed images boot fine on non-verifying radios, so one release stream
         serves both profiles); written Stage B burn runbook. ✅ CI-signed
         v0.25.0 verified: valid RSA block, digest matches the local key.
-  - [ ] **Stage B (irreversible eFuse burn):** secure boot v2 (+ optional flash
-        encryption / release mode) per the runbook. Requires a separate,
-        explicit go/no-go — even dev-mode flash encryption burns fuses; the
-        chip can never return to factory-fresh, key or no key. Recommended on
-        a sacrificial board, not the working radio.
+  - [—] **Stage B (irreversible eFuse burn):** secure boot v2 (+ optional flash
+        encryption / release mode) — **deliberately NOT executed.** The runbook
+        (`docs/secure-boot-runbook.md`) is complete and factory-ready. The burn
+        is one-way (even dev-mode flash encryption blows fuses; the chip can
+        never return to factory-fresh, key or no key) and defends a *physical*
+        attacker outside this project's threat model, on a single in-use board
+        with no sacrificial twin. Knowing when NOT to pull the trigger is the
+        deliverable. Would be run only on a board bought to be burned.
 
 ## Lessons learned
 
