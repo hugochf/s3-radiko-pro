@@ -1167,16 +1167,18 @@ static void build_player_screen(void)
     lv_obj_align(w_clock, LV_ALIGN_RIGHT_MID, -2, 0);
 
     // Real button (Arduino hdr_btn): the whole centre area opens Settings.
-    // 140 px + 12 pt font fits "Radiko - <area>" for the longest name.
+    // OVERFLOW_VISIBLE lets the title label spill past the 140 px button so a
+    // long "Radiko - <area>" (e.g. Kanagawa) shows in full instead of clipping;
+    // the centre gap to the wifi/battery buttons has room for it.
     lv_obj_t *hdr_btn = lv_button_create(bar);
     lv_obj_set_size(hdr_btn, 140, 24);
+    lv_obj_add_flag(hdr_btn, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
     lv_obj_align(hdr_btn, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_style_bg_opa(hdr_btn, LV_OPA_TRANSP, 0);
     lv_obj_set_style_bg_color(hdr_btn, lv_color_hex(C_HL), LV_STATE_PRESSED);
     lv_obj_set_style_shadow_width(hdr_btn, 0, 0);
     lv_obj_add_event_cb(hdr_btn, ev_open_settings, LV_EVENT_CLICKED, NULL);
-    w_hdr = lv_label_create(hdr_btn);   // English, 12 pt (fits long area names)
-    lv_obj_set_style_text_font(w_hdr, &lv_font_montserrat_12, 0);
+    w_hdr = lv_label_create(hdr_btn);   // English, default 14 pt (overflows the button)
     lv_label_set_text_fmt(w_hdr, "Radiko - %s", radiko_area_name(radiko_area_num()));
     lv_obj_set_style_text_color(w_hdr, lv_color_hex(C_TEXT), 0);
     lv_obj_center(w_hdr);

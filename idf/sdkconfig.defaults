@@ -29,9 +29,6 @@ CONFIG_LV_COLOR_DEPTH_16=y
 # Screen-saver clock (Phase 16): 48 pt for HH:MM, 16 pt for the date line.
 CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_MONTSERRAT_48=y
-# 12 pt for the status-bar title (Phase 30): "Radiko - <area>" — 14 pt clips
-# on long names like Kanagawa in the 140 px header.
-CONFIG_LV_FONT_MONTSERRAT_12=y
 # JP font: 2 bpp UNCOMPRESSED (the proven-stable config used all project).
 # NOTE: 3 bpp compressed (LV_USE_FONT_COMPRESSED + LV_FONT_FMT_TXT_LARGE) was
 # tried for smoothness and caused HEAP CORRUPTION — crashes across unrelated
