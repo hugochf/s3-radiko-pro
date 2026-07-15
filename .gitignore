@@ -11,3 +11,4 @@ test/host/build/
 # ~/.s3-radiko/; idf/signing_key.pem is a local symlink to it.
 *.pem
 signing_key.pem
+tools/.logo_cache/
