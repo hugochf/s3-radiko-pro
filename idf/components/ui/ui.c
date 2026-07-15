@@ -62,6 +62,7 @@ static lv_obj_t *w_play       = NULL;
 static lv_obj_t *w_wifi       = NULL;
 static lv_obj_t *w_clock      = NULL;
 static lv_obj_t *w_bat        = NULL;
+static lv_obj_t *w_hdr        = NULL;   // centre title: "Radiko - <area>"
 static lv_obj_t *w_dots[NUM_STATIONS];
 static lv_obj_t *s_list_prog[NUM_STATIONS];   // per-row programme labels (list)
 
@@ -1078,10 +1079,10 @@ static void build_player_screen(void)
     lv_obj_set_style_bg_color(hdr_btn, lv_color_hex(C_HL), LV_STATE_PRESSED);
     lv_obj_set_style_shadow_width(hdr_btn, 0, 0);
     lv_obj_add_event_cb(hdr_btn, ev_open_settings, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *hdr_lbl = lv_label_create(hdr_btn);
-    lv_label_set_text(hdr_lbl, "Radiko Radio");
-    lv_obj_set_style_text_color(hdr_lbl, lv_color_hex(C_TEXT), 0);
-    lv_obj_center(hdr_lbl);
+    w_hdr = lv_label_create(hdr_btn);
+    lv_label_set_text_fmt(w_hdr, "Radiko - %s", radiko_area_name(radiko_area_num()));
+    lv_obj_set_style_text_color(w_hdr, lv_color_hex(C_TEXT), 0);
+    lv_obj_center(w_hdr);
 
     // Battery (real reading via ADC); tapping it cycles brightness (Arduino).
     lv_obj_t *bbtn = lv_button_create(bar);

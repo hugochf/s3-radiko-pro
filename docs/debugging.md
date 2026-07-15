@@ -73,6 +73,22 @@ reproducible from this repo (`idf.py flash`), so wiping loses nothing permanent.
 this — see the README build section. The default build accepts any image and
 keeps JTAG live.
 
+## Radiko key partition (Phase 30)
+
+The VPN-free Android-app auth needs the ~123 KB `aSmartPhone8` app key, which is
+too big for the near-full app slot, so it lives in its own `radikokey` data
+partition (not in the OTA image). After `idf.py flash`, write it once:
+
+```sh
+parttool.py -p /dev/cu.usbmodem2101 write_partition \
+    --partition-name=radikokey --input components/radiko/aSmartPhone8.key
+```
+
+Only needed after a full erase, a partition-table change, or if Radiko rotates
+the app key (refresh the key file from rajiko first — see the auth source
+header). A missing/blank partition makes auth fail with "radikokey partition
+missing" / "key slice read failed" in the log.
+
 ## Reading a crash
 
 ### Live backtrace

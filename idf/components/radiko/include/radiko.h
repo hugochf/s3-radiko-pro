@@ -25,6 +25,15 @@ esp_err_t radiko_authenticate(radiko_auth_t *out);
 const char *radiko_token(void);
 const char *radiko_area(void);
 
+// Phase 30: which prefecture to authenticate AS (JP number 1..47, default 13
+// Tokyo). This drives the spoofed GPS coordinates in auth2, so the board can
+// stream any area from any IP with no VPN. Set from settings; re-auth to apply.
+void radiko_set_area(int jp_area);
+int  radiko_area_num(void);
+
+// Romanised prefecture name for a JP number (e.g. 13 -> "Tokyo"). For the UI.
+const char *radiko_area_name(int jp_area);
+
 // --- Program info ("now on air"), Phase 14 -----------------------------------
 
 #include <stddef.h>

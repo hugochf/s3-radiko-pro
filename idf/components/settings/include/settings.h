@@ -29,6 +29,7 @@ typedef struct {
     uint32_t off_ms;        // screen off timeout
     uint8_t  rotation;      // 1 or 3
     bool     saver;         // screen-saver enabled
+    uint8_t  area;          // Radiko auth area, JP number 1..47 (Phase 30)
 } settings_t;
 
 esp_err_t   settings_init(void);   // load, or defaults on miss/mismatch/corruption

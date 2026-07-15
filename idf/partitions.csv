@@ -17,4 +17,8 @@ coredump,   data, coredump, 0x620000,  0x40000,
 # Raw 64 KB ring for the persistent event log (Phase 20). Carved from the
 # front of the previously-unused storage area, so nothing existing moved.
 elog,       data, 0xfe,     0x660000,  0x10000,
-storage,    data, spiffs,   0x670000,  0x990000,
+# Radiko Android-app auth key (Phase 30): the ~123 KB aSmartPhone8 full key,
+# too big for the near-full app slot, so it lives here as data (not in the
+# OTA image). Flashed once via parttool; re-flash only if Radiko rotates it.
+radikokey,  data, 0xfe,     0x670000,  0x20000,
+storage,    data, spiffs,   0x690000,  0x970000,

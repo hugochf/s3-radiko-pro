@@ -9,7 +9,9 @@ static const char *TAG = "settings";
 
 #define NVS_NS  "settings"
 #define NVS_KEY "blob"
-#define SETTINGS_VERSION 1
+// v2 (Phase 30): added `area`. A v1 blob mismatches on size+version and falls
+// back to defaults once — acceptable on this personal device.
+#define SETTINGS_VERSION 2
 
 static settings_t s;
 
@@ -26,6 +28,7 @@ static void set_defaults(void)
     s.off_ms     = 600000;   // 10 min
     s.rotation   = 3;        // upside-down mount
     s.saver      = false;
+    s.area       = 13;       // Tokyo (JP13) — Radiko auth area
 }
 
 // Defence in depth: even a version-matched blob gets range-checked.
@@ -37,6 +40,7 @@ static void clamp(void)
     if (s.sleep_mins > 90) s.sleep_mins = 0;
     if (s.rotation != 1 && s.rotation != 3) s.rotation = 3;
     if (s.station < 0)    s.station = 0;   // upper bound checked against station list in UI
+    if (s.area < 1 || s.area > 47) s.area = 13;
 }
 
 esp_err_t settings_init(void)
