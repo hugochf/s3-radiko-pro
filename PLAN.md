@@ -121,7 +121,7 @@ back to esp-adf only if libhelix proves unworkable.
 | 22 | **OTA from GitHub releases** | A/B rollback, signed firmware, version check, progress UI | `components/ota/` |
 | 23 | **CI/CD: build + test + release** | GitHub Actions, pinned toolchain, signed artifacts | `.github/workflows/` |
 | 24 | **JTAG debug session** | OpenOCD via built-in USB-JTAG, breakpoints, watch vars | walkthrough only, no new code |
-| 25 | **Secure boot v2 + flash encryption** | Efuse one-shot, key management, locked production firmware | irreversible — production-locked binary |
+| 25 | **Secure boot v2 + flash encryption** | Efuse one-shot, key management, locked production firmware | Stage A: signed OTA + runbook (reversible). Stage B: the burn (irreversible, separate consent) |
 
 ### Tier E — Polish (optional)
 
@@ -193,7 +193,17 @@ purpose. Take the time per phase.
 - [x] **Phase 22** — OTA from GitHub releases ✅ v0.22.0→v0.22.1 updated over the air, rollback-armed
 - [x] **Phase 23** — CI/CD: build + test + release ✅ tag → tested, CI-built GitHub release; v0.23.0 delivered OTA
 - [x] **Phase 24** — JTAG debug session ✅ OpenOCD+GDB walkthrough live on the radio; IDE attach configured
-- [ ] **Phase 25** — Secure boot v2 + flash encryption
+- [ ] **Phase 25** — Secure boot v2 + flash encryption — split by reversibility:
+  - [ ] **Stage A (reversible, no eFuses):** signing key + backup ritual; signed
+        OTA enforcement as a *switchable build profile* (`sdkconfig.signed`
+        overlay — default build stays exactly as today); CI signs every release
+        (signed images boot fine on non-verifying radios, so one release stream
+        serves both profiles); written Stage B burn runbook.
+  - [ ] **Stage B (irreversible eFuse burn):** secure boot v2 (+ optional flash
+        encryption / release mode) per the runbook. Requires a separate,
+        explicit go/no-go — even dev-mode flash encryption burns fuses; the
+        chip can never return to factory-fresh, key or no key. Recommended on
+        a sacrificial board, not the working radio.
 
 ## Lessons learned
 
