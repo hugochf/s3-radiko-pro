@@ -133,7 +133,67 @@ back to esp-adf only if libhelix proves unworkable.
 | 27 | Better volume curve, equalizer | Audio quality |
 | 28 | Bluetooth output | A2DP source |
 | 29 | Time-free recording | Persistent storage to SD |
-| 30 | Multi-area support | Not just JP14 |
+| 30 | **VPN-free geo-auth + area picker** | Android-app auth so any area streams from any IP; Settings area selector |
+
+#### Phase 30 design — VPN-free Radiko via Android-app geo-auth
+
+**Problem.** Today's `radiko_auth.c` uses the **PC/HTML5** auth path, where
+auth2 derives the area purely from the **source IP**. So the board needs a
+Japan VPN, and Radiko Premium (エリアフリー) does NOT work from a Hong Kong IP.
+
+**Discovery (studied from jackyzy823/rajiko v3.2026.2 — the same extension the
+owner runs on PC Chrome; maintained fork gynix/rajiko cross-checked).** Radiko's
+**Android app** auth path additionally accepts **GPS coordinates**
+(`X-Radiko-Location`) and trusts them *over* the IP. Sending Tokyo coordinates
+makes a HK-IP device stream as if in Tokyo — no VPN, no proxy. This is exactly
+what rajiko does; it runs in a PC browser but sends *Android-app* auth.
+
+**The delta from our current PC flow:**
+
+| Field | PC (current) | Android (Phase 30) |
+|-------|--------------|--------------------|
+| `X-Radiko-App` | `pc_html5` | `aSmartPhone7a` |
+| `X-Radiko-App-Version` | `0.0.1` | e.g. `6.3.6` (rajiko rotates a small list) |
+| Full auth key | `bcd151073c…` (40-char ASCII) | ~1350-byte binary, shipped base64 (`APP_KEY_MAP` in rajiko `modules/static.js`) |
+| Partial key | `base64(ASCII[off:off+len])` | `base64(atob(fullkey_b64)[off:off+len])` — decode first |
+| auth2 extra headers | — | `X-Radiko-Location: "<lat>,<lng>,gps"`, `X-Radiko-Connection: wifi` |
+| `X-Radiko-Device` | `pc` | `<sdk>.<model>` (sdk per app version; model from a list) |
+| `X-Radiko-User` | `dummy_user` | 32-char random hex |
+
+GPS jitter (per rajiko `modules/util.js`, so each boot looks like a slightly
+different real device): `coord += (esp_random()/(float)UINT32_MAX)/40.0f * (±1)`
+(~±2.7 km). Area→coordinate table (47 prefectures) lives in rajiko
+`modules/constants.js` — e.g. Tokyo `35.68944,139.69167`, Osaka `34.68639,135.52`.
+
+**Area picker.** Radiko's area is whatever the coordinates say, so "choose your
+area" == "choose which prefecture's coordinates to send" — a Settings list
+(persisted in `settings_t`, like station/volume). This subsumes the old
+"Phase 30 multi-area" idea: you'd browse *any* region's stations from HK.
+Note our `STATIONS[]` is a fixed Kanto set today; a full area picker also needs
+per-area station lists (fetch `radiko.jp/v3/station/list/<area>.xml`), so v1 can
+ship "auth as Tokyo/Osaka/…" with the current station list and defer dynamic
+station lists to a follow-up.
+
+**Implementation outline.**
+1. Branch `feature/android-geo-auth`.
+2. Embed the Android full key (base64 const → `atob` at runtime, or pre-decode
+   to a byte array). Pull the *exact current* key + version list from
+   jackyzy823/rajiko master (matches the installed extension) — a stale
+   key/version silently fails auth.
+3. `radiko_auth.c`: Android headers, decode-then-slice partial key, add
+   `X-Radiko-Location`/`X-Radiko-Connection`, random device/user, chosen-area
+   coordinates + jitter.
+4. `settings_t.area` (default JP13 Tokyo) + a Settings area picker.
+5. Keep the PC-key path as a compile-time fallback; comment the maintenance
+   dependency ("if auth 401s, refresh APP_KEY_MAP/version from rajiko").
+6. **On-device test from the raw HK WiFi (VPN off):** auth2 must return
+   `JP13,tokyo,…` and a station must stream. That is the acceptance test.
+
+**Caveats.** (a) Maintenance: app-version/key rotate when Radiko updates the
+app; failures are fixed by refreshing two constants. (b) Scope: same method the
+owner already uses via rajiko, for personal listening to free-to-air radio.
+(c) The full key is embedded firmware data, not a secret of ours — it's the
+public app key, same as the PC key we already ship.
 
 ## Workflow rules
 
