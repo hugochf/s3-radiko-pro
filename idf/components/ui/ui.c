@@ -31,6 +31,9 @@ static const char *TAG = "ui";
 
 #define LVGL_BUF_LINES 20
 
+// Spill pool for LVGL's allocator, in PSRAM. See ui_init() for why.
+#define LVGL_PSRAM_POOL_BYTES (256 * 1024)
+
 // Dark palette (ported from the Arduino build).
 #define C_BG     0x1A1A2E
 #define C_PANEL  0x16213E
@@ -1545,6 +1548,39 @@ esp_err_t ui_init(void)
 
     lv_init();
     lv_tick_set_cb(tick_cb);
+
+    // LVGL's built-in allocator gets ONE fixed pool, carved out of internal RAM
+    // at link time (LV_MEM_SIZE_KILOBYTES=64). That pool is the entire UI's
+    // budget: every object, style and draw mask comes from it. The player +
+    // station list + settings + 47-area dropdown already sit at ~77% of it, so
+    // opening WiFi setup and filling a 20-AP scan list pushed it to exactly
+    // 100%. lv_malloc then returns NULL — and LVGL's default assert handler is
+    // `while(1);`, so the LVGL task froze until the task watchdog rebooted the
+    // radio (or a NULL write panicked first, StoreProhibited). The reboot looked
+    // instant and the backtrace pointed at innocent draw code; the real fault
+    // was simply "out of memory".
+    //
+    // Growing the internal pool is NOT an option: idf.py size claims ~109 KB
+    // spare, but that's static link headroom — at runtime WiFi/LWIP own it and
+    // only ~30 KB of internal RAM is actually free, largest block ~10 KB. PSRAM
+    // has >2 MB idle, so hand TLSF a second pool there and let it spill. Draw
+    // buffers stay internal + DMA-capable (see below); this pool only ever holds
+    // object/style/mask metadata, which is small and cache-friendly.
+    // NOTE: check the return. lv_mem_add_pool() reports failure only via
+    // LV_LOG_WARN, which is compiled out here (LV_USE_LOG off) — so a rejected
+    // pool is otherwise SILENT, and the UI just goes back to OOMing under a
+    // busy scan. This bit once: TLSF refused a 256 KB pool because
+    // LV_MEM_POOL_EXPAND_SIZE was 0, and it looked like it had worked.
+    void *spill = heap_caps_malloc(LVGL_PSRAM_POOL_BYTES, MALLOC_CAP_SPIRAM);
+    if (spill && lv_mem_add_pool(spill, LVGL_PSRAM_POOL_BYTES)) {
+        ESP_LOGI(TAG, "LVGL heap: %u KB internal + %u KB PSRAM spill",
+                 (unsigned)(CONFIG_LV_MEM_SIZE_KILOBYTES),
+                 (unsigned)(LVGL_PSRAM_POOL_BYTES / 1024));
+    } else {
+        ESP_LOGE(TAG, "LVGL PSRAM spill pool FAILED (malloc=%p) — UI may OOM "
+                      "and hang; check CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES", spill);
+        heap_caps_free(spill);
+    }
 
     // Start from persisted settings (Phase 7).
     settings_t *st = settings_get();

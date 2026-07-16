@@ -134,6 +134,7 @@ back to esp-adf only if libhelix proves unworkable.
 | 28 | Bluetooth output | A2DP source |
 | 29 | Time-free recording | Persistent storage to SD |
 | 30 | **VPN-free geo-auth + area picker** ✅ | Android-app auth so any area streams from any IP; Settings area selector (built) |
+| 31 | **LVGL heap exhaustion fix** ✅ | Opening WiFi setup rebooted the radio: LVGL's fixed 64 KB pool hit 100%. +256 KB PSRAM spill pool |
 
 #### Phase 30 design — VPN-free Radiko via Android-app geo-auth
 
@@ -900,3 +901,50 @@ images at runtime on this target; pre-scale at asset-generation time.**
   (repo access ≠ firmware access). Stage B's hardware burn defends against a
   *physical* attacker with a soldering iron — not this project's threat, and
   irreversible on a one-of-one board. Parked deliberately, documented fully.
+
+### Phase 31 — LVGL heap exhaustion (the WiFi page reboot)
+
+Symptom: touching the WiFi icon rebooted the radio, every time. Not a crash —
+an **out-of-memory condition wearing a crash costume**.
+
+- **LVGL OOM presents as a HANG, not an error.** `lv_malloc` returned NULL,
+  `LV_ASSERT_MALLOC` fired, and LVGL's default `LV_ASSERT_HANDLER` is literally
+  `while(1);` ("Halt by default"). The LVGL task froze mid-draw, stopped feeding
+  the task watchdog, and 15 s later the WDT panicked and rebooted. The coredump
+  therefore blamed `circ_calc_aa4` — innocent rounded-corner drawing code — and
+  the panic reason said "watchdog". Neither is the bug. When a malloc-fail
+  handler is an infinite loop, **every OOM is misreported as a hang in whatever
+  code happened to allocate last.** (Sometimes a NULL write won the race first
+  and it panicked as `StoreProhibited` instead — same cause, different costume.)
+- **Measure before theorising.** The obvious suspect was `lv_keyboard_create()`
+  — the biggest widget in LVGL, built by the WiFi page and cached forever.
+  `lv_mem_monitor()` said the whole WiFi page costs **2.9 KB**. The real problem
+  was a **77% baseline**: player + station list + settings + 47-area dropdown all
+  stay resident. The scan list (~9 KB for 20 APs) merely delivered the last straw.
+  The expensive-looking thing was not the expensive thing.
+- **`idf.py size` "remain" is NOT free runtime memory.** It reported ~109 KB
+  DIRAM spare; the boot log reported `free internal 27 KB (largest 8)` — WiFi and
+  LWIP claim the rest at runtime. Growing the internal pool by 32 KB would have
+  traded a WiFi-page reboot for a WiFi-stack failure. **Size internal-RAM
+  decisions from a running device, never from the link map.** Meanwhile 2.1 MB of
+  PSRAM sat idle.
+- **Fix:** `lv_mem_add_pool()` a 256 KB PSRAM pool in `ui_init()`. LVGL's TLSF
+  happily spans multiple pools. Draw buffers stay internal + DMA-capable (Phase
+  14's hard-won constraint); the spill pool only ever holds object/style/mask
+  metadata, which is small and cache-friendly. Peak went 100% → 19%, at zero cost
+  to internal RAM.
+- **The trap that nearly shipped a fake fix:** `lv_mem_add_pool()` **silently
+  rejected** the pool. TLSF sizes its index tables at COMPILE time from
+  `TLSF_MAX_POOL_SIZE = LV_MEM_SIZE + LV_MEM_POOL_EXPAND_SIZE`, and refuses any
+  pool larger than `1 << log2ceil(that)` — 64 KB with the default expand of 0.
+  Its complaint goes to `LV_LOG_WARN` (compiled out: `LV_USE_LOG` off) and a
+  `printf` that early-boot buffering swallowed. So it failed **with no output at
+  all**, and the first test run "passed" only because that scan found 16 APs
+  instead of 20. **`CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=256` is the knob**;
+  it reserves TLSF index capacity and allocates nothing itself. Lessons: check
+  the return value of anything that can fail silently, and **"it didn't crash
+  once" is not verification** — prove the mechanism engaged (here: `total_size`
+  jumping 64 KB → 320 KB), because the environment (AP count) moves under you.
+- Editing `sdkconfig.defaults` alone does nothing once `sdkconfig` exists — it is
+  only seeded when absent. Delete `sdkconfig` + `idf.py reconfigure`, then diff to
+  confirm exactly one line moved (same family as the Phase 25 overlay gotcha).

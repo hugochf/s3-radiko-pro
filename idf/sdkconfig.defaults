@@ -26,6 +26,20 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 
 # --- LVGL (v9, configured via Kconfig): RGB565 to match the ILI9341. ---
 CONFIG_LV_COLOR_DEPTH_16=y
+# LVGL's allocator gets ONE pool, carved from internal RAM at link time
+# (LV_MEM_SIZE, 64 KB default). That pool is the whole UI's budget — every
+# object, style and draw mask. The resident screens already sat at ~77% of it,
+# so opening WiFi setup + a 20-AP scan list hit exactly 100%: lv_malloc returned
+# NULL and LVGL's default assert handler is `while(1);`, freezing the LVGL task
+# until the watchdog rebooted (Phase 31). Internal RAM can't fund a bigger pool
+# — only ~30 KB is free at runtime (WiFi/LWIP own the rest), largest block
+# ~10 KB. So ui_init() adds a 256 KB spill pool in PSRAM via lv_mem_add_pool().
+# THIS setting is what makes that legal: TLSF sizes its index tables at COMPILE
+# time from (LV_MEM_SIZE + LV_MEM_POOL_EXPAND_SIZE), and silently rejects any
+# pool bigger than 1<<log2ceil(that). At 0 the cap is 64 KB and the 256 KB pool
+# was refused; 256 raises the cap to 512 KB. It reserves index capacity only —
+# it allocates nothing by itself.
+CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=256
 # Screen-saver clock (Phase 16): 48 pt for HH:MM, 16 pt for the date line.
 CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_MONTSERRAT_48=y
