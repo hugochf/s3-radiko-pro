@@ -4,6 +4,7 @@ Fetch the highest-resolution station logos from Radiko's API for area JP14
 and regenerate station_logos.c with RGB565 data.
 
 Requires: Pillow (pip3 install Pillow)
+Writes ../S3_Radiko/station_logos.c.
 After running: re-run crop_logos.py to strip white padding from the new logos.
 """
 import io
@@ -20,7 +21,7 @@ except ImportError:
     print("ERROR: Pillow not installed. Run: pip3 install Pillow")
     sys.exit(1)
 
-OUT = Path(__file__).parent / "station_logos.c"
+OUT = Path(__file__).parent.parent / "S3_Radiko" / "station_logos.c"
 AREA = "JP14"
 
 # Station IDs in the order they appear in S3_Radiko.ino

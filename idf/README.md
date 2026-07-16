@@ -1,6 +1,6 @@
 # s3-radiko-pro
 
-An ESP-IDF reimplementation of the Arduino [S3 Radiko](../S3_Radiko.ino) internet
+An ESP-IDF reimplementation of the Arduino [S3 Radiko](../arduino/) internet
 radio, rebuilt as a vehicle for practising **commercial-grade embedded
 engineering** (OTA, secure boot, CI/CD, unit tests, JTAG, reproducible builds).
 

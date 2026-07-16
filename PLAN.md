@@ -40,7 +40,7 @@ Same as the Arduino prototype:
       Arduino sketch is a throwaway test credential (being rotated), so it's fine
       to publish. New port never hardcodes credentials (Kconfig + gitignored
       `secrets.h`, then Phase 6 provisioning).
-- [x] **License**: MIT (`idf/LICENSE`). Third-party components keep their own
+- [x] **License**: MIT (`LICENSE`, repo root). Third-party components keep their own
       licenses (e.g. the ES8311 driver is Apache-2.0).
 - [x] **Commit cadence**: honest "every step" history — commit frequently within a
       phase, warts and all.

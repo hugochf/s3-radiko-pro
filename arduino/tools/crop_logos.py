@@ -8,7 +8,7 @@ import re
 import sys
 from pathlib import Path
 
-SRC = Path(__file__).parent / "station_logos.c"
+SRC = Path(__file__).parent.parent / "S3_Radiko" / "station_logos.c"
 OUT = SRC  # rewrite in place
 
 WHITE = 0xFFFF

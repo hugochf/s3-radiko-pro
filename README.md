@@ -12,6 +12,14 @@ dual-OTA partition layout, versioned NVS, structured error handling). Progress i
 tracked phase-by-phase in [PLAN.md](PLAN.md), whose **Lessons learned** section is
 the running engineering log.
 
+The repo holds **both** implementations, so the rebuild can be read against its
+reference:
+
+| | |
+|---|---|
+| [`idf/`](idf/) | the ESP-IDF firmware — **the live project**, everything below describes it |
+| [`arduino/`](arduino/) | the original Arduino sketch — archived, superseded, no longer maintained |
+
 ## Status
 
 Live Radiko audio plays, touchscreen-controlled. Working today:
@@ -102,9 +110,12 @@ board (USB-JTAG recovery, coredumps, serial capture) is in
 ## Repository layout
 
 ```
+README.md            you are here
+LICENSE              MIT
 PLAN.md              roadmap + engineering log (Lessons learned)
 docs/                board reference, architecture, debugging runbook
-idf/
+assets/              source art (splash logo) consumed by tools/
+idf/                 THE FIRMWARE — ESP-IDF project, build from here
   main/              app entry + init sequence
   components/        one component per concern:
     display  ui  fonts  logos  stations   — screen + assets (LVGL v9)
@@ -114,8 +125,9 @@ idf/
     settings  led  battery                  — versioned NVS config, mood LED, gauge
     app_watchdog  crashlog  elog  ota       — watchdog policy, post-mortem, event log, updates
   sdkconfig.defaults partitions.csv         — build config, dual-OTA flash map
+arduino/             the original sketch — ARCHIVED reference, not maintained
 test/host/           Unity unit tests for the parsers (run locally, pre-push, and in CI)
-tools/               asset generators (logos, splash) + elog dump
+tools/               asset generators (station DB, splash) + elog dump
 .githooks/           pre-push gate — enable with: git config core.hooksPath .githooks
 .github/workflows/   CI per push (tests + firmware build); tag-driven releases (vX.Y.Z)
 ```
@@ -126,4 +138,8 @@ tools/               asset generators (logos, splash) + elog dump
   Public Source License (RPSL) — see that directory.
 - Station logos are the trademarks of their respective broadcasters, embedded here
   for a personal, non-commercial reproduction of the physical radio's UI.
+- Japanese text uses [Noto Sans JP](https://fonts.google.com/noto/specimen/Noto+Sans+JP)
+  (SIL Open Font License). The archived `arduino/` sketch instead uses Hiragino,
+  an Apple system font that is **not** redistributable — see
+  [arduino/README.md](arduino/README.md) before reusing that code.
 - Original Arduino project by the author; this ESP-IDF rebuild is the same author's.
