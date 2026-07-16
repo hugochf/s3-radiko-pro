@@ -80,7 +80,13 @@ Optional polish ideas (localization, EQ, Bluetooth output) live in
 ## Hardware
 
 **Board:** lcdwiki ES3C28P — ESP32-S3 (16 MB QIO flash, 8 MB OPI PSRAM), ILI9341
-320×240 SPI LCD, FT6336G capacitive touch, ES8311 codec + FM8002E amp.
+320×240 SPI LCD, FT6336G capacitive touch, ES8311 codec + FM8002E amp. A generic
+~US$10–15 board sold under several names; a speaker and LiPo battery are extra.
+
+**Want to build one?** [Getting one](docs/board-lcdwiki-ES3C28P.md#getting-one)
+lists the search terms and — more importantly — the specs to match. Boards that
+look identical ship with 8 MB flash or Quad PSRAM, and this project needs
+**16 MB flash + 8 MB Octal PSRAM** (module marked `N16R8`).
 
 Full pin map and panel quirks: [docs/board-lcdwiki-ES3C28P.md](docs/board-lcdwiki-ES3C28P.md).
 

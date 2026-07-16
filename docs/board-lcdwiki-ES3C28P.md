@@ -3,6 +3,37 @@
 A self-contained hardware cheat-sheet for this board, so any future project can
 skip the trial-and-error. Verified on-device with ESP-IDF v5.3.5.
 
+## Getting one
+
+This board has no single canonical name — it's a generic design sold by several
+vendors (DIY MORE and others) on Taobao, Pinduoduo and AliExpress. Searching any
+of these finds it:
+
+- `ESP32-S3 2.8 inch capacitive touch LCD development board`
+- `S3小智AI聊天机器人WiFi开发板` — the "XiaoZhi AI chatbot" board, its most
+  common listing name (the AI-assistant firmware it's marketed for is irrelevant
+  here; the hardware is what matters)
+- `ESP32-S3 开发板 WiFi 蓝牙 智能显示屏 2.8寸 触摸屏幕`
+
+Roughly ¥70–90 / US$10–15 as of mid-2026. It usually arrives bare — a speaker
+(JST connector, on-board amp) and a LiPo battery are separate.
+
+**Match these specs, or this project won't run.** Near-identical boards ship with
+weaker memory, and the difference is invisible in the photos:
+
+| Must have | Why | Common wrong variant |
+|---|---|---|
+| **16 MB flash** | dual-OTA layout + a 3 MB logo partition + 128 KB key partition | 8 MB — the partition table won't fit |
+| **8 MB PSRAM, Octal (OPI)** | audio pipeline, mbedtls buffers, LVGL spill pool | 2 MB Quad (QSPI), or none — `CONFIG_SPIRAM_MODE_OCT` won't boot |
+| ILI9341 320×240 SPI | display driver | ST7789 variants exist |
+| FT6336G capacitive touch | touch driver | resistive versions exist |
+| ES8311 codec + amp | audio out | display-only boards look the same |
+
+The ESP32-S3 module marking to look for is **N16R8** (16 MB flash / 8 MB PSRAM).
+If a listing doesn't state flash and PSRAM explicitly, assume the smaller part.
+`esptool.py flash_id` and the boot log confirm both once it arrives — this repo's
+boot log prints `Adding pool of 8192K of PSRAM`.
+
 ## SoC / memory
 
 | Item | Value |
