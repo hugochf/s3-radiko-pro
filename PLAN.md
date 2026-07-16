@@ -137,6 +137,49 @@ back to esp-adf only if libhelix proves unworkable.
 | 31 | **LVGL heap exhaustion fix** ✅ | Opening WiFi setup rebooted the radio: LVGL's fixed 64 KB pool hit 100%. +256 KB PSRAM spill pool |
 | 32 | **Audio visualiser** | Rainbow spectrum bars in the logo tile; long-press to toggle. FFT of the PCM actually being played |
 
+#### Phase 29 design — record to SD (studied, not yet built)
+
+**Hardware verdict (verified against the BSP): best case.** The board's micro-SD
+slot is **SDMMC 4-bit on dedicated pins** — CLK=IO38, CMD=IO40, D0-D3=
+IO39/41/48/47 — and does **not** share the LCD's SPI bus. Cross-checked against
+every pin we use (LCD 10-13/45-46, I²C 15-16, touch 17-18, I²S 4/5/7/8+1, WS2812
+42, batt 9): **zero conflicts**. So card writes can't stall the display or audio
+DMA. Mount with `esp_vfs_fat_sdmmc_mount` + FATFS; 4-bit needs the D-lines pulled
+up (the wired slot should provide this; fall back to 1-bit if a card won't init).
+
+**Segment format (verified on-device, not assumed).** A probe in the fetcher
+logged a real live segment: URL ends `.aac`, bytes are an **ID3v2 tag (73 B) then
+`FF F9`** — the ADTS AAC syncword (MPEG-4, no CRC). So each segment is a standard
+ID3+ADTS elementary stream. **Recording = strip the ID3 tag (syncsafe size at
+bytes 6-9, +10) and append the ADTS payload** to a `.aac` file. No decode, no
+re-encode, ~near-zero CPU. Concatenated ADTS is a universally playable file.
+
+**Where to tap: the fetcher already has the bytes.** In `stream.c` the fetcher
+downloads each ~4 s segment into a PSRAM buffer (`seg_t{buf,len}`) before queuing
+it for the decoder. The recorder forks a copy there. Size: ~48 kbps..160 kbps
+content → roughly **20-70 MB/hour** — trivial for SD.
+
+**Protect the audio (same discipline as the visualiser).** SD writes can block
+tens of ms (FAT allocation, cheap-card hiccups), and the fetcher shares core 0
+with the decoder. So writing goes on a **dedicated recorder task fed by a queue**:
+the fetcher hands off a buffer and moves on; an SD stall costs a queued segment,
+never an audio glitch. The 30 s PCM buffer covers any fetcher pause anyway.
+
+**Phased build (user chose "both, phased"):**
+- **29a — live recording.** Tap the fetcher, ID3-strip, write `<station>_<JST
+  timestamp>.aac` via the recorder task. Trigger UI decided later (manual button
+  vs scheduled) — the capture/storage mechanism is the same either way, so build
+  that first and prove it end-to-end (record, eject, play the file on a PC).
+- **29b — Radiko time-free (タイムフリー).** Fetch programmes that already aired in
+  the past 7 days: separate API (`/v2/api/ts/playlist.m3u8?station_id=…&ft=…&to=…`)
+  with a time-free auth token, plus a programme-guide picker. Reuses 29a's
+  ID3-strip + recorder task for the writing; the new work is auth + the fetch loop
+  over a bounded time range + UI. Build on top once 29a is solid.
+
+**Open items to settle at build time:** card hot-plug / mount-on-boot vs on-demand;
+filesystem-full handling; filename metadata (station id + JST + programme title
+from the guide); and the trigger UI (deferred by the user).
+
 #### Phase 32 design — audio visualiser
 
 **Where to tap the audio (the one decision that matters).** The PCM ring is
