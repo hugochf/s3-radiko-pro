@@ -38,6 +38,7 @@ reference:
 |---|---|
 | ![Boot splash](docs/images/splash.jpg) | **Boot splash** with live status — it waits on the real pipeline and clears the moment audio actually starts, so the screen never lies about being ready. |
 | ![Station list](docs/images/station-list.jpg) | **Station list** — real broadcaster logos and each station's "now on air" programme, refreshed every 5 minutes. Rebuilt automatically when you change region. |
+| ![Audio visualiser](docs/images/visualiser.jpg) | **Audio visualiser** (here the LED-rainbow style on TOKYO FM) — a real-time FFT of the audio reaching the DAC. Long-press the logo to cycle four styles; it's gated on the audio buffer so it can never starve playback. |
 | ![Settings with the area picker](docs/images/settings.jpg) | **Settings** — the *Listen Area* picker (shown on 神奈川) selects any of the 47 prefectures in Japanese, then re-authenticates and restarts the stream in place. Brightness, dim/off timeouts and more, all NVS-persisted. |
 | ![WiFi scan](docs/images/wifi-scan.jpg) | **Wi-Fi setup** — on-screen scan, sorted by signal strength. The scan runs off the LVGL thread so the UI never stalls. |
 | ![WiFi password keyboard](docs/images/wifi-keyboard.jpg) | **On-screen keyboard** for the password; credentials persist to NVS, so provisioning is a one-time job. |
@@ -55,6 +56,10 @@ Live Radiko audio plays, touchscreen-controlled. Working today:
 - Radiko `auth1`/`auth2` and live HLS playback (HE-AAC / `mp4a.40.5`, SBR)
 - Player UI (Arduino-parity): swipeable full-width logo, play/pause, prev/next,
   volume, sleep timer, WS2812 mood-LED modes
+- Real-time **audio spectrum visualiser** — long-press the logo to cycle four
+  styles (rainbow bars, green/amber/red LED/car meter, rainbow LED); a 512-pt FFT
+  of the PCM actually reaching the DAC, kept from ever starving playback (the
+  Phase 32 write-up in [PLAN.md](PLAN.md) is a good read on why that was hard)
 - "Now on air" program info (title + performers) on the player and per list row,
   full-CJK font, refreshed every 5 min
 - Settings page: brightness, screen dim/off timeouts, sleep timer, flip-180°,
@@ -70,7 +75,8 @@ Live Radiko audio plays, touchscreen-controlled. Working today:
 - Optional signed-OTA enforcement profile (Phase 25 Stage A); JTAG live-debug
 
 **All 25 planned phases complete**, plus Tier E extras: VPN-free multi-area
-geo-auth (Phase 30) and an LVGL heap fix (Phase 31). The hardware secure-boot /
+geo-auth (Phase 30), an LVGL heap fix (Phase 31) and the audio visualiser
+(Phase 32). The hardware secure-boot /
 flash-encryption burn (Phase 25 Stage B) is documented as a factory-ready runbook
 but deliberately not executed on this single in-use board — see
 [docs/secure-boot-runbook.md](docs/secure-boot-runbook.md) for the reasoning.
