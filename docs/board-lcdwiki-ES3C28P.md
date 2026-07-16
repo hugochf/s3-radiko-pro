@@ -18,6 +18,16 @@ of these finds it:
 Roughly ¥70–90 / US$10–15 as of mid-2026. It usually arrives bare — a speaker
 (JST connector, on-board amp) and a LiPo battery are separate.
 
+A typical listing, for reference — note the board photo matches the pin map
+below (SPEAKER / BAT / UART / I2C headers, micro-SD, `2.8" LCD Display /
+ESP32-S3 240x320 / Capacitive Touch` silkscreen):
+
+<img src="images/board-listing.jpg" width="380" alt="A typical marketplace listing for this board">
+
+*Snapshot, mid-2026 — price, coupons and stock will have moved. It is one
+vendor's listing, not an endorsement, and note the listing does **not** state
+flash or PSRAM size: that is exactly the trap the table below covers.*
+
 **Match these specs, or this project won't run.** Near-identical boards ship with
 weaker memory, and the difference is invisible in the photos:
 
