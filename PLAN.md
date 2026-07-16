@@ -165,20 +165,28 @@ with the decoder. So writing goes on a **dedicated recorder task fed by a queue*
 the fetcher hands off a buffer and moves on; an SD stall costs a queued segment,
 never an audio glitch. The 30 s PCM buffer covers any fetcher pause anyway.
 
-**Phased build (user chose "both, phased"):**
+**Phased build (user chose "29a + on-device playback"; time-free deferred):**
 - **29a — live recording.** Tap the fetcher, ID3-strip, write `<station>_<JST
   timestamp>.aac` via the recorder task. Trigger UI decided later (manual button
   vs scheduled) — the capture/storage mechanism is the same either way, so build
   that first and prove it end-to-end (record, eject, play the file on a PC).
-- **29b — Radiko time-free (タイムフリー).** Fetch programmes that already aired in
-  the past 7 days: separate API (`/v2/api/ts/playlist.m3u8?station_id=…&ft=…&to=…`)
-  with a time-free auth token, plus a programme-guide picker. Reuses 29a's
-  ID3-strip + recorder task for the writing; the new work is auth + the fetch loop
-  over a bounded time range + UI. Build on top once 29a is solid.
+- **29a′ — on-device playback (chosen scope).** A recordings browser + a player
+  that reads a `.aac` off SD and feeds the EXISTING pipeline: same libhelix
+  decoder, same PCM ring, same I²S/ES8311 output. It's a second *source* into the
+  audio stack we already have, not a second stack — swap the network fetcher for a
+  file reader that pushes ADTS frames into the decoder queue. Makes the radio
+  self-contained (record and replay without a PC) and is the foundation 29b needs.
+- **29b — Radiko time-free (タイムフリー). DEFERRED.** Fetch programmes that already
+  aired in the past 7 days: separate API (`/v2/api/ts/playlist.m3u8?station_id=…&
+  ft=…&to=…`) with a time-free auth token + a programme-guide picker. Reuses 29a's
+  ID3-strip + recorder task AND 29a′'s file player. Not in the current scope; the
+  user chose "29a + on-device playback" — build time-free later if wanted.
 
-**Open items to settle at build time:** card hot-plug / mount-on-boot vs on-demand;
-filesystem-full handling; filename metadata (station id + JST + programme title
-from the guide); and the trigger UI (deferred by the user).
+**Open items to settle at build time:** SDMMC 4-bit bring-up (a card that won't
+pull up D3 falls back to 1-bit — verify first); card hot-plug / mount-on-boot vs
+on-demand; filesystem-full handling; filename metadata (station id + JST); the
+record trigger UI (manual button vs scheduled — deferred); and playback controls
+(list, play/pause, seek within a recording).
 
 #### Phase 32 design — audio visualiser
 
