@@ -135,6 +135,48 @@ back to esp-adf only if libhelix proves unworkable.
 | 29 | Time-free recording | Persistent storage to SD |
 | 30 | **VPN-free geo-auth + area picker** ✅ | Android-app auth so any area streams from any IP; Settings area selector (built) |
 | 31 | **LVGL heap exhaustion fix** ✅ | Opening WiFi setup rebooted the radio: LVGL's fixed 64 KB pool hit 100%. +256 KB PSRAM spill pool |
+| 32 | **Audio visualiser** | Rainbow spectrum bars in the logo tile; long-press to toggle. FFT of the PCM actually being played |
+
+#### Phase 32 design — audio visualiser
+
+**Where to tap the audio (the one decision that matters).** The PCM ring is
+`SAMPLE_RATE * 4 * 30` — **30 seconds** deep. Tapping the decoder's output would
+drive the bars from audio the user won't hear for half a minute: visibly wrong,
+and it would look like a broken FFT rather than a wrong tap point. Tap inside
+`i2s_writer_task`, on the `chunk[4096]` handed to `i2s_channel_write()`. There
+the 30 s is already behind the samples; residual lead is the chunk (~21 ms) plus
+the I2S DMA queue (~30 ms) ≈ **20–50 ms**, far below perception.
+
+**Audio must never wait for the visualiser.** The writer takes the tap mutex with
+timeout 0 and simply skips the copy if the UI happens to hold it — a missed 21 ms
+window is invisible, a stalled I2S writer is a glitch. The scheduler already
+helps: `i2s_wr` is priority 6 and `lvgl` priority 4, both pinned to core 1, so
+audio preempts drawing by construction.
+
+**Layout — nothing moves.** `w_logo_tile` is already a transparent 320×68
+CLICKABLE gesture surface at y=28, with the logo card as its *child* and the
+station name / programme line as *siblings below it*. So the visualiser swaps in
+as a sibling of the logo card **inside the tile**: the station name stays put for
+free, and swipe-to-change-station keeps working on the visualiser with zero
+gesture changes.
+
+**The long-press latch.** The tile's gestures are hand-rolled on PRESSED/RELEASED,
+not CLICKED. LVGL fires `LONG_PRESSED` at ~400 ms *while still held*, and
+`RELEASED` still fires on lift — so a long press would toggle the visualiser AND
+(dx≈0, centre region) open the station list. One press, two actions. Fix: latch a
+flag in the long-press handler and swallow the next RELEASED. Guard the long-press
+on `|dx| < 8` so a slow swipe can't toggle.
+
+**Rainbow: hue by band index, not amplitude.** Precompute
+`lv_color_hsv_to_rgb(i * 360 / N, ...)` once per bar — bass red → treble violet,
+fixed per bar, so the bars dance while the spectrum stays legible.
+Amplitude-mapped hue makes the whole strip strobe as one and reads as noise.
+
+**Sizing.** 512-point FFT @ 48 kHz = 93.75 Hz bins; 16 log-spaced bands from
+~60 Hz to ~16 kHz (linear bins give bass one bar and cymbals hundreds). Bars are
+plain `lv_obj` rects, not an `lv_canvas`: 16 objects cost ~4 KB versus 42.5 KB for
+a 320×68 RGB565 canvas, and LVGL does the drawing. Fast attack / slow decay
+smoothing (`level = max(new, level*0.85)`) or it flickers.
 
 #### Phase 30 design — VPN-free Radiko via Android-app geo-auth
 
@@ -948,3 +990,60 @@ an **out-of-memory condition wearing a crash costume**.
 - Editing `sdkconfig.defaults` alone does nothing once `sdkconfig` exists — it is
   only seeded when absent. Delete `sdkconfig` + `idf.py reconfigure`, then diff to
   confirm exactly one line moved (same family as the Phase 25 overlay gotcha).
+
+### Phase 32 — audio visualiser (and the crack it caused)
+
+- **Tap the audio where it is HEARD, not where it is made.** The PCM ring is 30 s
+  deep, so an FFT of the decoder's output would drive the bars from audio nobody
+  hears for half a minute. Tapping `chunk[4096]` in `i2s_writer_task` leads the
+  speaker by the chunk (~21 ms) + DMA queue (~30 ms) — under perception. Free,
+  once you notice the trap; a day lost if you don't.
+- **AAC is already frequency-domain** (libhelix has MDCT coefficients before the
+  inverse transform), so a "free" spectrum is tempting. It fails the same test:
+  those coefficients live at the decoder, 30 s early.
+- **esp-dsp on the S3 uses a static twiddle table for FFT sizes ≤ 1024** — zero
+  heap. Ask for 4096 and it `memalign`s 16 KB of internal RAM, which this radio
+  does not have. 512-pt (93.75 Hz bins) is plenty for 16 log bands.
+- **`lv_grad_stop_t` carries a per-stop `opa`.** A zero-initialised
+  `lv_grad_dsc_t` therefore describes fully TRANSPARENT stops: the LED bars
+  vanished while the peak caps (plain `bg_color`) still drew. Symptom read as
+  "gradient unsupported"; cause was one unset field.
+- **Guards that turn a crash into silence are worse than the crash.**
+  `viz_apply()` ran before `w_name`/`w_prog` existed; the `if (w_name)` guards
+  dutifully skipped half the layout, so a radio booting into the visualiser drew
+  the station name on top of the bars. A NULL deref would have been found in
+  seconds. Order-of-construction bugs deserve a comment, not a guard.
+
+**The audio crack — three wrong theories, then the data.**
+
+Switching to the visualiser made audio crack after a while; switching back fixed
+it. Claimed impossible, on the grounds that `i2s_wr` (prio 6) preempts `lvgl`
+(prio 4) on core 1. That argument was true and useless: **priority governs CPU,
+and CPU was never the contended resource.**
+
+- Instrumented the writer: `gap>35ms` = DMA underrun, plus the ring level at that
+  moment. **`ring=4KB` was the whole answer** — the writer wasn't starved of CPU
+  (it would have found the ring FULL); there was simply nothing to play. The
+  producer, on the OTHER core, was losing.
+- A 30 s A/B (logo vs bars, flipped by the firmware itself so no human timing was
+  involved) then looked *clean* — because the ring drains slowly and 30 s windows
+  never emptied it. **A too-short experiment nearly exonerated the culprit.**
+- The ring fill curve settled it: **+36 KB/s with the logo showing, −17 KB/s with
+  bars** — i.e. the visualiser drags the decoder from ~1.19× real-time down to
+  ~0.91×. Below 1× the ring bleeds out over ~40 s and *then* it cracks. That delay
+  is why it read as "cracks a few seconds after switching" rather than "the bars
+  cost throughput".
+- Cause: **cross-core contention for PSRAM/cache, not CPU.** The PCM ring, the
+  mbedtls buffers and LVGL's spill pool are all in PSRAM, and libhelix executes
+  from flash through the same cache. `obj_max≈3.8 ms` for ~32 rectangle updates
+  (~120 µs each!) is LVGL walking style data over PSRAM — that traffic is what
+  starves the decoder on core 0.
+- Fix: **10 fps** (slope back to +5..+12 KB/s, and visually indistinguishable),
+  plus a **hard gate**: `viz_tick` refuses to draw below 1.5 s buffered and only
+  resumes above 3 s. The frame rate is a budget that could be blown by a slow CDN;
+  the gate makes starving the audio structurally impossible. **Audio wins, always.**
+
+**Lesson: "X can't affect Y, different cores/priorities" is a hypothesis, not a
+proof.** Shared silicon — cache, PSRAM bandwidth, flash — couples things the
+scheduler diagram says are independent. Measure the *sign of the queue*: a buffer
+that drains tells you who is losing, and which side of the pipe to look at.

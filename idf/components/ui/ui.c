@@ -25,6 +25,7 @@
 #include "stations.h"
 #include "stream.h"
 #include "timesync.h"
+#include "viz.h"
 #include "wifi.h"
 
 static const char *TAG = "ui";
@@ -960,21 +961,187 @@ void ui_splash_done(void)
     ui_unlock();
 }
 
+// ---- Audio visualiser (Phase 32) -----------------------------------------
+// Lives INSIDE w_logo_tile as a sibling of the logo card, so the tile's existing
+// swipe/tap gestures keep working over the bars for free.
+//
+// Two heights, because the screen is full: in logo mode the tile is 68 px and
+// the programme line sits at y=112. In visualiser mode the programme line hides
+// and the station name slides down into its slot, letting the bars run
+// 28..110 = 82 px. That's the entire budget — status bar caps the top, the
+// volume row at y=146 caps the bottom.
+#define VIZ_H_LOGO   68
+#define VIZ_H_TALL   82
+#define NAME_Y_LOGO  91
+#define NAME_Y_TALL  112         // the programme line's slot
+#define VIZ_BAR_W    16
+#define VIZ_BAR_PIT  20          // 16 bars * 20 = 320
+#define VIZ_SEGS     11          // grille lines for the LED style
+#define VIZ_SEG_PIT  7
+
+static lv_obj_t   *w_viz_rb;                    // rainbow container
+static lv_obj_t   *w_viz_rb_bar[VIZ_BANDS];
+static lv_obj_t   *w_viz_led;                   // LED/car container
+static lv_obj_t   *w_viz_led_shut[VIZ_BANDS];   // masks the unlit top of each bar
+static lv_obj_t   *w_viz_led_cap[VIZ_BANDS];    // peak-hold caps
+static uint8_t     s_peak[VIZ_BANDS];
+static lv_timer_t *s_viz_timer;
+
+// A transparent, full-tile, non-interactive layer. EVENT_BUBBLE everywhere so
+// swipe/tap/long-press still land on w_logo_tile through the bars.
+static lv_obj_t *viz_container(lv_obj_t *parent)
+{
+    lv_obj_t *c = lv_obj_create(parent);
+    lv_obj_set_size(c, 320, VIZ_H_TALL);
+    lv_obj_set_pos(c, 0, 0);
+    lv_obj_set_style_bg_opa(c, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(c, 0, 0);
+    lv_obj_set_style_pad_all(c, 0, 0);
+    lv_obj_clear_flag(c, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(c, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_add_flag(c, LV_OBJ_FLAG_HIDDEN);
+    return c;
+}
+
+static lv_obj_t *viz_rect(lv_obj_t *parent, int x, int y, int w, int h)
+{
+    lv_obj_t *o = lv_obj_create(parent);
+    lv_obj_set_size(o, w, h);
+    lv_obj_set_pos(o, x, y);
+    lv_obj_set_style_border_width(o, 0, 0);
+    lv_obj_set_style_radius(o, 0, 0);
+    lv_obj_set_style_pad_all(o, 0, 0);
+    lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(o, LV_OBJ_FLAG_EVENT_BUBBLE);
+    return o;
+}
+
+// AUDIO WINS. The visualiser is not free: at 25 fps it cost the decoder enough
+// throughput to drop it BELOW real-time (measured: PCM ring +36 KB/s with the
+// logo showing, -17 KB/s with bars). The ring then bled out over ~40 s and the
+// radio cracked — which is why the fault looked like "cracks a while after
+// switching" rather than an instant glitch. It is a cross-core effect: the bars
+// run on core 1, the decoder on core 0, and they contend for PSRAM/cache, not
+// CPU (i2s_wr at prio 6 already preempts LVGL at 4).
+//
+// 10 fps puts the slope back positive with margin. This gate is the backstop for
+// when it isn't — a slow CDN, a station change, the first seconds after boot.
+// Below PAUSE we stop drawing entirely; we only resume once RESUME is buffered,
+// and the hysteresis keeps it from flapping. Nothing is lost visually: when the
+// buffer is thin there is no music to show yet.
+#define VIZ_RING_PAUSE  (192000 / 2 * 3)   // 1.5 s buffered: stop drawing
+#define VIZ_RING_RESUME (192000 * 3)       // 3.0 s buffered: safe to draw again
+
+static void viz_tick(lv_timer_t *t)
+{
+    uint8_t lvl[VIZ_BANDS];
+    static bool s_starved;
+    size_t ring = audio_ring_bytes();
+    if (s_starved) {
+        if (ring < VIZ_RING_RESUME) return;
+        s_starved = false;
+    } else if (ring < VIZ_RING_PAUSE) {
+        s_starved = true;
+        return;
+    }
+
+    // false = silent AND fully decayed: skip the LVGL writes entirely so a
+    // paused radio costs zero invalidation/redraw.
+    if (!viz_read(lvl, VIZ_BANDS)) return;
+
+    uint8_t mode = settings_get()->viz;
+    for (int i = 0; i < VIZ_BANDS; i++) {
+        int h = 2 + (lvl[i] * (VIZ_H_TALL - 2)) / 255;
+        if (mode == VIZ_MODE_RAINBOW) {
+            lv_obj_set_height(w_viz_rb_bar[i], h);
+            lv_obj_set_y(w_viz_rb_bar[i], VIZ_H_TALL - h);   // grow up from the baseline
+        } else {
+            // The gradient bar underneath is static and full height; moving the
+            // shutter is what "raises" the bar. That's what keeps the colour
+            // tied to absolute height rather than stretching per bar.
+            lv_obj_set_height(w_viz_led_shut[i], VIZ_H_TALL - h);
+            // Peak hold: jump up instantly, sink a pixel per frame. The falling
+            // cap is the detail that reads as a car head unit.
+            if (h > s_peak[i]) s_peak[i] = h;
+            else if (s_peak[i] > 2) s_peak[i]--;
+            lv_obj_set_y(w_viz_led_cap[i], VIZ_H_TALL - s_peak[i] - 2);
+        }
+    }
+
+}
+
+// Visual only — no persistence, so it can also be called at init from settings.
+static void viz_apply(uint8_t mode)
+{
+    if (!w_viz_rb || !w_viz_led || !w_logo_card) return;
+    bool on = (mode != VIZ_MODE_LOGO);
+
+    if (on) lv_obj_add_flag(w_logo_card, LV_OBJ_FLAG_HIDDEN);
+    else    lv_obj_clear_flag(w_logo_card, LV_OBJ_FLAG_HIDDEN);
+
+    if (mode == VIZ_MODE_RAINBOW) lv_obj_clear_flag(w_viz_rb, LV_OBJ_FLAG_HIDDEN);
+    else                          lv_obj_add_flag(w_viz_rb, LV_OBJ_FLAG_HIDDEN);
+    if (mode == VIZ_MODE_LED)     lv_obj_clear_flag(w_viz_led, LV_OBJ_FLAG_HIDDEN);
+    else                          lv_obj_add_flag(w_viz_led, LV_OBJ_FLAG_HIDDEN);
+
+    // Reclaim the programme line's 21 px for the bars, and move the name into it.
+    lv_obj_set_height(w_logo_tile, on ? VIZ_H_TALL : VIZ_H_LOGO);
+    if (w_prog) {
+        if (on) lv_obj_add_flag(w_prog, LV_OBJ_FLAG_HIDDEN);
+        else    lv_obj_clear_flag(w_prog, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (w_name) lv_obj_align(w_name, LV_ALIGN_TOP_MID, 0, on ? NAME_Y_TALL : NAME_Y_LOGO);
+
+    if (s_viz_timer) {
+        if (on) lv_timer_resume(s_viz_timer);
+        else    lv_timer_pause(s_viz_timer);
+    }
+}
+
+static void viz_cycle(void)
+{
+    settings_t *st = settings_get();
+    st->viz = (st->viz + 1) % VIZ_MODE_COUNT;   // logo -> rainbow -> LED -> logo
+    settings_save();
+    viz_apply(st->viz);
+    static const char *names[] = { "logo", "rainbow", "LED" };
+    ESP_LOGI(TAG, "player tile: %s", names[st->viz]);
+}
+
 // Swipe/tap gestures on the full-width logo strip (Arduino behaviour):
 //   dx >= +25 → prev station, dx <= -25 → next station,
 //   |dx| < 8 AND released in the centre region (x 120..200) → open station list,
 //   anything else → dead-zone (prevents accidental list opens during near-swipes).
+//   long press (held still) → toggle logo <-> visualiser.
 static void ev_prev(lv_event_t *e);
 static void ev_next(lv_event_t *e);
 static int32_t s_press_x;
+static bool s_long_fired;   // see ev_logo_released
 static void ev_logo_pressed(lv_event_t *e)
 {
     lv_point_t p;
     lv_indev_get_point(lv_indev_active(), &p);
     s_press_x = p.x;
+    s_long_fired = false;
+}
+// LVGL fires LONG_PRESSED at ~400 ms while the finger is STILL DOWN; the
+// |dx| guard means a slow swipe changes station instead of toggling.
+static void ev_logo_long(lv_event_t *e)
+{
+    lv_point_t p;
+    lv_indev_get_point(lv_indev_active(), &p);
+    int dx = p.x - s_press_x;
+    if (dx > -8 && dx < 8) {
+        viz_cycle();
+        s_long_fired = true;
+    }
 }
 static void ev_logo_released(lv_event_t *e)
 {
+    // RELEASED still fires after LONG_PRESSED. Without this latch a long press
+    // would toggle the visualiser AND (dx≈0, centre region) open the station
+    // list — one press, two actions.
+    if (s_long_fired) { s_long_fired = false; return; }
     lv_point_t p;
     lv_indev_get_point(lv_indev_active(), &p);
     int dx = p.x - s_press_x;
@@ -1212,6 +1379,7 @@ static void build_player_screen(void)
     lv_obj_add_flag(w_logo_tile, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(w_logo_tile, ev_logo_pressed,  LV_EVENT_PRESSED,  NULL);
     lv_obj_add_event_cb(w_logo_tile, ev_logo_released, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(w_logo_tile, ev_logo_long, LV_EVENT_LONG_PRESSED, NULL);
     // White card behind the logo (small padding); events bubble to the strip
     // so swipes/taps still work anywhere on it.
     w_logo_card = lv_obj_create(w_logo_tile);
@@ -1223,6 +1391,66 @@ static void build_player_screen(void)
     lv_obj_add_flag(w_logo_card, LV_OBJ_FLAG_EVENT_BUBBLE);
     w_logo_img = lv_image_create(w_logo_card);
     lv_obj_add_flag(w_logo_img, LV_OBJ_FLAG_EVENT_BUBBLE);   // taps reach the tile
+
+    // ---- Visualisers: the logo card's siblings, cycled by long-press ---------
+    // Plain rects, not an lv_canvas: a 320x82 RGB565 canvas would be 52 KB of
+    // LVGL heap, and LVGL draws rects for us anyway.
+    w_viz_rb  = viz_container(w_logo_tile);
+    w_viz_led = viz_container(w_logo_tile);
+
+    // Rainbow: hue by BAND INDEX, fixed per bar, computed once here. Bass red ->
+    // treble violet, so the bars dance while the spectrum stays legible. Hue
+    // driven by amplitude instead makes the whole strip strobe as one and reads
+    // as noise.
+    for (int i = 0; i < VIZ_BANDS; i++) {
+        lv_obj_t *b = viz_rect(w_viz_rb, i * VIZ_BAR_PIT + 2, VIZ_H_TALL - 2,
+                               VIZ_BAR_W, 2);
+        lv_obj_set_style_bg_color(b, lv_color_hsv_to_rgb(i * 360 / VIZ_BANDS, 90, 100), 0);
+        lv_obj_set_style_radius(b, 2, 0);
+        w_viz_rb_bar[i] = b;
+    }
+
+    // LED/car: per band a STATIC full-height green->amber->red gradient, with a
+    // shutter above it that masks the unlit part. Colour therefore tracks
+    // absolute height (a short bar is all green) — a gradient on a
+    // height-animated bar would instead stretch red down onto quiet bands.
+    static lv_grad_dsc_t led_grad;                  // static: LVGL keeps the pointer
+    led_grad.dir = LV_GRAD_DIR_VER;
+    led_grad.stops_count = 3;
+    led_grad.stops[0].color = lv_color_hex(0xEF4444);  // top: red
+    led_grad.stops[0].frac  = 0;
+    led_grad.stops[1].color = lv_color_hex(0xF59E0B);  // amber
+    led_grad.stops[1].frac  = 120;
+    led_grad.stops[2].color = lv_color_hex(0x22C55E);  // bottom: green
+    led_grad.stops[2].frac  = 255;
+    // EVERY STOP CARRIES ITS OWN OPACITY, and this dsc is zero-initialised —
+    // leave it out and LVGL dutifully draws three fully TRANSPARENT stops. The
+    // bars vanish while the peak caps (plain bg_color, no gradient) still show.
+    for (int i = 0; i < led_grad.stops_count; i++) led_grad.stops[i].opa = LV_OPA_COVER;
+    for (int i = 0; i < VIZ_BANDS; i++) {
+        int x = i * VIZ_BAR_PIT + 2;
+        lv_obj_t *bar = viz_rect(w_viz_led, x, 0, VIZ_BAR_W, VIZ_H_TALL);
+        lv_obj_set_style_bg_grad(bar, &led_grad, 0);
+        // Shutter, created after the bar so it paints over it. Opaque C_BG.
+        lv_obj_t *sh = viz_rect(w_viz_led, x, 0, VIZ_BAR_W, VIZ_H_TALL);
+        lv_obj_set_style_bg_color(sh, lv_color_hex(C_BG), 0);
+        w_viz_led_shut[i] = sh;
+        // Peak cap above the shutter in z-order, so it stays visible.
+        lv_obj_t *cap = viz_rect(w_viz_led, x, VIZ_H_TALL - 2, VIZ_BAR_W, 2);
+        lv_obj_set_style_bg_color(cap, lv_color_hex(0xEAEAEA), 0);
+        w_viz_led_cap[i] = cap;
+    }
+    // Grille last => on top of everything, turning the solid bars into a ladder
+    // of discrete segments. Static: never touched again after this loop.
+    for (int r = 1; r < VIZ_SEGS; r++) {
+        lv_obj_t *g = viz_rect(w_viz_led, 0, VIZ_H_TALL - r * VIZ_SEG_PIT, 320, 2);
+        lv_obj_set_style_bg_color(g, lv_color_hex(C_BG), 0);
+    }
+
+    s_viz_timer = lv_timer_create(viz_tick, 100, NULL);   // 10 fps — see viz_tick
+    lv_timer_pause(s_viz_timer);                          // viz_apply() resumes it
+    // NOTE: viz_apply() is deliberately NOT called here — it moves w_name and
+    // hides w_prog, which do not exist yet. It runs at the END of this function.
 
     // ---- Station name (JP) ----
     w_name = lv_label_create(s_scr_player);
@@ -1303,6 +1531,13 @@ static void build_player_screen(void)
         lv_obj_clear_flag(w_dots[i], LV_OBJ_FLAG_SCROLLABLE);
     }
     layout_dots();
+
+    // Last: viz_apply() repositions w_name and hides w_prog, so every widget it
+    // touches must already exist. Called earlier (next to the bars, where it
+    // reads more naturally) the NULL guards silently skipped that half of the
+    // layout, and a radio booting into a visualiser drew the station name on
+    // top of the bars with the programme line still showing.
+    viz_apply(settings_get()->viz);
 
     refresh_player();
 }
@@ -1609,6 +1844,11 @@ esp_err_t ui_init(void)
     lv_display_set_flush_cb(s_disp, flush_cb);   // flush_cb blocks on the DMA itself
     lv_display_set_buffers(s_disp, buf1, buf2, buf_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
     display_register_flush_ready_cb(color_done_cb, NULL);
+
+    // Visualiser DSP before the player screen builds its bars. A failure here is
+    // not fatal: viz_read() then always returns false, the bars stay flat, and
+    // the radio plays on — audio never depends on this path.
+    if (viz_init() != ESP_OK) ESP_LOGW(TAG, "visualiser disabled (init failed)");
 
     build_player_screen();
     build_list_screen();

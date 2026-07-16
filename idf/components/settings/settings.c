@@ -9,9 +9,10 @@ static const char *TAG = "settings";
 
 #define NVS_NS  "settings"
 #define NVS_KEY "blob"
-// v2 (Phase 30): added `area`. A v1 blob mismatches on size+version and falls
-// back to defaults once — acceptable on this personal device.
-#define SETTINGS_VERSION 2
+// v2 (Phase 30): added `area`. v3 (Phase 32): added `viz`. An older blob
+// mismatches on size+version and falls back to defaults once — acceptable on
+// this personal device.
+#define SETTINGS_VERSION 3
 
 static settings_t s;
 
@@ -29,6 +30,7 @@ static void set_defaults(void)
     s.rotation   = 3;        // upside-down mount
     s.saver      = false;
     s.area       = 13;       // Tokyo (JP13) — Radiko auth area
+    s.viz        = VIZ_MODE_LOGO;   // long-press the logo cycles in the visualisers
 }
 
 // Defence in depth: even a version-matched blob gets range-checked.
@@ -41,6 +43,7 @@ static void clamp(void)
     if (s.rotation != 1 && s.rotation != 3) s.rotation = 3;
     if (s.station < 0)    s.station = 0;   // upper bound checked against station list in UI
     if (s.area < 1 || s.area > 47) s.area = 13;
+    if (s.viz >= VIZ_MODE_COUNT) s.viz = VIZ_MODE_LOGO;
 }
 
 esp_err_t settings_init(void)

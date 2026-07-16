@@ -40,6 +40,12 @@ CONFIG_LV_COLOR_DEPTH_16=y
 # was refused; 256 raises the cap to 512 KB. It reserves index capacity only —
 # it allocates nothing by itself.
 CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=256
+# The LED/car visualiser bar (Phase 32) is one static green->amber->red gradient
+# per band, masked from the top by a shutter — that's what makes the colour track
+# ABSOLUTE height (a short bar all green) instead of stretching over each bar.
+# It needs three stops; LVGL's default cap of 2 would force a green->red blend
+# straight through olive.
+CONFIG_LV_GRADIENT_MAX_STOPS=3
 # Screen-saver clock (Phase 16): 48 pt for HH:MM, 16 pt for the date line.
 CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_MONTSERRAT_48=y

@@ -1,6 +1,7 @@
 #include "audio.h"
 
 #include <math.h>
+#include <string.h>
 #include "app_watchdog.h"
 #include "driver/gpio.h"
 #include "driver/i2s_std.h"
@@ -9,6 +10,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/stream_buffer.h"
 #include "freertos/task.h"
 #include "i2c_bus.h"
@@ -40,6 +42,46 @@ static StreamBufferHandle_t s_pcm = NULL;
 static volatile bool        s_active    = true;   // false -> audio_write drops
 static volatile bool        s_flush_req = false;  // ask the writer to discard buffered PCM
 
+// --- PCM tap for the visualiser (Phase 32) -------------------------------
+// Sampled here, in the writer, because this is the only place where "the sample
+// being handed to the DAC" and "the sound you hear" are the same instant — the
+// ring buffer's 30 s is already behind these samples.
+#define TAP_SAMPLES 512                  // 10.7 ms @ 48 kHz — one FFT window
+static int16_t          s_tap[TAP_SAMPLES];
+static size_t           s_tap_len;
+static SemaphoreHandle_t s_tap_mux;
+
+// Mono-mix a stereo chunk into the tap buffer. Called from i2s_writer_task with
+// the mutex already held; keep it to a few thousand adds.
+static void tap_fill(const int16_t *stereo, size_t frames)
+{
+    if (frames > TAP_SAMPLES) {
+        stereo += (frames - TAP_SAMPLES) * 2;   // keep the NEWEST window
+        frames  = TAP_SAMPLES;
+    }
+    for (size_t i = 0; i < frames; i++)
+        s_tap[i] = (int16_t)(((int32_t)stereo[i * 2] + stereo[i * 2 + 1]) / 2);
+    s_tap_len = frames;
+}
+
+size_t audio_tap_read(int16_t *dst, size_t max)
+{
+    if (!s_tap_mux || !dst) return 0;
+    // Short timeout, not 0: the writer holds this for microseconds. Bail rather
+    // than wait if it really is busy — a dropped animation frame is invisible.
+    if (xSemaphoreTake(s_tap_mux, pdMS_TO_TICKS(2)) != pdTRUE) return 0;
+    size_t n = s_tap_len < max ? s_tap_len : max;
+    memcpy(dst, s_tap, n * sizeof(int16_t));
+    s_tap_len = 0;                       // consume: no window = paused/silent
+    xSemaphoreGive(s_tap_mux);
+    return n;
+}
+
+size_t audio_ring_bytes(void)
+{
+    return s_pcm ? xStreamBufferBytesAvailable(s_pcm) : 0;
+}
+
 // Only the writer task touches the buffer's receive side, so flushing here (vs
 // xStreamBufferReset) can't race a blocked reader.
 static void i2s_writer_task(void *arg)
@@ -57,6 +99,13 @@ static void i2s_writer_task(void *arg)
         }
         size_t n = xStreamBufferReceive(s_pcm, chunk, sizeof(chunk), pdMS_TO_TICKS(50));
         if (n) {
+            // Tap BEFORE the write, with timeout 0: audio never waits on the
+            // visualiser. If the UI holds the mutex we skip this window — one
+            // missed 21 ms frame is invisible, a stalled writer is a glitch.
+            if (s_tap_mux && xSemaphoreTake(s_tap_mux, 0) == pdTRUE) {
+                tap_fill((const int16_t *)chunk, n / 4);   // 4 B/frame: 16-bit stereo
+                xSemaphoreGive(s_tap_mux);
+            }
             size_t bw;
             i2s_channel_write(s_tx, chunk, n, &bw, portMAX_DELAY);
         }
@@ -118,6 +167,7 @@ esp_err_t audio_init(void)
     uint8_t *sb_storage = heap_caps_malloc(PCM_BUF_BYTES + 1, MALLOC_CAP_SPIRAM);
     ESP_RETURN_ON_FALSE(sb_storage, ESP_ERR_NO_MEM, TAG, "pcm buf");
     s_pcm = xStreamBufferCreateStatic(PCM_BUF_BYTES, 1, sb_storage, &sb_struct);
+    s_tap_mux = xSemaphoreCreateMutex();   // visualiser PCM tap (Phase 32)
     xTaskCreatePinnedToCore(i2s_writer_task, "i2s_wr", 4096, NULL, 6, NULL, 1);
 
     ESP_LOGI(TAG, "audio up: I2S %d Hz, ES8311 ready", SAMPLE_RATE);
