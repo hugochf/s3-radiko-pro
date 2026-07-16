@@ -1047,3 +1047,56 @@ and CPU was never the contended resource.**
 proof.** Shared silicon — cache, PSRAM bandwidth, flash — couples things the
 scheduler diagram says are independent. Measure the *sign of the queue*: a buffer
 that drains tells you who is losing, and which side of the pipe to look at.
+
+### Phase 32 (cont.) — the screen freeze, and five more wrong theories
+
+With audio fixed, the bars *froze the UI* for 2-3 s periodically. The hunt took
+six failed hypotheses before the data spoke — a record even for this project.
+
+- **It's not the gradient, object count, CPU, or the audio code.** The first LED
+  build used a full-height green->amber->red gradient per band + a shutter masking
+  the unlit part: every pixel painted ~3x with per-pixel interpolation. Replaced
+  with solid colour *zones* sized to the lit slice — paint lit pixels once. Helped
+  throughput but did NOT fix the freeze.
+- **The real cause: LVGL silently repaints the WHOLE SCREEN when its dirty-area
+  list overflows.** `lv_refr.c`: "If no place for the area add the screen". The
+  list is `LV_INV_BUF_SIZE` = **32** by default. The LED style's ~74 objects
+  invalidate ~148 areas a frame, blew 32, and every frame became a full 320x240
+  repaint — a rock-steady 163 ms stall. Fix: `-DLV_INV_BUF_SIZE=192` (not exposed
+  in Kconfig) so the list holds the small areas, plus a deliberate whole-strip
+  `lv_obj_invalidate()` that lets LVGL merge them into ~5 buffer-sized flushes.
+- **The number that cracked it was px/s × flush-count, not either alone.** The
+  logo screen paints *more* pixels than the bars and is smooth; the bars pushed
+  400 k px/s in **70 flushes** (vs the tile's true ~262 k in ~50). 400 k in 70
+  flushes is the fingerprint of the whole-screen fallback. No single metric shows
+  it — pixels looked fine, flush count looked fine-ish, the product did not.
+- **Disjoint rects don't merge.** 16 bars with gaps between them = 16 dirty areas
+  LVGL can't coalesce = ~15 tiny SPI flushes/frame, each paying an address-window
+  + DMA-start + ISR + semaphore round-trip to move ~800 px. Asking for ONE big
+  area (more pixels!) was ~2x faster. Repainting more can be cheaper.
+- **The measurement caused a second, fake freeze.** My stall/repaint/ring probes
+  logged with `ESP_LOGW`, and the elog flash ring captures W/E. That flooded elog,
+  which flushed to flash every 10 s, and a 4 KB sector erase disables the cache
+  for ~40 ms — stalling the (non-IRAM) SPI submit path. A silent ~48 ms flush
+  every ~20 s, gone the instant the instrumentation was removed. Debug output that
+  writes to flash perturbs exactly the timing you're trying to measure.
+
+**Lesson: a metric can look healthy on every axis and still be wrong on the
+product of two.** And instrumentation that touches flash (or any cache-disabling
+op) is not free — it can manufacture the symptom you're chasing.
+
+### Phase 32 — final shape (shipped)
+
+- **Four player-tile styles**, long-press the logo to cycle: logo -> rainbow bars
+  -> LED/car (green/amber/red, peak caps, grille) -> LED-rainbow (car layout, band
+  hues) -> logo. `settings.viz` is `uint8_t` so styles cost no schema bump.
+- **Audio-safe by construction**: PCM tapped in `i2s_writer_task` (what's heard,
+  not the 30 s-early decoder output); 10 fps; a ring-level gate that pauses the
+  bars below 1.5 s buffered and resumes above 3.0 s — which also covers startup and
+  station changes (the decoder is catching up to the live edge then; lowering the
+  gate to start bars sooner brought crackle straight back). Audio always wins.
+- **Idle fall**: when the buffer goes thin the bars *ease* to a flat baseline over
+  ~0.7 s (peak caps riding down with them) instead of snapping or freezing at their
+  last heights, so boot/station-change reads as "settling", not a hang.
+- **Gestures** (swipe/tap/long-press) cover the whole logo + name + programme
+  block via a transparent layer, not just the logo.

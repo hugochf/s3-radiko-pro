@@ -30,15 +30,16 @@ typedef struct {
     uint8_t  rotation;      // 1 or 3
     bool     saver;         // screen-saver enabled
     uint8_t  area;          // Radiko auth area, JP number 1..47 (Phase 30)
-    uint8_t  viz;           // player tile: 0=logo, 1=rainbow bars, 2=LED/car bars (Phase 32)
+    uint8_t  viz;           // player tile visualiser style, see VIZ_MODE_* (Phase 32)
 } settings_t;
 
-// Long-press the player logo cycles these. uint8_t (not bool) so a third style
-// costs no schema bump — same size, same offset, v3 blobs stay valid.
+// Long-press the player logo cycles these. uint8_t (not bool) so extra styles
+// cost no schema bump — same size, same offset, v3 blobs stay valid.
 #define VIZ_MODE_LOGO    0
-#define VIZ_MODE_RAINBOW 1
-#define VIZ_MODE_LED     2
-#define VIZ_MODE_COUNT   3
+#define VIZ_MODE_RAINBOW 1   // plain rainbow bars
+#define VIZ_MODE_LED     2   // green/amber/red segmented bars + peak caps
+#define VIZ_MODE_LED_RB  3   // LED/car layout (caps + grille) with rainbow hues
+#define VIZ_MODE_COUNT   4
 
 esp_err_t   settings_init(void);   // load, or defaults on miss/mismatch/corruption
 settings_t *settings_get(void);    // mutable; edit fields then settings_save()

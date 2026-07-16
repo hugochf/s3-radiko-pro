@@ -974,18 +974,46 @@ void ui_splash_done(void)
 #define VIZ_H_TALL   82
 #define NAME_Y_LOGO  91
 #define NAME_Y_TALL  112         // the programme line's slot
-#define VIZ_BAR_W    16
-#define VIZ_BAR_PIT  20          // 16 bars * 20 = 320
+#define VIZ_BAR_W    15
+#define VIZ_BAR_PIT  19          // 15 px bar + 4 px gap
+// Centre the strip so bars don't kiss the screen edges (they used to start 2 px
+// from each side, which read as touching). Symmetric ~10 px margin.
+#define VIZ_X0       ((320 - ((VIZ_BANDS - 1) * VIZ_BAR_PIT + VIZ_BAR_W)) / 2)
 #define VIZ_SEGS     11          // grille lines for the LED style
 #define VIZ_SEG_PIT  7
 
 static lv_obj_t   *w_viz_rb;                    // rainbow container
 static lv_obj_t   *w_viz_rb_bar[VIZ_BANDS];
 static lv_obj_t   *w_viz_led;                   // LED/car container
-static lv_obj_t   *w_viz_led_shut[VIZ_BANDS];   // masks the unlit top of each bar
+// Three fixed-colour zones per band (green / amber / red), each sized to the
+// part of the level that falls inside it. Colour therefore tracks ABSOLUTE
+// height — a quiet band is all green — without the full-height gradient + shutter
+// the first version used. That drew every pixel ~3x (gradient, then shutter over
+// it, then caps) with per-pixel interpolation: 165-213 ms a frame, and it dragged
+// the decoder back under real-time. Here we paint only the lit pixels, once.
+#define LED_ZONES  3
+#define LED_G_TOP  (VIZ_H_TALL * 60 / 100)   // green up to 60% of full scale
+#define LED_A_TOP  (VIZ_H_TALL * 85 / 100)   // amber to 85%, red above
+static lv_obj_t   *w_viz_led_zone[VIZ_BANDS][LED_ZONES];
 static lv_obj_t   *w_viz_led_cap[VIZ_BANDS];    // peak-hold caps
+// LED_RB: the LED/car layout (single solid bar + peak cap + grille) but each bar
+// keeps its rainbow band-hue instead of the green/amber/red zones.
+static lv_obj_t   *w_viz_lr;                    // rainbow-LED container
+static lv_obj_t   *w_viz_lr_bar[VIZ_BANDS];
+static lv_obj_t   *w_viz_lr_cap[VIZ_BANDS];
 static uint8_t     s_peak[VIZ_BANDS];
 static lv_timer_t *s_viz_timer;
+
+// The container that hosts a given visualiser mode (NULL for logo).
+static lv_obj_t *viz_container_for(uint8_t mode)
+{
+    switch (mode) {
+        case VIZ_MODE_RAINBOW: return w_viz_rb;
+        case VIZ_MODE_LED:     return w_viz_led;
+        case VIZ_MODE_LED_RB:  return w_viz_lr;
+        default:               return NULL;
+    }
+}
 
 // A transparent, full-tile, non-interactive layer. EVENT_BUBBLE everywhere so
 // swipe/tap/long-press still land on w_logo_tile through the bars.
@@ -1024,24 +1052,100 @@ static lv_obj_t *viz_rect(lv_obj_t *parent, int x, int y, int w, int h)
 // run on core 1, the decoder on core 0, and they contend for PSRAM/cache, not
 // CPU (i2s_wr at prio 6 already preempts LVGL at 4).
 //
-// 10 fps puts the slope back positive with margin. This gate is the backstop for
-// when it isn't — a slow CDN, a station change, the first seconds after boot.
-// Below PAUSE we stop drawing entirely; we only resume once RESUME is buffered,
-// and the hysteresis keeps it from flapping. Nothing is lost visually: when the
-// buffer is thin there is no music to show yet.
+// 10 fps + the single-invalidate render fix put the slope firmly positive (the
+// ring stays flat with bars running), so the visualiser barely loads the system
+// now. This gate is the backstop for when it isn't — a slow CDN, a station
+// change, the first seconds after boot. Below PAUSE we stop drawing; we resume
+// only once RESUME is buffered, and the hysteresis keeps it from flapping.
+// Nothing is lost visually: a thin buffer means there's no music to show yet.
+//
+// The RESUME threshold trades startup cosmetics against startup audio. Dropping
+// it to 1.5 s to start the bars sooner brought back an audible crackle in the
+// first seconds — because the decoder is still catching up to the live edge then
+// (a low absolute buffer doesn't mean it's running ahead yet), and the extra
+// render load tips it into underrun. 3.0 s waits until the decoder genuinely has
+// slack. The ~3-5 s of still bars at boot is the price of clean startup audio,
+// and audio wins. Do NOT lower this without re-checking startup crackle by ear.
 #define VIZ_RING_PAUSE  (192000 / 2 * 3)   // 1.5 s buffered: stop drawing
 #define VIZ_RING_RESUME (192000 * 3)       // 3.0 s buffered: safe to draw again
+
+static int s_bar_h[VIZ_BANDS];   // current on-screen bar height, px — retained so
+                                // the idle fall can decay from the last real level
+
+// Draw one band at height h (2..VIZ_H_TALL).
+static void viz_render_bar(int i, int h, uint8_t mode)
+{
+    if (mode == VIZ_MODE_RAINBOW) {
+        lv_obj_set_height(w_viz_rb_bar[i], h);
+        lv_obj_set_y(w_viz_rb_bar[i], VIZ_H_TALL - h);   // grow up from the baseline
+        return;
+    }
+    if (mode == VIZ_MODE_LED_RB) {
+        lv_obj_set_height(w_viz_lr_bar[i], h);           // one solid hue bar
+        lv_obj_set_y(w_viz_lr_bar[i], VIZ_H_TALL - h);
+    } else {
+        // Size each colour zone to the slice of the level inside it, so we paint
+        // only lit pixels. Zone heights sum to h, and each keeps its own fixed
+        // colour => colour tracks absolute height, with no overdraw.
+        int g = h < LED_G_TOP ? h : LED_G_TOP;
+        int a = h <= LED_G_TOP ? 0 : (h < LED_A_TOP ? h : LED_A_TOP) - LED_G_TOP;
+        int r = h <= LED_A_TOP ? 0 : h - LED_A_TOP;
+        lv_obj_set_height(w_viz_led_zone[i][0], g);
+        lv_obj_set_y(w_viz_led_zone[i][0], VIZ_H_TALL - g);
+        lv_obj_set_height(w_viz_led_zone[i][1], a);
+        lv_obj_set_y(w_viz_led_zone[i][1], VIZ_H_TALL - LED_G_TOP - a);
+        lv_obj_set_height(w_viz_led_zone[i][2], r);
+        lv_obj_set_y(w_viz_led_zone[i][2], VIZ_H_TALL - LED_A_TOP - r);
+    }
+    // Shared peak cap (LED + LED_RB): jump up instantly, sink a pixel per frame.
+    // The falling cap is the detail that reads as a car head unit — and it also
+    // makes the idle fall look natural, the cap trailing the bars down.
+    if (h > s_peak[i]) s_peak[i] = h;
+    else if (s_peak[i] > 2) s_peak[i]--;
+    lv_obj_t *cap = (mode == VIZ_MODE_LED_RB) ? w_viz_lr_cap[i] : w_viz_led_cap[i];
+    lv_obj_set_y(cap, VIZ_H_TALL - s_peak[i] - 2);
+}
+
+// One frame of the idle fall: ease every bar toward the baseline. Returns true
+// while anything is still falling. When the buffer goes thin (boot, station
+// change) we run this instead of snapping flat — a hard jump to a flat line read
+// as odd; a smooth drop reads as "settling". Just resizes existing objects, no
+// FFT, so it's cheap enough to run during the fragile buffer-refill window.
+static bool viz_decay(uint8_t mode)
+{
+    bool moving = false;
+    for (int i = 0; i < VIZ_BANDS; i++) {
+        if (s_bar_h[i] > 2) {
+            s_bar_h[i] -= (s_bar_h[i] - 2) * 2 / 5 + 1;   // ~40%/frame, min 1 px
+            if (s_bar_h[i] < 2) s_bar_h[i] = 2;
+            moving = true;
+        }
+        // Drop the LED peak cap WITH the bar during the idle fall. Its normal
+        // 1 px/frame sink (the car-stereo hold) is far slower than the bars, so
+        // it would otherwise hang near the top for ~8 s — reading as a frozen
+        // "top level bar" until the buffer refilled.
+        s_peak[i] = s_bar_h[i];
+        viz_render_bar(i, s_bar_h[i], mode);
+    }
+    lv_obj_invalidate(viz_container_for(mode));
+    return moving;
+}
 
 static void viz_tick(lv_timer_t *t)
 {
     uint8_t lvl[VIZ_BANDS];
-    static bool s_starved;
+    static bool s_starved, s_falling;
+    uint8_t mode = settings_get()->viz;
     size_t ring = audio_ring_bytes();
     if (s_starved) {
-        if (ring < VIZ_RING_RESUME) return;
+        if (ring < VIZ_RING_RESUME) {
+            if (s_falling) s_falling = viz_decay(mode);   // ease down, then rest
+            return;
+        }
         s_starved = false;
     } else if (ring < VIZ_RING_PAUSE) {
         s_starved = true;
+        s_falling = true;    // start the idle fall from the current heights
         return;
     }
 
@@ -1049,40 +1153,40 @@ static void viz_tick(lv_timer_t *t)
     // paused radio costs zero invalidation/redraw.
     if (!viz_read(lvl, VIZ_BANDS)) return;
 
-    uint8_t mode = settings_get()->viz;
     for (int i = 0; i < VIZ_BANDS; i++) {
         int h = 2 + (lvl[i] * (VIZ_H_TALL - 2)) / 255;
-        if (mode == VIZ_MODE_RAINBOW) {
-            lv_obj_set_height(w_viz_rb_bar[i], h);
-            lv_obj_set_y(w_viz_rb_bar[i], VIZ_H_TALL - h);   // grow up from the baseline
-        } else {
-            // The gradient bar underneath is static and full height; moving the
-            // shutter is what "raises" the bar. That's what keeps the colour
-            // tied to absolute height rather than stretching per bar.
-            lv_obj_set_height(w_viz_led_shut[i], VIZ_H_TALL - h);
-            // Peak hold: jump up instantly, sink a pixel per frame. The falling
-            // cap is the detail that reads as a car head unit.
-            if (h > s_peak[i]) s_peak[i] = h;
-            else if (s_peak[i] > 2) s_peak[i]--;
-            lv_obj_set_y(w_viz_led_cap[i], VIZ_H_TALL - s_peak[i] - 2);
-        }
+        s_bar_h[i] = h;
+        viz_render_bar(i, h, mode);
     }
 
+    // Invalidate the whole strip ON PURPOSE, even though every bar already
+    // invalidated itself. The bars are disjoint (gaps between them), so LVGL
+    // cannot merge their dirty areas and emits ~15 tiny flushes per frame — each
+    // paying address-window commands, a DMA start, an ISR and a semaphore
+    // round-trip to paint ~800 px. That per-flush overhead, NOT the pixel count,
+    // cost 100-155 ms a frame. One big area collapses it to ~5 buffer-sized
+    // flushes. Repainting more pixels is faster here — the logo screen already
+    // proved it: 160k px/s in 45 flushes, perfectly smooth, versus the bars'
+    // 128k px/s in 153 flushes and a visibly frozen UI.
+    lv_obj_invalidate(viz_container_for(mode));
 }
 
 // Visual only — no persistence, so it can also be called at init from settings.
 static void viz_apply(uint8_t mode)
 {
-    if (!w_viz_rb || !w_viz_led || !w_logo_card) return;
+    if (!w_viz_rb || !w_viz_led || !w_viz_lr || !w_logo_card) return;
     bool on = (mode != VIZ_MODE_LOGO);
 
     if (on) lv_obj_add_flag(w_logo_card, LV_OBJ_FLAG_HIDDEN);
     else    lv_obj_clear_flag(w_logo_card, LV_OBJ_FLAG_HIDDEN);
 
-    if (mode == VIZ_MODE_RAINBOW) lv_obj_clear_flag(w_viz_rb, LV_OBJ_FLAG_HIDDEN);
-    else                          lv_obj_add_flag(w_viz_rb, LV_OBJ_FLAG_HIDDEN);
-    if (mode == VIZ_MODE_LED)     lv_obj_clear_flag(w_viz_led, LV_OBJ_FLAG_HIDDEN);
-    else                          lv_obj_add_flag(w_viz_led, LV_OBJ_FLAG_HIDDEN);
+    // Show only the active mode's container.
+    lv_obj_t *want = viz_container_for(mode);
+    lv_obj_t *all[] = { w_viz_rb, w_viz_led, w_viz_lr };
+    for (int i = 0; i < 3; i++) {
+        if (all[i] == want) lv_obj_clear_flag(all[i], LV_OBJ_FLAG_HIDDEN);
+        else                lv_obj_add_flag(all[i], LV_OBJ_FLAG_HIDDEN);
+    }
 
     // Reclaim the programme line's 21 px for the bars, and move the name into it.
     lv_obj_set_height(w_logo_tile, on ? VIZ_H_TALL : VIZ_H_LOGO);
@@ -1104,7 +1208,7 @@ static void viz_cycle(void)
     st->viz = (st->viz + 1) % VIZ_MODE_COUNT;   // logo -> rainbow -> LED -> logo
     settings_save();
     viz_apply(st->viz);
-    static const char *names[] = { "logo", "rainbow", "LED" };
+    static const char *names[] = { "logo", "rainbow", "LED", "LED-rainbow" };
     ESP_LOGI(TAG, "player tile: %s", names[st->viz]);
 }
 
@@ -1397,45 +1501,36 @@ static void build_player_screen(void)
     // LVGL heap, and LVGL draws rects for us anyway.
     w_viz_rb  = viz_container(w_logo_tile);
     w_viz_led = viz_container(w_logo_tile);
+    w_viz_lr  = viz_container(w_logo_tile);
 
     // Rainbow: hue by BAND INDEX, fixed per bar, computed once here. Bass red ->
     // treble violet, so the bars dance while the spectrum stays legible. Hue
     // driven by amplitude instead makes the whole strip strobe as one and reads
     // as noise.
     for (int i = 0; i < VIZ_BANDS; i++) {
-        lv_obj_t *b = viz_rect(w_viz_rb, i * VIZ_BAR_PIT + 2, VIZ_H_TALL - 2,
+        lv_obj_t *b = viz_rect(w_viz_rb, VIZ_X0 + i * VIZ_BAR_PIT, VIZ_H_TALL - 2,
                                VIZ_BAR_W, 2);
         lv_obj_set_style_bg_color(b, lv_color_hsv_to_rgb(i * 360 / VIZ_BANDS, 90, 100), 0);
         lv_obj_set_style_radius(b, 2, 0);
         w_viz_rb_bar[i] = b;
     }
 
-    // LED/car: per band a STATIC full-height green->amber->red gradient, with a
-    // shutter above it that masks the unlit part. Colour therefore tracks
-    // absolute height (a short bar is all green) — a gradient on a
-    // height-animated bar would instead stretch red down onto quiet bands.
-    static lv_grad_dsc_t led_grad;                  // static: LVGL keeps the pointer
-    led_grad.dir = LV_GRAD_DIR_VER;
-    led_grad.stops_count = 3;
-    led_grad.stops[0].color = lv_color_hex(0xEF4444);  // top: red
-    led_grad.stops[0].frac  = 0;
-    led_grad.stops[1].color = lv_color_hex(0xF59E0B);  // amber
-    led_grad.stops[1].frac  = 120;
-    led_grad.stops[2].color = lv_color_hex(0x22C55E);  // bottom: green
-    led_grad.stops[2].frac  = 255;
-    // EVERY STOP CARRIES ITS OWN OPACITY, and this dsc is zero-initialised —
-    // leave it out and LVGL dutifully draws three fully TRANSPARENT stops. The
-    // bars vanish while the peak caps (plain bg_color, no gradient) still show.
-    for (int i = 0; i < led_grad.stops_count; i++) led_grad.stops[i].opa = LV_OPA_COVER;
+    // LED/car: three solid colour zones per band, resized each frame to the slice
+    // of the level that falls inside them. The obvious build — one full-height
+    // green->amber->red gradient per band with a shutter masking the unlit top —
+    // looks identical and is what I wrote first, but it paints every pixel ~3x
+    // (gradient, shutter over it, caps) with per-pixel interpolation: 165-213 ms
+    // a frame, and it pulled the decoder back under real-time. Solid zones paint
+    // lit pixels only, once, and keep colour tied to ABSOLUTE height.
+    static const uint32_t LED_COL[LED_ZONES] = { 0x22C55E, 0xF59E0B, 0xEF4444 };
     for (int i = 0; i < VIZ_BANDS; i++) {
-        int x = i * VIZ_BAR_PIT + 2;
-        lv_obj_t *bar = viz_rect(w_viz_led, x, 0, VIZ_BAR_W, VIZ_H_TALL);
-        lv_obj_set_style_bg_grad(bar, &led_grad, 0);
-        // Shutter, created after the bar so it paints over it. Opaque C_BG.
-        lv_obj_t *sh = viz_rect(w_viz_led, x, 0, VIZ_BAR_W, VIZ_H_TALL);
-        lv_obj_set_style_bg_color(sh, lv_color_hex(C_BG), 0);
-        w_viz_led_shut[i] = sh;
-        // Peak cap above the shutter in z-order, so it stays visible.
+        int x = VIZ_X0 + i * VIZ_BAR_PIT;
+        for (int z = 0; z < LED_ZONES; z++) {
+            lv_obj_t *o = viz_rect(w_viz_led, x, VIZ_H_TALL, VIZ_BAR_W, 0);
+            lv_obj_set_style_bg_color(o, lv_color_hex(LED_COL[z]), 0);
+            w_viz_led_zone[i][z] = o;
+        }
+        // Peak cap last per band, so it paints over the zones.
         lv_obj_t *cap = viz_rect(w_viz_led, x, VIZ_H_TALL - 2, VIZ_BAR_W, 2);
         lv_obj_set_style_bg_color(cap, lv_color_hex(0xEAEAEA), 0);
         w_viz_led_cap[i] = cap;
@@ -1447,10 +1542,44 @@ static void build_player_screen(void)
         lv_obj_set_style_bg_color(g, lv_color_hex(C_BG), 0);
     }
 
+    // LED_RB: the same car-stereo layout (single solid bar + peak cap + grille)
+    // but each bar wears its rainbow band-hue instead of the green/amber/red
+    // zones. One bar object per band (not three), grown from the baseline.
+    for (int i = 0; i < VIZ_BANDS; i++) {
+        int x = VIZ_X0 + i * VIZ_BAR_PIT;
+        lv_obj_t *b = viz_rect(w_viz_lr, x, VIZ_H_TALL, VIZ_BAR_W, 0);
+        lv_obj_set_style_bg_color(b, lv_color_hsv_to_rgb(i * 360 / VIZ_BANDS, 90, 100), 0);
+        w_viz_lr_bar[i] = b;
+        lv_obj_t *cap = viz_rect(w_viz_lr, x, VIZ_H_TALL - 2, VIZ_BAR_W, 2);
+        lv_obj_set_style_bg_color(cap, lv_color_hex(0xEAEAEA), 0);
+        w_viz_lr_cap[i] = cap;
+    }
+    for (int r = 1; r < VIZ_SEGS; r++) {
+        lv_obj_t *g = viz_rect(w_viz_lr, 0, VIZ_H_TALL - r * VIZ_SEG_PIT, 320, 2);
+        lv_obj_set_style_bg_color(g, lv_color_hex(C_BG), 0);
+    }
+
     s_viz_timer = lv_timer_create(viz_tick, 100, NULL);   // 10 fps — see viz_tick
     lv_timer_pause(s_viz_timer);                          // viz_apply() resumes it
     // NOTE: viz_apply() is deliberately NOT called here — it moves w_name and
     // hides w_prog, which do not exist yet. It runs at the END of this function.
+
+    // Extend the swipe/tap/long-press area over the station name + programme
+    // block below the logo tile. A transparent CLICKABLE layer wired to the same
+    // handlers; the name/prog labels are created AFTER it (higher z) and are not
+    // clickable, so touches on them fall through to this layer. Ends above the
+    // volume row (y=146) so it never steals the slider.
+    lv_obj_t *gext = lv_obj_create(s_scr_player);
+    lv_obj_set_size(gext, 320, 56);
+    lv_obj_set_pos(gext, 0, 88);
+    lv_obj_set_style_bg_opa(gext, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(gext, 0, 0);
+    lv_obj_set_style_pad_all(gext, 0, 0);
+    lv_obj_clear_flag(gext, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(gext, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(gext, ev_logo_pressed,  LV_EVENT_PRESSED,  NULL);
+    lv_obj_add_event_cb(gext, ev_logo_released, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(gext, ev_logo_long, LV_EVENT_LONG_PRESSED, NULL);
 
     // ---- Station name (JP) ----
     w_name = lv_label_create(s_scr_player);
