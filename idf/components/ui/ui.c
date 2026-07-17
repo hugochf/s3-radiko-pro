@@ -25,6 +25,8 @@
 #include "stations.h"
 #include "stream.h"
 #include "timesync.h"
+#include "recorder.h"
+#include "storage.h"
 #include "viz.h"
 #include "wifi.h"
 
@@ -251,6 +253,9 @@ static void persist_volume(void)  { settings_get()->volume  = s_vol; settings_sa
 // Reflect s_playing/s_cur onto the actual stream (non-blocking requests).
 static void apply_playback(void)
 {
+    // A recording captures ONE station's live airtime; any station switch or
+    // stop ends it cleanly (the fetcher is about to feed different/no audio).
+    recorder_stop();
     if (s_playing) stream_play(station_id(s_cur));
     else           stream_stop();
 }
@@ -527,6 +532,67 @@ static void refresh_settings_info(void)
     lv_label_set_text(s_set_info[5], b);
 }
 
+// ---- Recording (Phase 29): toggle capturing the current station to SD ----
+static lv_obj_t *s_rec_btn = NULL;      // player transport record circle
+static lv_obj_t *s_rec_dot = NULL;      // its record dot (● idle -> ■ recording)
+static lv_obj_t *s_reclib_lbl = NULL;
+static const lv_font_t *s_hdr_font = NULL;   // the title's normal font (captured at build)
+static void ev_open_recordings(lv_event_t *e);   // recordings browser (below)
+
+// Restore the normal centre title, "Radiko - <area>".
+static void set_title_live(void)
+{
+    if (!w_hdr) return;
+    if (s_hdr_font) lv_obj_set_style_text_font(w_hdr, s_hdr_font, 0);
+    lv_label_set_text_fmt(w_hdr, "Radiko - %s", radiko_area_name(radiko_area_num()));
+    lv_obj_set_style_text_color(w_hdr, lv_color_hex(C_TEXT), 0);
+}
+
+// Record button: red while recording, blue idle, grey with no SD; the icon is a
+// red ● (dot) when idle and a white ■ (stop) while recording.
+static void update_rec_btn(void)
+{
+    if (!s_rec_btn) return;
+    bool rec = recorder_active();
+    lv_obj_set_style_bg_color(s_rec_btn,
+        lv_color_hex(rec ? 0xE01030 : (storage_ready() ? C_ACCENT : C_TRACK)), 0);
+    if (s_rec_dot) {
+        lv_obj_set_style_radius(s_rec_dot, rec ? 2 : LV_RADIUS_CIRCLE, 0);   // ■ vs ●
+        lv_obj_set_style_bg_color(s_rec_dot, lv_color_hex(rec ? 0xFFFFFF : 0xFF3030), 0);
+    }
+}
+
+// 500 ms tick: keep the record button in sync, and flash a red "● REC m:ss" in
+// the title bar while recording (also covers auto-stop on station change). The
+// JP font carries U+25CF ● which the title's Montserrat lacks.
+static void rec_flash_cb(lv_timer_t *t)
+{
+    static bool title_is_rec, on;
+    update_rec_btn();
+    if (recorder_active()) {
+        on = !on;
+        uint32_t s = recorder_secs();
+        if (w_hdr) {
+            lv_obj_set_style_text_font(w_hdr, &lv_font_jp_16, 0);
+            lv_label_set_text_fmt(w_hdr, "%s REC  %lu:%02lu", on ? "\xE2\x97\x8F" : " ",
+                                  (unsigned long)(s / 60), (unsigned long)(s % 60));
+            lv_obj_set_style_text_color(w_hdr, lv_color_hex(0xFF4040), 0);
+        }
+        title_is_rec = true;
+    } else if (title_is_rec) {
+        set_title_live();       // recording ended -> restore the title once
+        title_is_rec = false;
+    }
+}
+
+static void ev_record_toggle(lv_event_t *e)
+{
+    if (recorder_active())      recorder_stop();
+    else if (storage_ready())   recorder_start(station_id(s_cur));
+    update_rec_btn();
+    if (!recorder_active()) set_title_live();   // immediate restore on stop
+}
+
 static void ev_open_settings(lv_event_t *e)
 {
     refresh_settings_info();
@@ -793,6 +859,17 @@ static void build_settings_screen(void)
     s_ota_lbl = lv_label_create(cont);
     lv_obj_set_style_text_color(s_ota_lbl, lv_color_hex(C_DIM), 0);
     lv_label_set_text(s_ota_lbl, "");
+
+    // ---- Recordings library (Phase 29; the Record toggle lives on the player) ----
+    lv_obj_t *rl_btn = lv_button_create(cont);
+    lv_obj_set_size(rl_btn, 288, 30);
+    lv_obj_set_style_bg_color(rl_btn, lv_color_hex(C_ACCENT), 0);
+    lv_obj_set_style_shadow_width(rl_btn, 0, 0);
+    lv_obj_add_event_cb(rl_btn, ev_open_recordings, LV_EVENT_CLICKED, NULL);
+    s_reclib_lbl = lv_label_create(rl_btn);
+    lv_obj_center(s_reclib_lbl);
+    // No count here — it would mount the SD (kept unmounted during streaming).
+    lv_label_set_text(s_reclib_lbl, LV_SYMBOL_SD_CARD "  Recordings");
 
     update_dim_off_state();   // grey dim/off if the saver owns the timeouts
 }
@@ -1300,6 +1377,9 @@ static void ev_select_station(lv_event_t *e)
 // (LVGL task), so it already holds the LVGL lock. wifi_get_* are thread-safe.
 static void status_timer_cb(lv_timer_t *t)
 {
+    // NB: do NOT call recorder_count() here — it mounts the SD card, and the SD
+    // is deliberately kept unmounted during streaming (RAM for TLS). The count
+    // is refreshed when Settings opens instead.
     if (!w_wifi) return;
     char buf[24];
     uint32_t color;
@@ -1456,6 +1536,7 @@ static void build_player_screen(void)
     lv_label_set_text_fmt(w_hdr, "Radiko - %s", radiko_area_name(radiko_area_num()));
     lv_obj_set_style_text_color(w_hdr, lv_color_hex(C_TEXT), 0);
     lv_obj_center(w_hdr);
+    s_hdr_font = lv_obj_get_style_text_font(w_hdr, LV_PART_MAIN);   // restore after REC
 
     // Battery (real reading via ADC); tapping it cycles brightness (Arduino).
     lv_obj_t *bbtn = lv_button_create(bar);
@@ -1629,17 +1710,30 @@ static void build_player_screen(void)
     lv_obj_set_style_text_color(w_vol_val, lv_color_hex(C_TEXT), 0);
     lv_obj_set_pos(w_vol_val, 286, 146);
 
-    // ---- Transport buttons ----
-    lv_obj_t *bp = mk_circle_btn(s_scr_player, 44, 16,  176, C_ACCENT, ev_prev);
+    // ---- Transport buttons (6: prev, play, next | record, sleep, LED) ----
+    // Row re-spaced from 5 to 6 to seat the record button (Phase 29) next to the
+    // utility pair; play stays the hero in the left-centre.
+    lv_obj_t *bp = mk_circle_btn(s_scr_player, 44, 8,  176, C_ACCENT, ev_prev);
     lv_obj_t *lp = lv_label_create(bp); lv_label_set_text(lp, LV_SYMBOL_PREV); lv_obj_center(lp);
 
-    lv_obj_t *bplay = mk_circle_btn(s_scr_player, 56, 90, 170, C_HL, ev_play);
+    lv_obj_t *bplay = mk_circle_btn(s_scr_player, 56, 72, 170, C_HL, ev_play);
     w_play = lv_label_create(bplay); lv_obj_center(w_play);
 
-    lv_obj_t *bn = mk_circle_btn(s_scr_player, 44, 176, 176, C_ACCENT, ev_next);
+    lv_obj_t *bn = mk_circle_btn(s_scr_player, 44, 140, 176, C_ACCENT, ev_next);
     lv_obj_t *ln = lv_label_create(bn); lv_label_set_text(ln, LV_SYMBOL_NEXT); lv_obj_center(ln);
 
-    lv_obj_t *bs = mk_circle_btn(s_scr_player, 34, 244, 181, C_ACCENT, ev_sleep_toggle);
+    // Record: a circle with a red "record" dot; bg goes red while capturing.
+    s_rec_btn = mk_circle_btn(s_scr_player, 34, 200, 181, C_ACCENT, ev_record_toggle);
+    s_rec_dot = lv_obj_create(s_rec_btn);
+    lv_obj_set_size(s_rec_dot, 12, 12);
+    lv_obj_set_style_radius(s_rec_dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(s_rec_dot, lv_color_hex(0xFF3030), 0);
+    lv_obj_set_style_border_width(s_rec_dot, 0, 0);
+    lv_obj_center(s_rec_dot);
+    lv_obj_add_flag(s_rec_dot, LV_OBJ_FLAG_EVENT_BUBBLE);   // tap reaches the button
+    update_rec_btn();
+
+    lv_obj_t *bs = mk_circle_btn(s_scr_player, 34, 242, 181, C_ACCENT, ev_sleep_toggle);
     s_sleep_lbl = lv_label_create(bs);
     lv_label_set_text(s_sleep_lbl, LV_SYMBOL_BELL);
     lv_obj_center(s_sleep_lbl);
@@ -1905,6 +1999,143 @@ void ui_show_wifi_setup(void)
 }
 
 // =====================================================================
+// Recordings browser (Phase 29): list SD recordings, tap to play through the
+// same decoder. Playing a recording interrupts live radio; Back resumes it.
+// =====================================================================
+#define REC_MAX_ROWS 40
+static lv_obj_t *s_scr_rec   = NULL;
+static lv_obj_t *s_rec_list  = NULL;
+static lv_obj_t *s_rec_now   = NULL;
+static char      s_rec_names[REC_MAX_ROWS][REC_NAME_MAX];
+static char      s_rec_playing[REC_NAME_MAX];
+static bool      s_rec_interrupted;   // did we stop live radio to play a file?
+
+static void rec_refresh_now(void *unused)   // runs on the LVGL thread
+{
+    if (!s_rec_now) return;
+    if (s_rec_playing[0]) lv_label_set_text_fmt(s_rec_now, LV_SYMBOL_PLAY "  %s", s_rec_playing);
+    else                  lv_label_set_text(s_rec_now, "Tap a recording to play");
+}
+
+// Called from the stream control task at EOF — marshal to the LVGL thread.
+static void rec_end_cb(void)
+{
+    s_rec_playing[0] = '\0';
+    lv_async_call(rec_refresh_now, NULL);
+}
+
+static void ev_play_recording(lv_event_t *e)
+{
+    const char *name = lv_event_get_user_data(e);
+    char path[REC_NAME_MAX + 32];
+    recorder_path(name, path, sizeof(path));
+    stream_play_file(path);
+    strncpy(s_rec_playing, name, sizeof(s_rec_playing) - 1);
+    s_rec_playing[sizeof(s_rec_playing) - 1] = '\0';
+    s_rec_interrupted = true;
+    rec_refresh_now(NULL);
+}
+
+static void ev_rec_stop(lv_event_t *e)
+{
+    stream_stop();
+    s_rec_playing[0] = '\0';
+    rec_refresh_now(NULL);
+}
+
+static void ev_rec_back(lv_event_t *e)
+{
+    stream_stop();
+    s_rec_playing[0] = '\0';
+    if (s_rec_interrupted) { s_rec_interrupted = false; apply_playback(); }  // resume live
+    lv_screen_load(s_scr_player);
+}
+
+static void rebuild_rec_rows(void)
+{
+    lv_obj_clean(s_rec_list);
+    int n = recorder_list(s_rec_names, REC_MAX_ROWS);
+    if (n == 0) {
+        lv_obj_t *l = lv_label_create(s_rec_list);
+        lv_label_set_text(l, storage_ready() ? "No recordings yet" : "No SD card");
+        lv_obj_set_style_text_color(l, lv_color_hex(C_DIM), 0);
+        return;
+    }
+    for (int i = 0; i < n; i++) {
+        lv_obj_t *row = lv_button_create(s_rec_list);
+        lv_obj_set_size(row, 300, 34);
+        lv_obj_set_style_bg_color(row, lv_color_hex(C_PANEL), 0);
+        lv_obj_set_style_bg_color(row, lv_color_hex(C_HL), LV_STATE_PRESSED);
+        lv_obj_set_style_shadow_width(row, 0, 0);
+        lv_obj_add_event_cb(row, ev_play_recording, LV_EVENT_CLICKED, s_rec_names[i]);
+        lv_obj_t *l = lv_label_create(row);
+        lv_label_set_text(l, s_rec_names[i]);   // basename; station_time is embedded
+        lv_obj_set_style_text_color(l, lv_color_hex(C_TEXT), 0);
+        lv_obj_center(l);
+    }
+}
+
+static void build_recordings_screen(void)
+{
+    s_scr_rec = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_scr_rec, lv_color_hex(C_BG), 0);
+    lv_obj_clear_flag(s_scr_rec, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *hdr = lv_obj_create(s_scr_rec);
+    lv_obj_set_size(hdr, 320, 28);
+    lv_obj_set_pos(hdr, 0, 0);
+    lv_obj_set_style_bg_color(hdr, lv_color_hex(C_PANEL), 0);
+    lv_obj_set_style_radius(hdr, 0, 0);
+    lv_obj_set_style_border_width(hdr, 0, 0);
+    lv_obj_set_style_pad_all(hdr, 2, 0);
+    lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *back = lv_button_create(hdr);
+    lv_obj_set_size(back, 70, 22);
+    lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_bg_color(back, lv_color_hex(C_ACCENT), 0);
+    lv_obj_add_event_cb(back, ev_rec_back, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *bl = lv_label_create(back);
+    lv_label_set_text(bl, LV_SYMBOL_LEFT " Back");
+    lv_obj_center(bl);
+
+    lv_obj_t *ttl = lv_label_create(hdr);
+    lv_label_set_text(ttl, "Recordings");
+    lv_obj_set_style_text_color(ttl, lv_color_hex(C_TEXT), 0);
+    lv_obj_align(ttl, LV_ALIGN_CENTER, 20, 0);
+
+    lv_obj_t *stop = lv_button_create(hdr);
+    lv_obj_set_size(stop, 54, 22);
+    lv_obj_align(stop, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_set_style_bg_color(stop, lv_color_hex(C_HL), 0);
+    lv_obj_add_event_cb(stop, ev_rec_stop, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *sl = lv_label_create(stop);
+    lv_label_set_text(sl, LV_SYMBOL_STOP);
+    lv_obj_center(sl);
+
+    s_rec_now = lv_label_create(s_scr_rec);
+    lv_obj_set_pos(s_rec_now, 10, 32);
+    lv_obj_set_style_text_color(s_rec_now, lv_color_hex(C_DIM), 0);
+    lv_label_set_text(s_rec_now, "Tap a recording to play");
+
+    s_rec_list = lv_obj_create(s_scr_rec);
+    lv_obj_set_size(s_rec_list, 314, 180);
+    lv_obj_set_pos(s_rec_list, 3, 54);
+    lv_obj_set_style_bg_color(s_rec_list, lv_color_hex(C_BG), 0);
+    lv_obj_set_style_border_width(s_rec_list, 0, 0);
+    lv_obj_set_flex_flow(s_rec_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(s_rec_list, 4, 0);
+}
+
+static void ev_open_recordings(lv_event_t *e)
+{
+    if (!s_scr_rec) build_recordings_screen();
+    rebuild_rec_rows();
+    rec_refresh_now(NULL);
+    lv_screen_load(s_scr_rec);
+}
+
+// =====================================================================
 esp_err_t ui_init(void)
 {
     s_mutex = xSemaphoreCreateRecursiveMutex();
@@ -1991,6 +2222,8 @@ esp_err_t ui_init(void)
     lv_timer_t *fs = lv_timer_create(splash_timer_cb, SPLASH_FAILSAFE_MS, NULL);
     lv_timer_set_repeat_count(fs, 1);
 
+    stream_on_playback_end(rec_end_cb);            // file playback EOF -> UI update
+    lv_timer_create(rec_flash_cb, 500, NULL);      // record button + flashing REC title
     lv_timer_create(status_timer_cb, 2000, NULL);  // WiFi/status bar refresh
     lv_timer_create(idle_timer_cb, 300, NULL);     // screen dim/off after idle
 

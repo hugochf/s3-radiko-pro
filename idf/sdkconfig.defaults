@@ -90,6 +90,17 @@ CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
 # 160 kbps stream bitrate.
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 
+# Software AES for TLS (Phase 29). The hardware AES accelerator uses DMA, which
+# cannot read the PSRAM where EXTERNAL_MEM_ALLOC puts the mbedtls buffers — so
+# every TLS record allocated an INTERNAL bounce buffer for the DMA. Under memory
+# pressure (SD mount, the persistent audio-task stacks) that allocation failed
+# ("esp-aes: Failed to allocate memory"), which broke the stream connection and,
+# worse, every reconnect failed the same way so the radio never recovered.
+# Software AES operates directly on the PSRAM buffers with no internal DMA at
+# all; the CPU cost is negligible at this stream bitrate. This is what finally
+# made streaming reliable once SD + recording shrank the internal-RAM headroom.
+CONFIG_MBEDTLS_HARDWARE_AES=n
+
 # --- OTA rollback (Phase 22) ---
 # An OTA-installed image boots as PENDING_VERIFY; unless the app marks itself
 # valid (main does so after 30 s alive), the NEXT reset rolls back to the
@@ -110,3 +121,10 @@ CONFIG_ESP_TASK_WDT_PANIC=y
 # wedges the chip — same failure class as the Phase 13 touch-INT bug, seen as
 # intermittent touch loss / full hangs.
 CONFIG_RMT_ISR_IRAM_SAFE=y
+
+# --- FATFS long filenames (Phase 29) ---
+# Recordings are named <station>_<JST timestamp>.aac (e.g.
+# FMT_20260717_113101.aac) — 19 chars, well past FAT's 8.3 limit. Without LFN,
+# fopen() of such a name fails outright. HEAP variant keeps the 255-byte name
+# buffer off the (scarce) stack.
+CONFIG_FATFS_LFN_HEAP=y

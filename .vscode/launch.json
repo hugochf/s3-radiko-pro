@@ -1,0 +1,25 @@
+{
+    // Attach Cursor's visual debugger to the live radio over USB-JTAG.
+    // Prerequisite: OpenOCD running in a terminal:
+    //   source ~/esp/v5.3.5/esp-idf/export.sh && openocd -f board/esp32s3-builtin.cfg
+    // Then F5. Gutter breakpoints, variable hover, thread list all work.
+    // RULE: the ELF must be the exact build on the chip (idf.py flash first).
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Attach to radio (JTAG)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/idf/build/s3_radiko_pro.elf",
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "miDebuggerPath": "/Users/chowhiufunghugo/.espressif/tools/xtensa-esp-elf-gdb/16.3_20250913/xtensa-esp-elf-gdb/bin/xtensa-esp32s3-elf-gdb",
+            "miDebuggerServerAddress": "localhost:3333",
+            "externalConsole": false,
+            "setupCommands": [
+                { "text": "set pagination off" },
+                { "text": "set remotetimeout 20" }
+            ]
+        }
+    ]
+}

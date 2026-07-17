@@ -30,6 +30,8 @@
 #include "radiko.h"
 #include "settings.h"
 #include "stations.h"
+#include "recorder.h"
+#include "storage.h"
 #include "stream.h"
 #include "timesync.h"
 #include "touch.h"
@@ -167,8 +169,18 @@ void app_main(void) {
   // Battery gauge (ADC on GPIO9); the UI polls it from the status-bar tick.
   battery_init();
 
-  // Phase 12: player-control task (UI posts play/stop commands to it).
+  // Phase 29: recorder writer task (idle until the UI starts a recording).
+  recorder_init();
+
+  // Phase 12: player-control task + the PERSISTENT decoder. Created here, BEFORE
+  // storage_init(), so the decoder's 20 KB stack is claimed while internal RAM is
+  // unfragmented — mounting the SD card first split the largest free block below
+  // 20 KB and the decoder silently failed to start (Phase 29).
   stream_control_start();
+
+  // Phase 29: mount the SD card AFTER the decoder exists. Not fatal if absent —
+  // storage_ready() gates recording; the radio plays regardless.
+  storage_init();
 
   // Phase 14: "now on air" titles. Created HERE, at boot, so its task stack is
   // allocated before any TLS session runs — created later it can split the

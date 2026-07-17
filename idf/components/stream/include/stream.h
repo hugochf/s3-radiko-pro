@@ -13,7 +13,9 @@ extern "C" {
 void stream_control_start(void);
 
 void stream_play(const char *station_id);   // request: (re)start a station
+void stream_play_file(const char *path);     // request: play a recorded .aac from SD
 void stream_stop(void);                      // request: stop playback
+void stream_on_playback_end(void (*cb)(void)); // file playback reached EOF (from ctrl task)
 
 #ifdef __cplusplus
 }

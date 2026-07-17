@@ -132,7 +132,7 @@ back to esp-adf only if libhelix proves unworkable.
 | 26 | Localization framework | Japanese UI strings via lookup table |
 | 27 | Better volume curve, equalizer | Audio quality |
 | 28 | Bluetooth output | A2DP source |
-| 29 | Time-free recording | Persistent storage to SD |
+| 29 | **Recording to SD + playback** | 29a ✅ live record + on-device playback; 29b time-free deferred |
 | 30 | **VPN-free geo-auth + area picker** ✅ | Android-app auth so any area streams from any IP; Settings area selector (built) |
 | 31 | **LVGL heap exhaustion fix** ✅ | Opening WiFi setup rebooted the radio: LVGL's fixed 64 KB pool hit 100%. +256 KB PSRAM spill pool |
 | 32 | **Audio visualiser** | Rainbow spectrum bars in the logo tile; long-press to toggle. FFT of the PCM actually being played |
@@ -194,6 +194,85 @@ pull up D3 falls back to 1-bit — verify first); card hot-plug / mount-on-boot 
 on-demand; filesystem-full handling; filename metadata (station id + JST); the
 record trigger UI (manual button vs scheduled — deferred); and playback controls
 (list, play/pause, seek within a recording).
+
+#### Phase 29a — built (record + on-device playback)
+
+Shipped end-to-end and verified on-device: record a live station to SD, browse
+recordings, play one back through the speaker. New components: `storage` (SDMMC
+4-bit mount), `recorder` (writer task + command queue). Playback reuses the
+stream component's decoder — a file source feeding the SAME `s_q` the fetcher
+uses, so there is ONE decode/audio path, not two.
+
+- **Recording is a fork, not a copy of the pipeline.** The fetcher already holds
+  each downloaded ID3+ADTS segment; `recorder_feed()` dups it to a writer task.
+  Non-blocking (drops a segment on a full queue, never stalls the fetcher). ID3
+  stripped, raw ADTS appended → a `.aac` that plays anywhere (confirmed on macOS)
+  and feeds straight back into libhelix.
+- **FAT 8.3 bit HARD.** `FMT_20260717_115841.aac` is 19 chars; the default
+  `CONFIG_FATFS_LFN_NONE` silently makes `fopen(..,"w")` FAIL for any name past
+  8.3. Enable `CONFIG_FATFS_LFN_HEAP`. Anyone doing dated filenames on ESP-IDF
+  hits this. (And regenerate sdkconfig — the Phase 31 defaults-vs-generated trap.)
+- **Playback = a second source into the one pipeline.** `stream_play_file()`
+  stops the fetcher and starts a file-reader task that ADTS-frame-aligns its
+  reads (never splits a frame across a `seg_t`, which the decoder would drop) and
+  feeds `s_q`. The decoder/PCM-ring/I2S path is untouched. This is the payoff of
+  keeping the audio pipeline hand-owned: adding a source was ~120 lines, no new
+  decoder.
+- **"File read" ≠ "audio finished."** A short recording (≤ a few segments) fits
+  entirely in the 4-deep queue + the 30 s PCM ring, so the reader hits EOF in
+  ~250 ms while ~30 s of audio is still buffered. The EOF callback fired ~30 s
+  early and cleared "now playing" prematurely. Fix: after read-EOF, wait until
+  `uxQueueMessagesWaiting(s_q)==0 && audio_ring_bytes()<4 KB` — i.e. the ring has
+  actually drained — before signalling end. (`audio_ring_bytes()` already existed
+  from the Phase 32 visualiser gate.)
+- **Throughput/latency validated the design before code:** SD 1.03 MB/s write,
+  113 ms worst-block stall → writes on their own task (recording needs ~15-70
+  KB/s, so 15-70× margin). 15 GB ≈ 500-700 h.
+- Trigger UI is a 6th button in the transport row (a Settings-page toggle was
+  rejected — recording must be one tap from the player). While recording, the
+  title bar flashes "● REC m:ss" in red and the record glyph becomes a ■ stop
+  square. An in-progress recording shows 0 KB until Stop flushes/closes it (fsync
+  every 10 segments; fclose on Stop) — playing a not-yet-closed file is empty.
+
+**The internal-RAM war (the real cost of Phase 29a).** Adding SD + a second
+audio source to a board already at its internal-RAM limit was the whole battle;
+the record/playback code was the easy part. In order, each fix bought RAM the
+next thing then needed — a chain worth reading before touching this again:
+
+- **Task stacks must be claimed while RAM is unfragmented.** Re-creating the
+  16 KB fetcher / 20 KB decoder per stream started failing once SDMMC had split
+  the largest free block below 20 KB (`xTaskCreate` → NULL, silent-dead radio).
+  Fix: create both ONCE at boot, PERSISTENT, before `storage_init()`; gate them
+  with a flag between sessions instead of deleting.
+- **Keeping the SD mounted starves TLS.** The SDMMC/FATFS mount holds ~12 KB
+  internal; left mounted it dropped free internal low enough that the TLS
+  handshake failed forever (no audio). Fix: LAZY refcounted mount — the card is
+  mounted only while recording or browsing, unmounted during normal streaming.
+- **PSRAM cannot be a DMA source, twice over.** (1) SDMMC DMA straight from a
+  PSRAM buffer is pathologically slow (~2.8 s / 31 KB, froze the UI) → the writer
+  bounces through a static internal 4 KB buffer. (2) The mount call chain is deep
+  and overflowed the 3 KB stream_ctl stack. Enlarging that stack permanently just
+  starved TLS again — so run the mount on a TRANSIENT helper task (6 KB stack,
+  deleted the instant the mount returns): zero lasting stack cost.
+- **The decoder must bound itself to its buffer.** libhelix trusts the ADTS
+  frame-length field with no internal bounds check, so a false 0xFFF sync near a
+  buffer's end (its garbage length exceeds what's left) walks the decoder off the
+  end of the allocation (`RefillBitstreamCache` OOB → LoadProhibited). Live
+  streams rarely desync; a recorded file that
+  desyncs once crashed `seg_dec` on playback. Fix: reject any frame whose
+  declared `flen > bytes-left` and resync one byte on. Hardens live too.
+- **THE root cause of every "no sound": hardware AES + PSRAM mbedtls buffers.**
+  `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y` puts TLS buffers in PSRAM, but the
+  hardware AES accelerator uses DMA (internal-only), so every TLS record
+  allocated an internal bounce for AES. Once SD/recording shrank the headroom
+  that allocation intermittently failed (`esp-aes: Failed to allocate memory`),
+  breaking the connection — and every reconnect failed identically, so the radio
+  never recovered (silent at boot, or died minutes in when free dipped). Fix:
+  `CONFIG_MBEDTLS_HARDWARE_AES=n` — software AES works directly on the PSRAM
+  buffers, no internal DMA. Negligible CPU at stream bitrate; made streaming +
+  SD finally coexist. Soak: 5 min continuous, 0 AES failures, free internal a
+  steady 19 KB. **Lesson: HW-crypto + external-mem-alloc is a latent OOM on any
+  RAM-tight design; prefer software crypto once internal RAM is contended.**
 
 #### Phase 32 design — audio visualiser
 
