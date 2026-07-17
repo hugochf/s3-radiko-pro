@@ -139,9 +139,16 @@ back to esp-adf only if libhelix proves unworkable.
 
 #### Phase 29 design — record to SD (studied, not yet built)
 
-**Hardware verdict (verified against the BSP): best case.** The board's micro-SD
-slot is **SDMMC 4-bit on dedicated pins** — CLK=IO38, CMD=IO40, D0-D3=
-IO39/41/48/47 — and does **not** share the LCD's SPI bus. Cross-checked against
+**Hardware verdict: CONFIRMED ON-DEVICE.** A throwaway SDMMC-4-bit self-test
+mounted, wrote, read and byte-verified a card first try — pins from the BSP were
+correct. Card: SDHC 15 GB. **Write 1.03 MB/s, read 0.99 MB/s, worst single-block
+write 113 ms** (32 KB block, fsync each). Recording needs ~15-70 KB/s, so
+throughput is 15-70× the requirement and 15 GB holds ~500-700 h. The **113 ms
+worst-case stall is the design driver**: writes must run on a dedicated task+queue
+so a FAT/flush stall never reaches the decoder on core 0.
+
+The board's micro-SD slot is **SDMMC 4-bit on dedicated pins** — CLK=IO38,
+CMD=IO40, D0-D3=IO39/41/48/47 — and does **not** share the LCD's SPI bus. Cross-checked against
 every pin we use (LCD 10-13/45-46, I²C 15-16, touch 17-18, I²S 4/5/7/8+1, WS2812
 42, batt 9): **zero conflicts**. So card writes can't stall the display or audio
 DMA. Mount with `esp_vfs_fat_sdmmc_mount` + FATFS; 4-bit needs the D-lines pulled
