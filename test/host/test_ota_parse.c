@@ -10,8 +10,8 @@ static const char *RELEASE_JSON =
     "\"assets\":["
     "{\"name\":\"notes.txt\",\"browser_download_url\":"
     "\"https://github.com/x/y/releases/download/v0.22.1/notes.txt\"},"
-    "{\"name\":\"s3_radiko_pro.bin\",\"browser_download_url\":"
-    "\"https://github.com/x/y/releases/download/v0.22.1/s3_radiko_pro.bin\"}"
+    "{\"name\":\"esp32_radiko_player_pro.bin\",\"browser_download_url\":"
+    "\"https://github.com/x/y/releases/download/v0.22.1/esp32_radiko_player_pro.bin\"}"
     "],\"body\":\"changelog\"}";
 
 static void test_parse_release_tag_and_bin_asset(void)
@@ -21,7 +21,7 @@ static void test_parse_release_tag_and_bin_asset(void)
                                        url, sizeof(url)));
     TEST_ASSERT_EQUAL_STRING("v0.22.1", tag);
     TEST_ASSERT_EQUAL_STRING(
-        "https://github.com/x/y/releases/download/v0.22.1/s3_radiko_pro.bin",
+        "https://github.com/x/y/releases/download/v0.22.1/esp32_radiko_player_pro.bin",
         url);
 }
 

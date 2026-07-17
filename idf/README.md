@@ -1,4 +1,4 @@
-# s3-radiko-pro
+# ESP32 Radiko Player Pro
 
 An ESP-IDF reimplementation of the Arduino [S3 Radiko](../arduino/) internet
 radio, rebuilt as a vehicle for practising **commercial-grade embedded

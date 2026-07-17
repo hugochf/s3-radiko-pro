@@ -33,9 +33,9 @@ jobs:
       - name: Upload firmware binary
         uses: actions/upload-artifact@v4
         with:
-          name: s3-radiko-pro-firmware
+          name: esp32-radiko-player-pro-firmware
           path: |
-            idf/build/s3_radiko_pro.bin
+            idf/build/esp32_radiko_player_pro.bin
             idf/build/bootloader/bootloader.bin
             idf/build/partition_table/partition-table.bin
           if-no-files-found: error

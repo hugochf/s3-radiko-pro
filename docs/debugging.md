@@ -107,7 +107,7 @@ A catchable panic (LoadProhibited, assert, or a task-watchdog trip) prints a
 `Backtrace: 0xADDR:0xADDR ...` line. Symbolize it against the ELF:
 
 ```sh
-xtensa-esp32s3-elf-addr2line -pfiaC -e build/s3_radiko_pro.elf 0x4201e1b1 0x4201e62e ...
+xtensa-esp32s3-elf-addr2line -pfiaC -e build/esp32_radiko_player_pro.elf 0x4201e1b1 0x4201e62e ...
 ```
 
 ### Coredump from flash
@@ -167,7 +167,7 @@ source ~/esp/v5.3.5/esp-idf/export.sh
 openocd -f board/esp32s3-builtin.cfg
 
 # Terminal 2 — the debugger:
-xtensa-esp32s3-elf-gdb idf/build/s3_radiko_pro.elf \
+xtensa-esp32s3-elf-gdb idf/build/esp32_radiko_player_pro.elf \
     -ex "target extended-remote :3333"
 ```
 
@@ -229,6 +229,6 @@ non-yielding loop; do not just raise the timeout.
 |-------|-------|
 | Port | `/dev/cu.usbmodem2101` (native USB-Serial-JTAG) |
 | IDF Python (has pyserial) | `~/.espressif/python_env/idf5.3_py3.14_env/bin/python` |
-| ELF for symbolizing | `idf/build/s3_radiko_pro.elf` |
+| ELF for symbolizing | `idf/build/esp32_radiko_player_pro.elf` |
 | Toolchain source | `. ~/esp/v5.3.5/esp-idf/export.sh` |
 | Recover a wedge | physical unplug/replug, then flash |

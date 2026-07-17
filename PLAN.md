@@ -1,4 +1,4 @@
-# s3-radiko-pro — Plan
+# ESP32 Radiko Player Pro — Plan
 
 ESP-IDF reimplementation of the Arduino-based S3 Radiko player as a learning
 vehicle for **commercial-grade embedded development practices** on macOS.
@@ -445,7 +445,7 @@ learning artifact.
   repo's *initial* commit to skip the run, and until a run fires GitHub doesn't
   register/list the workflow at all (`actions/workflows` returns 0). Dropping the
   path filter (run on every push) fixed registration. Repo:
-  https://github.com/hugochf/s3-radiko-pro — CI green in ~2m10s (ESP-IDF v5.3.5).
+  https://github.com/hugochf/esp32-radiko-player-pro — CI green in ~2m10s (ESP-IDF v5.3.5).
 - **Publishing over HTTPS needs a token with `workflow` scope**, else the push
   that adds `.github/workflows/*` is rejected. `gh auth` already had it.
 - Minor: `actions/checkout@v4` + `upload-artifact@v4` emit a Node 20 deprecation

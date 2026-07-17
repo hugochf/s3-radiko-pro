@@ -1,4 +1,4 @@
-# s3-radiko-pro — ESP-IDF reimplementation of the Arduino S3 Radiko player.
+# esp32-radiko-player-pro — ESP-IDF reimplementation of the Arduino S3 Radiko player.
 # Pinned to ESP-IDF v5.3.x. See ../PLAN.md for the phased roadmap.
 cmake_minimum_required(VERSION 3.16)
 
@@ -18,4 +18,4 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 # being the slot that tips it over. (Phase 32)
 idf_build_set_property(COMPILE_OPTIONS "-DLV_INV_BUF_SIZE=192" APPEND)
 
-project(s3_radiko_pro)
+project(esp32_radiko_player_pro)

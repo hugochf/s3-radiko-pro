@@ -1,5 +1,5 @@
 /*
- * s3-radiko-pro — Phase 0: project skeleton.
+ * esp32-radiko-player-pro — Phase 0: project skeleton.
  *
  * No peripherals yet. This just proves the toolchain, partition table, PSRAM,
  * and USB console all work end-to-end, and prints a boot banner we can watch
@@ -74,7 +74,7 @@ static void radiko_auth_task(void *arg) {
 
 void app_main(void) {
   const esp_app_desc_t *app = esp_app_get_description();
-  ESP_LOGI(TAG, "s3-radiko-pro %s (built %s %s, IDF %s)", app->version,
+  ESP_LOGI(TAG, "esp32-radiko-player-pro %s (built %s %s, IDF %s)", app->version,
            app->date, app->time, app->idf_ver);
 
   esp_chip_info_t chip;

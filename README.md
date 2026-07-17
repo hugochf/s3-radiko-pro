@@ -1,4 +1,6 @@
-# s3-radiko-pro
+# ESP32 Radiko Player Pro
+
+**English** | [日本語](README.ja.md)
 
 A palm-sized touchscreen [Radiko](https://radiko.jp/) internet radio for the
 ESP32-S3, built from scratch in **ESP-IDF** — and it streams **any of Japan's 47

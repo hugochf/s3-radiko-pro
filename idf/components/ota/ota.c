@@ -14,7 +14,7 @@
 static const char *TAG = "ota";
 
 #define RELEASES_URL \
-    "https://api.github.com/repos/hugochf/s3-radiko-pro/releases/latest"
+    "https://api.github.com/repos/hugochf/esp32-radiko-player-pro/releases/latest"
 #define JSON_CAP (16 * 1024)   // /releases/latest body (PSRAM, transient)
 
 // ---- release check ----
@@ -46,7 +46,7 @@ esp_err_t ota_check(char *tag, size_t tag_cap, char *url, size_t url_cap,
         .event_handler     = on_http,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms        = 15000,
-        .user_agent        = "s3-radiko-pro-ota",   // GitHub API requires a UA
+        .user_agent        = "esp32-radiko-player-pro-ota",   // GitHub API requires a UA
     };
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) { free(json); return ESP_FAIL; }
@@ -93,7 +93,7 @@ esp_err_t ota_update(const char *url, ota_progress_cb_t cb)
         // the elog on the first field test); headers land in the RX buffer.
         .buffer_size       = 8192,
         .buffer_size_tx    = 4096,
-        .user_agent        = "s3-radiko-pro-ota",
+        .user_agent        = "esp32-radiko-player-pro-ota",
     };
     esp_https_ota_config_t cfg = { .http_config = &http };
 

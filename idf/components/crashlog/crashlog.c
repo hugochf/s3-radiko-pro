@@ -30,7 +30,7 @@ void crashlog_check(void)
              sum.exc_task, (unsigned long)sum.exc_pc);
 
     // Backtrace as one addr2line-ready line:
-    //   xtensa-esp32s3-elf-addr2line -pfiaC -e build/s3_radiko_pro.elf <addrs>
+    //   xtensa-esp32s3-elf-addr2line -pfiaC -e build/esp32_radiko_player_pro.elf <addrs>
     char bt[16 * 11 + 1] = "";
     int  pos = 0;
     for (int i = 0; i < sum.exc_bt_info.depth && i < 16; i++) {
