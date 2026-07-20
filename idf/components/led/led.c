@@ -14,6 +14,7 @@ static const char *TAG = "led";
 
 static led_strip_handle_t s_strip = NULL;
 static volatile int       s_mode  = 0;
+static volatile bool      s_rec   = false;   // recording -> solid full-red, effects off
 
 static const char *MODE_NAMES[LED_MODES] =
     {"Rainbow", "Ocean", "Sunset", "Candle", "Cycle", "Pulse", "LED OFF"};
@@ -46,6 +47,14 @@ static void led_task(void *arg)
     for (;;) {
         // 30 ms units — the Arduino build's exact tick, so every effect runs at
         // the same speed (rainbow breath 7.7 s, full hue cycle 32.4 s).
+        // Recording overrides every mode with a steady full-brightness red — an
+        // unmistakable "on air" tally that never dims or animates.
+        if (s_rec) {
+            led_strip_set_pixel(s_strip, 0, 255, 0, 0);
+            led_strip_refresh(s_strip);
+            vTaskDelay(pdMS_TO_TICKS(30));
+            continue;
+        }
         uint16_t phase = (uint16_t)(esp_timer_get_time() / 1000 / 30);
         uint8_t r = 0, g = 0, b = 0;
         float breath;
@@ -113,5 +122,7 @@ void led_set_mode(int mode)
 {
     if (mode >= 0 && mode < LED_MODES) s_mode = mode;
 }
+
+void led_set_recording(bool on) { s_rec = on; }
 
 int led_mode(void) { return s_mode; }

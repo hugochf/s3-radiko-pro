@@ -6,6 +6,7 @@
  */
 #pragma once
 
+#include <stdbool.h>
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -19,6 +20,7 @@ esp_err_t   led_init(void);
 const char *led_cycle_mode(void);
 int         led_mode(void);          // current mode index (6 = off)
 void        led_set_mode(int mode);  // jump to a mode (restore from settings)
+void        led_set_recording(bool on);  // recording -> solid full-red tally, effects off
 
 #ifdef __cplusplus
 }

@@ -57,33 +57,45 @@ static esp_err_t do_mount_inner(void)
     return ESP_OK;
 }
 
-// The SDMMC/FATFS mount is a DEEP call chain (it overflowed the 3 KB stream_ctl
-// stack — Phase 29 crash). Rather than permanently enlarging the audio tasks'
-// stacks (which starved the TLS handshake of internal RAM → "no sound"), run the
-// mount on a transient helper task with a generous stack that is deleted the
-// instant the mount returns. Its stack is reclaimed immediately, so the only
-// lasting cost is the ~12 KB the mounted volume itself holds.
-static struct { esp_err_t err; SemaphoreHandle_t done; } s_mnt;
-
-static void mount_helper(void *arg)
+static void do_unmount_inner(void)
 {
-    s_mnt.err = do_mount_inner();
-    xSemaphoreGive(s_mnt.done);
+    if (s_card) { esp_vfs_fat_sdcard_unmount(MOUNT, s_card); s_card = NULL; }
+}
+
+// BOTH the SDMMC/FATFS mount AND unmount are DEEP call chains that overflowed the
+// 3 KB stream_ctl stack (Phase 29 crashes — a corrupted backtrace in the
+// scheduler). Rather than permanently enlarging the audio tasks' stacks (which
+// starved the TLS handshake of internal RAM → "no sound"), run mount/unmount on a
+// transient helper task with a generous stack, deleted the instant it returns.
+// Its stack is reclaimed immediately, so the only lasting cost is the ~12 KB the
+// mounted volume holds. op: 0 = mount, 1 = unmount.
+static struct { esp_err_t err; int op; SemaphoreHandle_t done; } s_io;
+
+static void sd_helper(void *arg)
+{
+    if (s_io.op == 0) s_io.err = do_mount_inner();
+    else              { do_unmount_inner(); s_io.err = ESP_OK; }
+    xSemaphoreGive(s_io.done);
     vTaskDelete(NULL);
 }
 
-static esp_err_t do_mount(void)
+static esp_err_t sd_run(int op)
 {
-    s_mnt.done = xSemaphoreCreateBinary();
-    if (!s_mnt.done) return do_mount_inner();   // fallback: mount inline
-    if (xTaskCreate(mount_helper, "sd_mount", 6144, NULL, 5, NULL) != pdPASS) {
-        vSemaphoreDelete(s_mnt.done);
-        return do_mount_inner();
+    s_io.op   = op;
+    s_io.done = xSemaphoreCreateBinary();
+    if (!s_io.done ||
+        xTaskCreate(sd_helper, "sd_io", 6144, NULL, 5, NULL) != pdPASS) {
+        if (s_io.done) vSemaphoreDelete(s_io.done);
+        if (op == 0) return do_mount_inner();   // fallback: run inline
+        do_unmount_inner();
+        return ESP_OK;
     }
-    xSemaphoreTake(s_mnt.done, portMAX_DELAY);
-    vSemaphoreDelete(s_mnt.done);
-    return s_mnt.err;
+    xSemaphoreTake(s_io.done, portMAX_DELAY);
+    vSemaphoreDelete(s_io.done);
+    return s_io.err;
 }
+
+static esp_err_t do_mount(void) { return sd_run(0); }
 
 esp_err_t storage_init(void)
 {
@@ -95,8 +107,7 @@ esp_err_t storage_init(void)
         s_present = true;
         ESP_LOGI(TAG, "SD present: %s, %lu MB (%lu MB free) — mounted on demand",
                  s_card->cid.name, (unsigned long)s_total_mb, (unsigned long)s_free_mb);
-        esp_vfs_fat_sdcard_unmount(MOUNT, s_card);
-        s_card = NULL;
+        sd_run(1);   // unmount off this stack (deep FATFS call chain)
     } else {
         ESP_LOGW(TAG, "no SD storage: %s. Recording unavailable.", esp_err_to_name(err));
     }
@@ -120,8 +131,7 @@ void storage_release(void)
     if (!s_lock) return;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     if (s_refs > 0 && --s_refs == 0 && s_card) {
-        esp_vfs_fat_sdcard_unmount(MOUNT, s_card);
-        s_card = NULL;
+        sd_run(1);   // unmount off the caller's stack (deep FATFS call chain)
     }
     xSemaphoreGive(s_lock);
 }

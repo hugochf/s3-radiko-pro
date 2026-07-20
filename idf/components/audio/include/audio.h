@@ -7,7 +7,9 @@
  */
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -27,6 +29,11 @@ void audio_on_first_audio(void (*cb)(void));
 // Instant silence: mute + drop all buffered PCM. audio_resume() restarts output.
 void audio_flush(void);
 void audio_resume(void);
+
+// True pause for the recordings player: hold playback position (does NOT drop
+// the ring; the DAC emits silence) and freeze audio_played_ms(). Clear to resume.
+void     audio_pause(bool on);
+uint32_t audio_played_ms(void);   // exact ms sent to the DAC since the last flush
 
 // Phase 11 verification: play a sine tone for `ms` milliseconds (blocking).
 void      audio_test_tone(int freq_hz, int ms);

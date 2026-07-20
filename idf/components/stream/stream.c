@@ -211,11 +211,16 @@ static void fetcher_task(void *arg)
 
             seg_t seg = { buf, slen };
             // Blocks when the queue is full -> paces the fetcher to real time
-            // (legitimately minutes at the live edge, so feed while waiting).
-            while (!s_stop && xQueueSend(s_q, &seg, pdMS_TO_TICKS(200)) != pdTRUE) {
+            // (legitimately minutes at the live edge, so feed while waiting). Track
+            // whether the send SUCCEEDED: freeing buf here after it was already
+            // queued (a stop racing in on a live->file switch) double-freed it with
+            // the decoder -> the seg_dec heap assert. Only free if never queued.
+            bool queued = false;
+            while (!s_stop && !(queued = (xQueueSend(s_q, &seg, pdMS_TO_TICKS(200)) == pdTRUE))) {
                 app_watchdog_feed();
             }
-            if (s_stop) { free(buf); break; }
+            if (!queued) { free(buf); break; }   // stopped before queuing -> we still own it
+            if (s_stop) break;
             strncpy(last_seg, line, sizeof(last_seg) - 1);
             last_seg[sizeof(last_seg) - 1] = '\0';
             pushed++;
@@ -307,6 +312,7 @@ static void decoder_task(void *arg)
 static char          s_file[192];
 static TaskHandle_t  s_file_task = NULL;
 static void        (*s_end_cb)(void) = NULL;
+static volatile int  s_seek_permil = -1;   // >=0: seek the file player to permil/1000
 
 // Walk ADTS frames in [buf, buf+avail) and return the length of the longest
 // prefix that ends exactly on a frame boundary (so a seg never splits a frame,
@@ -334,39 +340,61 @@ static void fileplayer_task(void *arg)
     uint8_t *rbuf = heap_caps_malloc(SEG_BUF_BYTES, MALLOC_CAP_SPIRAM);
     if (!rbuf) { fclose(f); goto done; }
 
+    // ONE loop covers both reading and the post-EOF drain, so a seek is honoured
+    // at ANY time — including after a short recording has been fully read into the
+    // 30 s ring (its own phase before had no seek handling, so seeks were ignored
+    // once playback got near the end).
     int carry = 0;
+    bool eof = false;
     while (!s_stop) {
+        // Seek from the progress slider: jump to permil/1000 of the file, drop the
+        // buffered audio, and let adts_framed_len resync to the next frame.
+        if (s_seek_permil >= 0) {
+            long off = (long)((int64_t)fsz * s_seek_permil / 1000);
+            if (off < 0) off = 0; else if (off > fsz) off = fsz;
+            fseek(f, off, SEEK_SET);
+            carry = 0;
+            eof = false;
+            s_seek_permil = -1;
+            audio_flush();      // discard buffered audio from the old position
+            audio_resume();     // restart output (also zeroes audio_played_ms)
+        }
+
+        if (eof) {
+            // Fully read; wait for the queue + ring to actually drain so "end"
+            // means the speaker finished — but keep honouring a seek that lands.
+            if (uxQueueMessagesWaiting(s_q) == 0 && audio_ring_bytes() <= 4096) break;
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+
         int n = fread(rbuf + carry, 1, SEG_BUF_BYTES - carry, f);
         int avail = carry + n;
-        if (avail <= 0) break;   // EOF, nothing left
+        if (avail <= 0) { eof = true; continue; }
 
         int framed = adts_framed_len(rbuf, avail);
-        if (framed == 0) {        // no whole frame in a full buffer -> junk; bail
-            if (n <= 0) break;
+        if (framed == 0) {        // no whole frame yet
+            if (n <= 0) { eof = true; continue; }
             carry = 0; continue;
         }
         char *seg = heap_caps_malloc(framed, MALLOC_CAP_SPIRAM);
         if (seg) {
             memcpy(seg, rbuf, framed);
             seg_t s = { seg, framed };
-            // Blocks while the queue is full -> the PCM ring backpressures the
-            // decoder which backpressures us == real-time playback pacing.
-            while (!s_stop && xQueueSend(s_q, &s, pdMS_TO_TICKS(200)) != pdTRUE) { }
-            if (s_stop) { free(seg); break; }
+            // Blocks while the queue is full -> real-time pacing. Only free the seg
+            // if it was NEVER queued (a stop/seek racing in) — freeing a queued
+            // buffer double-frees it with the decoder (Phase 29 seg_dec crash).
+            bool queued = false;
+            while (!s_stop && s_seek_permil < 0 &&
+                   !(queued = (xQueueSend(s_q, &s, pdMS_TO_TICKS(200)) == pdTRUE))) { }
+            if (!queued) { free(seg); if (s_stop) break; continue; }  // seek -> re-loop
         }
         carry = avail - framed;
         memmove(rbuf, rbuf + framed, carry);
-        if (n <= 0) break;        // EOF: trailing carry is a partial frame, drop it
+        if (n <= 0) eof = true;   // last read: trailing carry is a partial frame
     }
     fclose(f);
     free(rbuf);
-
-    // The file is fully READ, but a short recording fits entirely in the decode
-    // queue + the 30 s PCM ring, so audio is still playing. Wait for the decoder
-    // to drain the queue AND the ring to empty, so "end" means the speaker
-    // actually finished — otherwise the UI clears "now playing" ~30 s early.
-    while (!s_stop && (uxQueueMessagesWaiting(s_q) > 0 || audio_ring_bytes() > 4096))
-        vTaskDelay(pdMS_TO_TICKS(100));
 
     ESP_LOGI(TAG, "playback: end");
     if (!s_stop && s_end_cb) s_end_cb();   // finished on its own (not stopped)
@@ -381,6 +409,7 @@ static void start_file(const char *path)
     strncpy(s_file, path, sizeof(s_file) - 1);
     s_file[sizeof(s_file) - 1] = '\0';
     audio_resume();
+    s_seek_permil = -1;  // drop any seek left over from the previous file
     s_live = false;      // fetcher stays parked; the file player is the source
     s_stop = false;      // wakes the persistent decoder (fetcher idles on !s_live)
     // The file player is small (8 KB) — safe to create on demand even with the
@@ -479,3 +508,16 @@ void stream_stop(void)
 }
 
 void stream_on_playback_end(void (*cb)(void)) { s_end_cb = cb; }
+
+// Pause/resume the current playback (recordings player). Thin pass-through to the
+// audio writer, which holds the ring so position is preserved. Safe from the UI.
+void stream_pause(bool on) { audio_pause(on); }
+
+// Seek the current file playback to permil/1000 of the file (0..1000). The file
+// player picks this up on its next loop; safe to call from the UI (touch).
+void stream_seek_file(int permil)
+{
+    if (permil < 0) permil = 0; else if (permil > 1000) permil = 1000;
+    audio_pause(false);         // a paused player must resume to act on the seek
+    s_seek_permil = permil;
+}

@@ -41,6 +41,8 @@ static i2c_master_dev_handle_t  s_es  = NULL;
 static StreamBufferHandle_t s_pcm = NULL;
 static volatile bool        s_active    = true;   // false -> audio_write drops
 static volatile bool        s_flush_req = false;  // ask the writer to discard buffered PCM
+static volatile bool        s_pause_req = false;  // true pause: writer stops consuming, ring holds
+static volatile uint32_t    s_played_b  = 0;      // bytes handed to the DAC since the last flush
 
 // --- PCM tap for the visualiser (Phase 32) -------------------------------
 // Sampled here, in the writer, because this is the only place where "the sample
@@ -97,6 +99,10 @@ static void i2s_writer_task(void *arg)
             while (xStreamBufferReceive(s_pcm, chunk, sizeof(chunk), 0) > 0) { }  // discard
             s_flush_req = false;
         }
+        // True pause (player): stop draining the ring so playback position is
+        // held. auto_clear=true means the idle I2S DMA emits silence, not a loop
+        // of the last buffer. The decoder/file-player back-pressure and hold too.
+        if (s_pause_req) { vTaskDelay(pdMS_TO_TICKS(30)); continue; }
         size_t n = xStreamBufferReceive(s_pcm, chunk, sizeof(chunk), pdMS_TO_TICKS(50));
         if (n) {
             // Tap BEFORE the write, with timeout 0: audio never waits on the
@@ -108,6 +114,7 @@ static void i2s_writer_task(void *arg)
             }
             size_t bw;
             i2s_channel_write(s_tx, chunk, n, &bw, portMAX_DELAY);
+            s_played_b += bw;   // exact elapsed for the recordings player
         }
     }
 }
@@ -219,8 +226,19 @@ void audio_flush(void)
     if (s_es) { i2c_bus_lock(); es8311_voice_mute(s_es, true); i2c_bus_unlock(); }
     s_active    = false;                 // audio_write returns promptly, dropping
     s_flush_req = true;                  // writer discards the ring buffer
+    s_pause_req = false;                 // a flush always cancels a pause
+    s_played_b  = 0;                     // elapsed resets with each new session
     vTaskDelay(pdMS_TO_TICKS(70));       // let both take effect
 }
+
+// True pause for the recordings player: hold position (ring is NOT dropped) and
+// emit silence. audio_resume() is for a fresh session and would drop the ring,
+// so pause has its own flag. Unpausing just clears it and the writer drains on.
+void audio_pause(bool on) { s_pause_req = on; }
+
+// Milliseconds of PCM actually sent to the DAC since the last flush — the true
+// playback position (48 kHz * 4 B = 192 B/ms). Freezes while paused.
+uint32_t audio_played_ms(void) { return s_played_b / 192; }
 
 // Resume output with an empty buffer (fresh, live audio).
 void audio_resume(void)

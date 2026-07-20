@@ -33,6 +33,7 @@ typedef struct {
 
 static QueueHandle_t    s_q;
 static volatile bool    s_active;
+static volatile bool    s_close_req;   // stop asked to close but the queue was full
 static volatile uint32_t s_bytes;
 static time_t           s_start;
 
@@ -45,6 +46,14 @@ static int id3_skip(const uint8_t *b, int len)
         if (off > 0 && off < len) return off;
     }
     return 0;
+}
+
+static void writer_close(FILE **f, bool *mounted)
+{
+    if (*f) { fclose(*f); *f = NULL;
+              ESP_LOGI(TAG, "recording closed (%u KB)", (unsigned)(s_bytes / 1024)); }
+    if (*mounted) { storage_release(); *mounted = false; }   // free SD RAM back to TLS
+    s_close_req = false;
 }
 
 static void writer_task(void *arg)
@@ -77,7 +86,11 @@ static void writer_task(void *arg)
             break;
         }
         case CMD_DATA:
-            if (f) {
+            // Once stop is requested, DROP the backlog instead of writing it, so
+            // the file closes promptly (SD writes can lag well behind the feed
+            // while streaming). Costs at most the last couple seconds of audio,
+            // and means a recording is ready to browse/play the moment you stop.
+            if (f && s_active) {
                 // Bounce through INTERNAL RAM. SDMMC DMA straight from a PSRAM
                 // source is pathologically slow (~2.8 s for 31 KB, and it stalls
                 // the bus enough to freeze the UI) — the bring-up hit 1 MB/s only
@@ -95,11 +108,12 @@ static void writer_task(void *arg)
                 if (++since_sync >= FSYNC_EVERY) { fflush(f); fsync(fileno(f)); since_sync = 0; }
             }
             free(cmd.buf);
+            // Non-blocking stop: if recorder_stop() couldn't enqueue CLOSE because
+            // the queue was full, close as soon as the DATA backlog is drained.
+            if (s_close_req && uxQueueMessagesWaiting(s_q) == 0) writer_close(&f, &mounted);
             break;
         case CMD_CLOSE:
-            if (f) { fclose(f); f = NULL; ESP_LOGI(TAG, "recording closed (%u KB)",
-                                                   (unsigned)(s_bytes / 1024)); }
-            if (mounted) { storage_release(); mounted = false; }   // free SD RAM back to TLS
+            writer_close(&f, &mounted);
             break;
         }
     }
@@ -133,8 +147,12 @@ void recorder_stop(void)
 {
     if (!s_active) return;
     s_active = false;   // fetcher stops feeding; queued DATA still flushes first
+    // NON-BLOCKING: never stall the UI task here. If the write queue is backed up
+    // (SD is slow while streaming), enqueuing with portMAX_DELAY froze the UI for
+    // seconds. Try a zero-wait send; if it's full, flag it and the writer closes
+    // once it drains the backlog.
     rec_cmd_t c = { .type = CMD_CLOSE };
-    xQueueSend(s_q, &c, portMAX_DELAY);
+    if (xQueueSend(s_q, &c, 0) != pdTRUE) s_close_req = true;
 }
 
 bool     recorder_active(void) { return s_active; }
@@ -163,7 +181,48 @@ static bool is_aac(const char *n)
 
 static int cmp_desc(const void *a, const void *b)   // newest first (timestamped names)
 {
-    return strcmp((const char *)b, (const char *)a);
+    return strcmp(((const rec_entry_t *)b)->name, ((const rec_entry_t *)a)->name);
+}
+
+// ADTS sampling-frequency table (index -> Hz); 0 = reserved.
+static const int ADTS_SR[16] = {
+    96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050,
+    16000, 12000, 11025,  8000,  7350,     0,     0,     0
+};
+
+// Estimate a recording's duration WITHOUT decoding: an AAC frame is always 1024
+// samples, so duration = frames * 1024 / sample_rate. Reading every frame header
+// of a long file off SD would be slow, so we sample the first window to get the
+// average bytes-per-frame (Radiko AAC is ~CBR) and scale by the total size.
+#define EST_WINDOW 8192   // enough ADTS frames to average the (near-CBR) bitrate
+static uint32_t est_duration_secs(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END);
+    long fsz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    // PSRAM, freed each call: internal RAM is far too scarce to hold a static
+    // buffer here (a 16 KB one dropped free internal to 6 KB and starved TLS).
+    uint8_t *buf = heap_caps_malloc(EST_WINDOW, MALLOC_CAP_SPIRAM);
+    if (!buf) { fclose(f); return 0; }
+    int n = (int)fread(buf, 1, EST_WINDOW, f);
+    fclose(f);
+
+    int pos = 0, frames = 0, bytes = 0, sr = 48000;
+    while (pos + 7 <= n) {
+        if (buf[pos] != 0xFF || (buf[pos + 1] & 0xF0) != 0xF0) { pos++; continue; }
+        int flen = ((buf[pos + 3] & 3) << 11) | (buf[pos + 4] << 3) | ((buf[pos + 5] >> 5) & 7);
+        if (flen < 7) { pos++; continue; }
+        if (frames == 0) { int idx = (buf[pos + 2] >> 2) & 0xF; if (ADTS_SR[idx]) sr = ADTS_SR[idx]; }
+        if (pos + flen > n) break;
+        pos += flen; frames++; bytes += flen;
+    }
+    free(buf);
+    if (frames == 0 || bytes == 0) return 0;
+    double avg_frame = (double)bytes / frames;
+    double est_frames = (double)fsz / avg_frame;
+    return (uint32_t)(est_frames * 1024.0 / sr);
 }
 
 void recorder_path(const char *name, char *out, int out_sz)
@@ -171,7 +230,19 @@ void recorder_path(const char *name, char *out, int out_sz)
     snprintf(out, out_sz, "%s%s/%s", storage_root(), REC_DIR, name);
 }
 
-int recorder_list(char (*names)[REC_NAME_MAX], int max)
+bool recorder_delete(const char *name)
+{
+    if (!name || !name[0] || !storage_acquire()) return false;
+    char path[128];
+    snprintf(path, sizeof(path), "%s%s/%s", storage_root(), REC_DIR, name);
+    bool ok = (unlink(path) == 0);
+    if (ok) ESP_LOGI(TAG, "deleted %s", name);
+    else    ESP_LOGW(TAG, "delete failed: %s", path);
+    storage_release();
+    return ok;
+}
+
+int recorder_list(rec_entry_t *out, int max)
 {
     if (!storage_acquire()) return 0;
     char dir[64];
@@ -182,12 +253,19 @@ int recorder_list(char (*names)[REC_NAME_MAX], int max)
         struct dirent *e;
         while (n < max && (e = readdir(d)) != NULL) {
             if (e->d_name[0] == '.' || !is_aac(e->d_name)) continue;
-            strncpy(names[n], e->d_name, REC_NAME_MAX - 1);
-            names[n][REC_NAME_MAX - 1] = '\0';
+            strncpy(out[n].name, e->d_name, REC_NAME_MAX - 1);
+            out[n].name[REC_NAME_MAX - 1] = '\0';
+            out[n].secs = 0;
             n++;
         }
         closedir(d);
-        qsort(names, n, REC_NAME_MAX, cmp_desc);
+        qsort(out, n, sizeof(rec_entry_t), cmp_desc);
+        // Estimate each duration after sorting (one small read per file).
+        for (int i = 0; i < n; i++) {
+            char path[128];
+            snprintf(path, sizeof(path), "%s/%s", dir, out[i].name);
+            out[i].secs = est_duration_secs(path);
+        }
     }
     storage_release();
     return n;

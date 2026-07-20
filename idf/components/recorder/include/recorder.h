@@ -33,12 +33,17 @@ void      recorder_feed(const void *seg, int len);
 
 // --- Recordings library (for the player UI) ---
 #define REC_NAME_MAX 64
-// List up to `max` recording basenames (e.g. "FMT_20260717_113605.aac") into
-// `names`, newest first. Returns the count.
-int       recorder_list(char (*names)[REC_NAME_MAX], int max);
-// Full path for a basename, into `out` (e.g. "/sdcard/rec/FMT_...aac").
+typedef struct {
+    char     name[REC_NAME_MAX];   // basename, e.g. "TOKYO_FM_20260717_113605.aac"
+    uint32_t secs;                 // estimated duration (0 if it couldn't be read)
+} rec_entry_t;
+// List up to `max` recordings into `out`, newest first, each with its estimated
+// length. Returns the count. Mounts the SD for the duration of the call.
+int       recorder_list(rec_entry_t *out, int max);
+// Full path for a basename, into `out` (e.g. "/sdcard/rec/TOKYO_FM_...aac").
 void      recorder_path(const char *name, char *out, int out_sz);
 int       recorder_count(void);
+bool      recorder_delete(const char *name);   // delete one recording; true on success
 
 #ifdef __cplusplus
 }
