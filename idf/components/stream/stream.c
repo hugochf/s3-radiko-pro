@@ -38,6 +38,9 @@ static volatile bool    s_live       = false;  // fetcher pulls live segments (v
 static char             s_station[16];
 static volatile uint32_t s_frame_us;   // decoder's real playback microseconds per frame
 static volatile int     s_seek_permil = -1;   // >=0: seek the file player to permil/1000
+static volatile bool    s_timefree;    // live session is a time-free (past) programme
+static char             s_tf_master[420];   // the ts playlist URL for time-free
+static void           (*s_end_cb)(void) = NULL;   // file/time-free playback reached EOF
 
 // Persistent keep-alive HTTPS client (fetcher task only).
 static esp_http_client_handle_t s_client = NULL;
@@ -137,8 +140,9 @@ static void fetcher_task(void *arg)
 
         // base (playlist_create_url) resolves once and is reused across stations.
         // Retry transient failures here rather than killing the fetcher — a brief
-        // TLS/network hiccup at startup must not permanently stop audio.
-        if (base[0] == '\0') {
+        // TLS/network hiccup at startup must not permanently stop audio. Time-free
+        // uses a fixed ts URL instead, so it skips this live-only resolution.
+        if (!s_timefree && base[0] == '\0') {
             char info_url[160];
             snprintf(info_url, sizeof(info_url), STREAM_INFO_FMT, s_station);
             char *p = NULL, *e = NULL;
@@ -159,10 +163,15 @@ static void fetcher_task(void *arg)
         }
 
         if (media_url[0] == '\0') {
-            char lsid[33]; make_lsid(lsid);
-            char purl[320];
-            snprintf(purl, sizeof(purl), "%s?station_id=%s&l=30&lsid=%s&type=b",
-                     base, s_station, lsid);
+            char purl[420];
+            if (s_timefree) {
+                // Time-free: the ts endpoint is the master playlist (ft/to window).
+                snprintf(purl, sizeof(purl), "%s", s_tf_master);
+            } else {
+                char lsid[33]; make_lsid(lsid);
+                snprintf(purl, sizeof(purl), "%s?station_id=%s&l=30&lsid=%s&type=b",
+                         base, s_station, lsid);
+            }
             int r = fetch(purl, token, plist, PLIST_BYTES);
             if (r <= 0 || !hls_first_url_line(plist, media_url, sizeof(media_url))) {
                 if (hls_auth_rejected(r)) auth_fail++;
@@ -187,6 +196,10 @@ static void fetcher_task(void *arg)
         }
         auth_fail = 0;   // token accepted — any earlier 401/403 was transient
         backoff = 0;
+
+        // A time-free chunklist is a finite VOD playlist ending in #EXT-X-ENDLIST;
+        // check before strtok_r chews up the buffer.
+        bool endlist = s_timefree && strstr(plist, "#EXT-X-ENDLIST") != NULL;
 
         bool seen_last = (last_seg[0] == '\0');
         int pushed = 0;
@@ -229,6 +242,18 @@ static void fetcher_task(void *arg)
         }
         if (pushed > 0) {
             empty = 0;
+        } else if (endlist) {
+            // Time-free: every segment of the finite programme has been fed. Let the
+            // 30 s buffer drain so the speaker actually finishes, then notify + end
+            // the session (like the file player's EOF).
+            ESP_LOGI(TAG, "time-free programme complete");
+            while (!s_stop && (uxQueueMessagesWaiting(s_q) > 0 || audio_ring_bytes() > 4096)) {
+                app_watchdog_feed();
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+            if (!s_stop && s_end_cb) s_end_cb();
+            s_live = false;
+            break;
         } else {
             // A few empty polls is normal at the live edge, but many in a row means
             // the medialist session went stale — Radiko expires it after a few
@@ -322,7 +347,6 @@ static void decoder_task(void *arg)
 // entirely reused — file playback is a second SOURCE, not a second pipeline.
 static char          s_file[192];
 static TaskHandle_t  s_file_task = NULL;
-static void        (*s_end_cb)(void) = NULL;
 
 // FRAME index for accurate seeking. HE-AAC is variable bitrate, so seeking by
 // byte fraction lands at the wrong TIME. Every ADTS frame is the SAME duration,
@@ -541,8 +565,10 @@ static void ctrl_task(void *arg)
         if (xQueueReceive(s_cmd_q, &c, portMAX_DELAY) != pdTRUE) continue;
         stop_stream();                                   // waits for the file player to exit
         if (file_session) { storage_release(); file_session = false; }   // safe: player gone
-        if (c.mode == 1 && c.arg[0]) start_stream(c.arg);
-        else if (c.mode == 2 && c.arg[0] && storage_acquire()) {
+        s_timefree = false;   // default; mode 3 (time-free) turns it on before start
+        if (c.mode == 1 && c.arg[0]) start_stream(c.arg);              // live
+        else if (c.mode == 3 && c.arg[0]) { s_timefree = true; start_stream(c.arg); }  // time-free
+        else if (c.mode == 2 && c.arg[0] && storage_acquire()) {      // recording playback
             file_session = true;
             start_file(c.arg);
         }
@@ -584,6 +610,18 @@ void stream_play_file(const char *path)
 {
     cmd_t c = { .mode = 2 };
     strncpy(c.arg, path, sizeof(c.arg) - 1);
+    xQueueOverwrite(s_cmd_q, &c);
+}
+
+// Time-free (Phase 29b): play a past programme. ft/to are "YYYYMMDDHHMMSS" (JST).
+// Streams the finite ts playlist through the live fetcher/decoder — no SD.
+void stream_play_timefree(const char *station, const char *ft, const char *to)
+{
+    snprintf(s_tf_master, sizeof(s_tf_master),
+             "https://radiko.jp/v2/api/ts/playlist.m3u8?station_id=%s&l=15&ft=%s&to=%s",
+             station, ft, to);
+    cmd_t c = { .mode = 3 };
+    strncpy(c.arg, station, sizeof(c.arg) - 1);
     xQueueOverwrite(s_cmd_q, &c);
 }
 
