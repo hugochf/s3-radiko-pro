@@ -51,6 +51,13 @@ void radiko_program_title(const char *station_id, char *out, size_t out_len);
 // (may be NULL) is called after each successful refresh, from the task context.
 void radiko_program_start(void (*on_update)(void));
 
+// Time-free (Phase 29b): fetch one station's whole-day schedule ("YYYYMMDD",
+// JST). Blocking (HTTP + gunzip) — call from a worker task, never the UI thread.
+// Returns the number of programmes written to `out`.
+#include "radiko_parse.h"   // radiko_prog_t
+int radiko_guide_fetch(const char *station, const char *date,
+                       radiko_prog_t *out, int max);
+
 #ifdef __cplusplus
 }
 #endif

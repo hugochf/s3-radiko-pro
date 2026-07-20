@@ -48,16 +48,13 @@ static void parse_all(const char *xml)
     }
 }
 
-esp_err_t radiko_program_refresh(void)
+// Fetch a gzip'd Radiko programme-XML endpoint over plain HTTP (public data, and
+// plain HTTP keeps a second TLS session off the scarce internal RAM) and inflate
+// it into `xml` (NUL-terminated). Returns the XML length, or 0 on any failure.
+static size_t fetch_gz_xml(const char *url, char *xml, size_t xml_cap)
 {
-    if (radiko_area()[0] == '\0') return ESP_ERR_INVALID_STATE;
-
-    char url[96];
-    snprintf(url, sizeof(url), "http://radiko.jp/v3/program/now/%s.xml", radiko_area());
-
     uint8_t *gz = heap_caps_malloc(GZ_CAP, MALLOC_CAP_SPIRAM);
-    if (!gz) return ESP_ERR_NO_MEM;
-
+    if (!gz) return 0;
     http_req_t req = {
         .url = url, .method = HTTP_METHOD_GET,
         .body = (char *)gz, .body_cap = GZ_CAP,
@@ -67,11 +64,8 @@ esp_err_t radiko_program_refresh(void)
         ESP_LOGW(TAG, "fetch failed (err=%s status=%d len=%u)",
                  esp_err_to_name(err), req.status, (unsigned)req.body_len);
         free(gz);
-        return ESP_FAIL;
+        return 0;
     }
-
-    char *xml = heap_caps_malloc(XML_CAP, MALLOC_CAP_SPIRAM);
-    if (!xml) { free(gz); return ESP_ERR_NO_MEM; }
 
     size_t xlen = 0, dlen = 0;
     const uint8_t *deflate = radiko_gzip_body(gz, req.body_len, &dlen);
@@ -80,25 +74,57 @@ esp_err_t radiko_program_refresh(void)
         // window and only ~2 KB of stack — no multi-KB decompressor object. That
         // matters here: the internal heap is fragmented to ~15 KB blocks while the
         // stream's TLS holds its ~16 KB buffers, so anything bigger can't allocate.
-        unsigned long outlen = XML_CAP - 1, srclen = dlen;
+        unsigned long outlen = xml_cap - 1, srclen = dlen;
         int pr = puff((unsigned char *)xml, &outlen, deflate, &srclen);
         if (pr == 0) xlen = outlen;
         else ESP_LOGW(TAG, "puff=%d body=%u deflate=%u out=%lu", pr,
                       (unsigned)req.body_len, (unsigned)dlen, outlen);
-    } else if (req.body_len < XML_CAP) {   // not gzip (unexpected) — treat as plain XML
+    } else if (req.body_len < xml_cap) {   // not gzip (unexpected) — treat as plain XML
         memcpy(xml, gz, req.body_len);
         xlen = req.body_len;
     }
     free(gz);
+    if (xlen) xml[xlen] = '\0';
+    return xlen;
+}
 
-    if (xlen == 0) { free(xml); ESP_LOGW(TAG, "decompress failed"); return ESP_FAIL; }
-    xml[xlen] = '\0';
+esp_err_t radiko_program_refresh(void)
+{
+    if (radiko_area()[0] == '\0') return ESP_ERR_INVALID_STATE;
+
+    char url[96];
+    snprintf(url, sizeof(url), "http://radiko.jp/v3/program/now/%s.xml", radiko_area());
+
+    char *xml = heap_caps_malloc(XML_CAP, MALLOC_CAP_SPIRAM);
+    if (!xml) return ESP_ERR_NO_MEM;
+    size_t xlen = fetch_gz_xml(url, xml, XML_CAP);
+    if (xlen == 0) { free(xml); return ESP_FAIL; }
 
     parse_all(xml);
     free(xml);
     ESP_LOGI(TAG, "program info updated (%u bytes XML)", (unsigned)xlen);
     if (s_on_update) s_on_update();
     return ESP_OK;
+}
+
+// Time-free (Phase 29b): one station's whole-day schedule. BLOCKING network call
+// — run it off a worker task, never the LVGL thread. `date` is "YYYYMMDD" (JST
+// broadcast day). Returns the number of programmes written to `out` (0 on error).
+int radiko_guide_fetch(const char *station, const char *date,
+                       radiko_prog_t *out, int max)
+{
+    if (!station || !date || max <= 0) return 0;
+    char url[128];
+    snprintf(url, sizeof(url),
+             "http://radiko.jp/v3/program/station/date/%s/%s.xml", date, station);
+
+    char *xml = heap_caps_malloc(XML_CAP, MALLOC_CAP_SPIRAM);
+    if (!xml) return 0;
+    size_t xlen = fetch_gz_xml(url, xml, XML_CAP);
+    int n = xlen ? radiko_parse_day(xml, station, out, max) : 0;
+    free(xml);
+    ESP_LOGI(TAG, "guide %s %s: %d programmes (%u bytes)", station, date, n, (unsigned)xlen);
+    return n;
 }
 
 void radiko_program_title(const char *sid, char *out, size_t out_len)
