@@ -72,6 +72,10 @@ static lv_obj_t *w_hdr        = NULL;   // centre title: "Radiko - <area>"
 static lv_obj_t *w_dots[MAX_STATIONS];
 static lv_obj_t *s_list_prog[MAX_STATIONS];   // per-row programme labels (list)
 static lv_obj_t *s_list_cont = NULL;          // scroll container, rows rebuilt per area
+static bool      s_list_timefree = false;     // station list in time-free (過去) mode
+static lv_obj_t *s_list_mode_lbl = NULL;      // the Live/過去 toggle label
+static lv_obj_t *s_scr_guide = NULL;          // time-free programme-guide screen
+static void      open_timefree_guide(int station);   // fwd (time-free section, below)
 
 // =====================================================================
 // LVGL <-> display glue
@@ -1410,12 +1414,24 @@ static void ev_vol_released(lv_event_t *e) { persist_volume(); }
 
 static void ev_select_station(lv_event_t *e)
 {
-    s_cur = (int)(intptr_t)lv_event_get_user_data(e);
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    if (s_list_timefree) { open_timefree_guide(i); return; }   // 過去 mode: open the guide
+    s_cur = i;
     s_playing = true;
     refresh_player();
     persist_station();
     apply_playback();
     lv_screen_load(s_scr_player);
+}
+
+// Live / 過去 (time-free) toggle in the station-list header.
+static void ev_list_mode_toggle(lv_event_t *e)
+{
+    s_list_timefree = !s_list_timefree;
+    if (s_list_mode_lbl)
+        lv_label_set_text(s_list_mode_lbl,
+                          s_list_timefree ? LV_SYMBOL_LEFT " \xE9\x81\x8E\xE5\x8E\xBB"   // 過去
+                                          : LV_SYMBOL_PLAY " LIVE");
 }
 
 // Poll WiFi state and reflect it in the status bar. Runs inside lv_timer_handler
@@ -1851,10 +1867,20 @@ static void build_list_screen(void)
     lv_label_set_text(bl, LV_SYMBOL_LEFT " Back");
     lv_obj_center(bl);
 
-    lv_obj_t *ttl = lv_label_create(hdr);
-    lv_label_set_text(ttl, "Select Station");
-    lv_obj_set_style_text_color(ttl, lv_color_hex(C_TEXT), 0);
-    lv_obj_align(ttl, LV_ALIGN_CENTER, 24, 0);
+    // Live / 過去 (time-free) mode toggle — right of the header. In 過去 mode,
+    // tapping a station opens its 7-day guide instead of playing it live.
+    lv_obj_t *mode = lv_button_create(hdr);
+    lv_obj_set_size(mode, 92, 24);
+    lv_obj_align(mode, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_set_style_bg_color(mode, lv_color_hex(C_ACCENT), 0);
+    lv_obj_set_style_shadow_width(mode, 0, 0);
+    lv_obj_add_event_cb(mode, ev_list_mode_toggle, LV_EVENT_CLICKED, NULL);
+    s_list_mode_lbl = lv_label_create(mode);
+    lv_obj_set_style_text_font(s_list_mode_lbl, &lv_font_jp_16, 0);
+    lv_label_set_text(s_list_mode_lbl,
+                      s_list_timefree ? LV_SYMBOL_LEFT " \xE9\x81\x8E\xE5\x8E\xBB"
+                                      : LV_SYMBOL_PLAY " LIVE");
+    lv_obj_center(s_list_mode_lbl);
 
     // Scrollable rows (populated per-area by rebuild_list_rows)
     s_list_cont = lv_obj_create(s_scr_list);
@@ -2080,6 +2106,9 @@ static uint32_t  s_pl_base;             // elapsed at the last seek (secs); +DAC
 static int       s_pl_state;            // 0 playing, 1 paused, 2 stopped/ended
 static int       s_pl_index;            // index into s_rec_entries (for prev/next)
 static int       s_rec_count;           // number of listed recordings
+static bool      s_pl_timefree;         // player is showing a time-free programme, not a file
+static char      s_tf_station[16];      // station id of the playing time-free programme
+static radiko_prog_t s_tf_cur;          // its ft/to/title (for restart + back-to-guide)
 
 static void fmt_mmss(char *out, int sz, uint32_t s)
 {
@@ -2155,6 +2184,7 @@ static void play_current(void)   // (re)start s_pl_file from the top
     recorder_path(s_pl_file, path, sizeof(path));
     stream_pause(false);
     stream_play_file(path);
+    s_pl_timefree = false;   // this is a recording, not a past broadcast
     s_rec_interrupted = true;
     s_pl_state = 0;
     s_pl_base = 0;
@@ -2186,7 +2216,13 @@ static void ev_pl_playpause(lv_event_t *e)
     } else if (s_pl_state == 1) {     // paused -> resume
         stream_pause(false); s_pl_state = 0;
         lv_label_set_text(s_pl_pp, LV_SYMBOL_PAUSE);
-    } else {                          // stopped/ended -> play from the top
+    } else if (s_pl_timefree) {       // stopped -> replay the past programme
+        stream_pause(false);
+        stream_play_timefree(s_tf_station, s_tf_cur.ft, s_tf_cur.to);
+        s_pl_base = 0; s_pl_state = 0;
+        lv_label_set_text(s_pl_pp, LV_SYMBOL_PAUSE);
+        player_show(0);
+    } else {                          // stopped/ended -> play the recording from the top
         play_current();
     }
 }
@@ -2206,6 +2242,7 @@ static void ev_pl_next(lv_event_t *e) { open_recording(s_pl_index + 1); }
 // Drag the progress slider to seek. Fires on release; the value is 0..100 %.
 static void ev_pl_seek(lv_event_t *e)
 {
+    if (s_pl_timefree) return;   // time-free has no file/seek index (yet)
     int pct = (int)lv_slider_get_value(s_pl_bar);
     s_pl_base = s_pl_total * pct / 100;      // display jumps immediately
     stream_seek_file(pct * 10);              // permil
@@ -2221,11 +2258,11 @@ static void ev_pl_vol(lv_event_t *e)
     if (lv_event_get_code(e) == LV_EVENT_RELEASED) persist_volume();
 }
 
-static void ev_pl_back(lv_event_t *e)   // player -> list (keeps radio interrupted)
+static void ev_pl_back(lv_event_t *e)   // player -> the list it came from
 {
     stream_stop();
     s_pl_state = 2;
-    lv_screen_load(s_scr_rec);
+    lv_screen_load(s_pl_timefree ? s_scr_guide : s_scr_rec);
 }
 
 static void build_recplayer_screen(void)
@@ -2432,6 +2469,214 @@ static void ev_open_recordings(lv_event_t *e)
     if (!s_scr_rec) build_recordings_screen();
     rebuild_rec_rows();
     lv_screen_load(s_scr_rec);
+}
+
+// =====================================================================
+// Time-free (タイムフリー / Phase 29b): per-station 7-day guide. A day-stepper +
+// programme list; tapping a programme streams that past broadcast into the
+// player (reusing the recordings-player screen). Nothing touches the SD.
+// =====================================================================
+#define GUIDE_MAX 72
+static lv_obj_t      *s_guide_list, *s_guide_daylbl, *s_guide_ttl;
+static int            s_guide_station, s_guide_day, s_guide_n;
+static radiko_prog_t *s_guide_progs;         // GUIDE_MAX entries, in PSRAM
+static volatile bool  s_guide_loading;
+
+// Radiko's broadcast day runs 05:00–29:00, so before 05:00 "today" is still
+// yesterday. offset 0 = today's broadcast day, negative = earlier.
+static void tf_date(int offset, char *ymd, size_t yc, char *disp, size_t dc)
+{
+    time_t t = time(NULL);
+    struct tm tm; localtime_r(&t, &tm);
+    if (tm.tm_hour < 5) t -= 24 * 3600;
+    t += (time_t)offset * 24 * 3600;
+    localtime_r(&t, &tm);
+    snprintf(ymd, yc, "%04d%02d%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+    static const char *wd[7] = { "\xE6\x97\xA5","\xE6\x9C\x88","\xE7\x81\xAB",
+                                 "\xE6\xB0\xB4","\xE6\x9C\xA8","\xE9\x87\x91","\xE5\x9C\x9F" };
+    snprintf(disp, dc, "%d/%d (%s)%s", tm.tm_mon + 1, tm.tm_mday, wd[tm.tm_wday],
+             offset == 0 ? "  \xE4\xBB\x8A\xE6\x97\xA5" : "");   // 今日
+}
+
+static void tf_hhmm(const char *ts, char *out)   // "HH:MM" from YYYYMMDDHHMMSS
+{
+    if (strlen(ts) >= 12) {
+        out[0]=ts[8]; out[1]=ts[9]; out[2]=':'; out[3]=ts[10]; out[4]=ts[11]; out[5]='\0';
+    } else out[0] = '\0';
+}
+
+static time_t tf_epoch(const char *ts)
+{
+    if (strlen(ts) < 14) return 0;
+    struct tm tm = {0};
+    int y=0, mo=0, d=0, h=0, mi=0, s=0;
+    sscanf(ts, "%4d%2d%2d%2d%2d%2d", &y, &mo, &d, &h, &mi, &s);
+    tm.tm_year = y - 1900; tm.tm_mon = mo - 1; tm.tm_mday = d;
+    tm.tm_hour = h; tm.tm_min = mi; tm.tm_sec = s; tm.tm_isdst = -1;
+    return mktime(&tm);
+}
+static uint32_t tf_duration(const char *ft, const char *to)
+{
+    time_t a = tf_epoch(ft), b = tf_epoch(to);
+    return (b > a) ? (uint32_t)(b - a) : 0;
+}
+
+// Start a past programme in the (reused) recordings-player screen. Time-free has
+// no file/seek index — the player guards on s_pl_timefree to disable seeking.
+static void play_timefree(const char *station, const radiko_prog_t *prog)
+{
+    if (!s_scr_recplayer) build_recplayer_screen();
+    s_pl_timefree = true;
+    s_pl_file[0]  = '\0';
+    strncpy(s_tf_station, station, sizeof(s_tf_station) - 1);
+    s_tf_station[sizeof(s_tf_station) - 1] = '\0';
+    s_tf_cur   = *prog;
+    s_pl_total = tf_duration(prog->ft, prog->to);
+    s_pl_base  = 0;
+    s_pl_state = 0;
+    s_rec_interrupted = true;              // leaving the player resumes live radio
+    lv_label_set_text(s_pl_name, prog->title);
+    if (s_pl_pp)  lv_label_set_text(s_pl_pp, LV_SYMBOL_PAUSE);
+    if (s_pl_vol) lv_slider_set_value(s_pl_vol, s_vol, LV_ANIM_OFF);
+    player_show(0);
+    lv_screen_load(s_scr_recplayer);
+    stream_pause(false);
+    stream_play_timefree(station, prog->ft, prog->to);
+}
+
+static void ev_pick_program(lv_event_t *e)
+{
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    if (i >= 0 && i < s_guide_n) play_timefree(station_id(s_guide_station), &s_guide_progs[i]);
+}
+
+// Rebuild the programme list for the current station/day (runs on the LVGL task).
+static void guide_refresh_async(void *unused)
+{
+    if (!s_guide_list) return;
+    char ymd[9], disp[28];
+    tf_date(s_guide_day, ymd, sizeof ymd, disp, sizeof disp);
+    lv_label_set_text(s_guide_daylbl, disp);
+    lv_obj_clean(s_guide_list);
+    if (s_guide_loading || s_guide_n <= 0) {
+        lv_obj_t *l = lv_label_create(s_guide_list);
+        lv_label_set_text(l, s_guide_loading ? "\xE2\x80\xA6" : "No schedule");   // …
+        lv_obj_set_style_text_color(l, lv_color_hex(C_DIM), 0);
+        return;
+    }
+    for (int i = 0; i < s_guide_n; i++) {
+        lv_obj_t *row = lv_button_create(s_guide_list);
+        lv_obj_set_size(row, 306, 34);
+        lv_obj_set_style_bg_color(row, lv_color_hex(C_PANEL), 0);
+        lv_obj_set_style_bg_color(row, lv_color_hex(C_HL), LV_STATE_PRESSED);
+        lv_obj_set_style_shadow_width(row, 0, 0);
+        lv_obj_add_event_cb(row, ev_pick_program, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        char hhmm[6]; tf_hhmm(s_guide_progs[i].ft, hhmm);
+        lv_obj_t *tl = lv_label_create(row);
+        lv_label_set_text(tl, hhmm);
+        lv_obj_set_style_text_color(tl, lv_color_hex(C_HL), 0);
+        lv_obj_align(tl, LV_ALIGN_LEFT_MID, 8, 0);
+        lv_obj_t *nl = lv_label_create(row);
+        lv_obj_set_style_text_font(nl, &lv_font_jp_16, 0);
+        lv_obj_set_width(nl, 232);
+        lv_label_set_long_mode(nl, LV_LABEL_LONG_DOT);
+        lv_label_set_text(nl, s_guide_progs[i].title);
+        lv_obj_set_style_text_color(nl, lv_color_hex(C_TEXT), 0);
+        lv_obj_align(nl, LV_ALIGN_LEFT_MID, 62, 0);
+    }
+}
+
+// Blocking guide fetch off the LVGL thread; marshals the result back.
+static void guide_fetch_task(void *arg)
+{
+    char ymd[9], disp[28];
+    tf_date(s_guide_day, ymd, sizeof ymd, disp, sizeof disp);
+    if (!s_guide_progs)
+        s_guide_progs = heap_caps_malloc(GUIDE_MAX * sizeof(radiko_prog_t), MALLOC_CAP_SPIRAM);
+    s_guide_n = s_guide_progs
+              ? radiko_guide_fetch(station_id(s_guide_station), ymd, s_guide_progs, GUIDE_MAX) : 0;
+    s_guide_loading = false;
+    lv_async_call(guide_refresh_async, NULL);
+    vTaskDelete(NULL);
+}
+
+static void guide_load(void)
+{
+    s_guide_loading = true;
+    guide_refresh_async(NULL);   // show the spinner text immediately
+    xTaskCreate(guide_fetch_task, "tf_guide", 6144, NULL, 4, NULL);
+}
+
+static void ev_guide_prevday(lv_event_t *e) { if (s_guide_day > -6) { s_guide_day--; guide_load(); } }
+static void ev_guide_nextday(lv_event_t *e) { if (s_guide_day <  0) { s_guide_day++; guide_load(); } }
+static void ev_guide_back(lv_event_t *e)    { lv_screen_load(s_scr_list); }
+
+static void build_guide_screen(void)
+{
+    s_scr_guide = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_scr_guide, lv_color_hex(C_BG), 0);
+    lv_obj_clear_flag(s_scr_guide, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *hdr = lv_obj_create(s_scr_guide);
+    lv_obj_set_size(hdr, 320, 28);
+    lv_obj_set_pos(hdr, 0, 0);
+    lv_obj_set_style_bg_color(hdr, lv_color_hex(C_PANEL), 0);
+    lv_obj_set_style_radius(hdr, 0, 0);
+    lv_obj_set_style_border_width(hdr, 0, 0);
+    lv_obj_set_style_pad_all(hdr, 2, 0);
+    lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *back = lv_button_create(hdr);
+    lv_obj_set_size(back, 64, 22);
+    lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_bg_color(back, lv_color_hex(C_ACCENT), 0);
+    lv_obj_add_event_cb(back, ev_guide_back, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *bl = lv_label_create(back);
+    lv_label_set_text(bl, LV_SYMBOL_LEFT);
+    lv_obj_center(bl);
+    s_guide_ttl = lv_label_create(hdr);
+    lv_obj_set_style_text_font(s_guide_ttl, &lv_font_jp_16, 0);
+    lv_obj_set_style_text_color(s_guide_ttl, lv_color_hex(C_TEXT), 0);
+    lv_obj_align(s_guide_ttl, LV_ALIGN_LEFT_MID, 72, 0);
+
+    // Day stepper: ‹  <date>  ›
+    lv_obj_t *prev = lv_button_create(s_scr_guide);
+    lv_obj_set_size(prev, 44, 26);
+    lv_obj_set_pos(prev, 6, 32);
+    lv_obj_set_style_bg_color(prev, lv_color_hex(C_ACCENT), 0);
+    lv_obj_set_style_shadow_width(prev, 0, 0);
+    lv_obj_add_event_cb(prev, ev_guide_prevday, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *pl = lv_label_create(prev); lv_label_set_text(pl, LV_SYMBOL_LEFT); lv_obj_center(pl);
+
+    s_guide_daylbl = lv_label_create(s_scr_guide);
+    lv_obj_set_style_text_font(s_guide_daylbl, &lv_font_jp_16, 0);
+    lv_obj_set_style_text_color(s_guide_daylbl, lv_color_hex(C_TEXT), 0);
+    lv_obj_align(s_guide_daylbl, LV_ALIGN_TOP_MID, 0, 36);
+
+    lv_obj_t *nxt = lv_button_create(s_scr_guide);
+    lv_obj_set_size(nxt, 44, 26);
+    lv_obj_set_pos(nxt, 270, 32);
+    lv_obj_set_style_bg_color(nxt, lv_color_hex(C_ACCENT), 0);
+    lv_obj_set_style_shadow_width(nxt, 0, 0);
+    lv_obj_add_event_cb(nxt, ev_guide_nextday, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *nl2 = lv_label_create(nxt); lv_label_set_text(nl2, LV_SYMBOL_RIGHT); lv_obj_center(nl2);
+
+    s_guide_list = lv_obj_create(s_scr_guide);
+    lv_obj_set_size(s_guide_list, 314, 176);
+    lv_obj_set_pos(s_guide_list, 3, 62);
+    lv_obj_set_style_bg_color(s_guide_list, lv_color_hex(C_BG), 0);
+    lv_obj_set_style_border_width(s_guide_list, 0, 0);
+    lv_obj_set_flex_flow(s_guide_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(s_guide_list, 4, 0);
+}
+
+static void open_timefree_guide(int station)
+{
+    if (!s_scr_guide) build_guide_screen();
+    s_guide_station = station;
+    s_guide_day = 0;
+    lv_label_set_text(s_guide_ttl, station_name(station));
+    lv_screen_load(s_scr_guide);
+    guide_load();
 }
 
 // =====================================================================
