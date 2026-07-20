@@ -58,6 +58,12 @@ Live Radiko audio plays, touchscreen-controlled. Working today:
 - Radiko `auth1`/`auth2` and live HLS playback (HE-AAC / `mp4a.40.5`, SBR)
 - Player UI (Arduino-parity): swipeable full-width logo, play/pause, prev/next,
   volume, sleep timer, WS2812 mood-LED modes
+- **Record & play back to SD** — one tap records the live station to a `.aac` on
+  the micro-SD card (no transcoding — the HLS segments are already AAC), with a
+  full on-device player: a **draggable, time-accurate seek** bar, prev/next,
+  volume, play/pause and per-recording delete. Record straight from the transport
+  row; a flashing red "● REC m:ss" and a solid-red LED show it's rolling. No PC
+  needed to capture or replay.
 - Real-time **audio spectrum visualiser** — long-press the logo to cycle four
   styles (rainbow bars, green/amber/red LED/car meter, rainbow LED); a 512-pt FFT
   of the PCM actually reaching the DAC, kept from ever starving playback (the
@@ -76,9 +82,9 @@ Live Radiko audio plays, touchscreen-controlled. Working today:
 - Tag-driven CI release pipeline: test → build → **RSA-3072 sign** → publish
 - Optional signed-OTA enforcement profile (Phase 25 Stage A); JTAG live-debug
 
-**All 25 planned phases complete**, plus Tier E extras: VPN-free multi-area
-geo-auth (Phase 30), an LVGL heap fix (Phase 31) and the audio visualiser
-(Phase 32). The hardware secure-boot /
+**All 25 planned phases complete**, plus Tier E extras: **SD recording +
+on-device playback (Phase 29)**, VPN-free multi-area geo-auth (Phase 30), an
+LVGL heap fix (Phase 31) and the audio visualiser (Phase 32). The hardware secure-boot /
 flash-encryption burn (Phase 25 Stage B) is documented as a factory-ready runbook
 but deliberately not executed on this single in-use board — see
 [docs/secure-boot-runbook.md](docs/secure-boot-runbook.md) for the reasoning.
@@ -87,9 +93,34 @@ Optional polish ideas (localization, EQ, Bluetooth output) live in
 
 ## Hardware
 
-**Board:** lcdwiki ES3C28P — ESP32-S3 (16 MB QIO flash, 8 MB OPI PSRAM), ILI9341
-320×240 SPI LCD, FT6336G capacitive touch, ES8311 codec + FM8002E amp. A generic
-~US$10–15 board sold under several names; a speaker and LiPo battery are extra.
+**Board:** lcdwiki ES3C28P — a generic ~US$10–15 ESP32-S3 board (sold under
+several names) that bundles a screen, capacitive touch, an audio codec + amp, an
+RGB LED, a micro-SD slot and battery charging around one MCU. That integration is
+exactly why it works as a self-contained radio with no add-on modules; a speaker
+and a LiPo battery are the only extras.
+
+**Core module — ESP32-S3 `N16R8`:** dual-core Xtensa LX7 @ 240 MHz, Wi-Fi
+b/g/n + BLE, **16 MB** QIO flash and **8 MB** Octal PSRAM. The 8 MB PSRAM is what
+makes the 30-second audio ring buffer and the large LVGL spill pool possible;
+native USB-Serial/JTAG handles flashing and debug.
+
+**Peripheral map** (as wired on this board):
+
+| Function | Part | Bus / pins |
+|---|---|---|
+| Display | ILI9341 2.8″ 320×240 | SPI — SCLK 12, MOSI 11; backlight PWM on GPIO45 |
+| Touch | FT6336G capacitive | shared I²C — SDA 16, SCL 15 |
+| Audio codec | ES8311 (I²C 0x18) | I²S — MCLK 4, BCLK 5, WS 7, DOUT 8 |
+| Amplifier | FM8002E → speaker | enable on GPIO1 (active-low) |
+| RGB LED | WS2812B | GPIO42 |
+| micro-SD | SDMMC 4-bit | CLK 38, CMD 40, D0 39, D1 41, D2 48, D3 47 |
+| Battery | Li-ion + TP4054 charger | level via ADC on GPIO9 |
+
+Two details that shaped the firmware: the **micro-SD is on dedicated SDMMC pins**,
+wholly separate from the LCD's SPI bus, so recording-to-SD and the display never
+fight over pins — and the real ceiling on this board is **internal SRAM
+(~512 KB)**, not flash or CPU, since Wi-Fi/TLS, task stacks, the LVGL pool and the
+LCD/SD DMA buffers all have to live there while 8 MB of PSRAM sits mostly free.
 
 **Want to build one?** [Getting one](docs/board-lcdwiki-ES3C28P.md#getting-one)
 lists the search terms and — more importantly — the specs to match. Boards that
