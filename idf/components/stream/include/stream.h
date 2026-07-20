@@ -5,6 +5,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,6 +20,7 @@ void stream_play_file(const char *path);     // request: play a recorded .aac fr
 void stream_stop(void);                      // request: stop playback
 void stream_pause(bool on);                  // pause/resume file playback (holds position)
 void stream_seek_file(int permil);           // seek file playback to permil/1000 (0..1000)
+uint32_t stream_file_total_secs(void);       // exact duration of the open recording (0 until known)
 void stream_on_playback_end(void (*cb)(void)); // file playback reached EOF (from ctrl task)
 
 #ifdef __cplusplus

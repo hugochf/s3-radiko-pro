@@ -2119,8 +2119,11 @@ static void player_show(uint32_t el)
     fmt_mmss(b, sizeof b, s_pl_total);
     snprintf(line, sizeof line, "%s / %s", a, b);
     lv_label_set_text(s_pl_time, line);
-    if (s_pl_bar && !lv_obj_has_state(s_pl_bar, LV_STATE_PRESSED))
-        lv_slider_set_value(s_pl_bar, s_pl_total ? (int)(el * 100 / s_pl_total) : 0, LV_ANIM_OFF);
+    if (s_pl_bar && !lv_obj_has_state(s_pl_bar, LV_STATE_PRESSED)) {
+        int pct = s_pl_total ? (int)(el * 100 / s_pl_total) : 0;
+        if (pct > 99) pct = 99;   // 100% is reserved for the real EOF (rec_eof_async),
+        lv_slider_set_value(s_pl_bar, pct, LV_ANIM_OFF);   // so residual drift can't finish early
+    }
 }
 
 // Current playback position: the seek base plus what the DAC has played since.
@@ -2131,6 +2134,8 @@ static uint32_t player_pos(void) { return s_pl_base + audio_played_ms() / 1000; 
 static void player_tick(void)
 {
     if (lv_screen_active() != s_scr_recplayer) return;
+    uint32_t exact = stream_file_total_secs();   // replace the list estimate once known
+    if (exact) s_pl_total = exact;
     if (s_pl_state == 0) player_show(player_pos());
 }
 
@@ -2140,6 +2145,7 @@ static void rec_eof_async(void *unused)
     s_pl_state = 2;
     if (s_pl_pp) lv_label_set_text(s_pl_pp, LV_SYMBOL_PLAY);
     player_show(s_pl_total);
+    if (s_pl_bar) lv_slider_set_value(s_pl_bar, 100, LV_ANIM_OFF);   // fill exactly at EOF
 }
 static void rec_end_cb(void) { lv_async_call(rec_eof_async, NULL); }
 

@@ -36,6 +36,8 @@ static QueueHandle_t    s_q          = NULL;
 static volatile bool    s_stop       = true;   // idle both persistent tasks until a stream starts
 static volatile bool    s_live       = false;  // fetcher pulls live segments (vs file playback)
 static char             s_station[16];
+static volatile uint32_t s_frame_us;   // decoder's real playback microseconds per frame
+static volatile int     s_seek_permil = -1;   // >=0: seek the file player to permil/1000
 
 // Persistent keep-alive HTTPS client (fetcher task only).
 static esp_http_client_handle_t s_client = NULL;
@@ -272,7 +274,10 @@ static void decoder_task(void *arg)
             unsigned char *inp = (unsigned char *)seg.buf;
             int left = seg.len;
             int frames = 0;
-            while (dec && left > 0 && !s_stop) {
+            // s_seek_permil>=0 also aborts here: a file segment can be several
+            // seconds long, so finishing it after a seek would decode that many
+            // seconds of OLD-position audio into the ring (progress-bar drift).
+            while (dec && left > 0 && !s_stop && s_seek_permil < 0) {
                 int off = AACFindSyncWord(inp, left);
                 if (off < 0) break;
                 inp += off; left -= off;
@@ -292,6 +297,12 @@ static void decoder_task(void *arg)
                     logged = true;
                     ESP_LOGI(TAG, "decode: %d Hz, %d ch", fi.sampRateOut, fi.nChans);
                 }
+                // True per-frame playback duration for the recordings-player total:
+                // HE-AAC (SBR) emits 2048 output samples/frame, not the 1024 the
+                // ADTS rate implies, so derive it from the DECODER's real output.
+                if (fi.nChans > 0 && fi.sampRateOut > 0)
+                    s_frame_us = (uint32_t)((int64_t)(fi.outputSamps / fi.nChans)
+                                            * 1000000 / fi.sampRateOut);
                 audio_write(pcm, fi.outputSamps * sizeof(int16_t), NULL);
                 // Yield every ~32 frames (~0.7 s of audio) so this core's idle task
                 // feeds the watchdog even mid-segment; a catch-up burst of several
@@ -312,7 +323,71 @@ static void decoder_task(void *arg)
 static char          s_file[192];
 static TaskHandle_t  s_file_task = NULL;
 static void        (*s_end_cb)(void) = NULL;
-static volatile int  s_seek_permil = -1;   // >=0: seek the file player to permil/1000
+
+// FRAME index for accurate seeking. HE-AAC is variable bitrate, so seeking by
+// byte fraction lands at the wrong TIME. Every ADTS frame is the SAME duration,
+// so indexing by frame number makes "frame fraction == time fraction" exactly —
+// no need to know that duration for the seek. Built once when a recording opens:
+// s_idx[k] = file offset of frame k*IDX_STRIDE. The true per-frame duration (for
+// the total-time readout) comes from the decoder's real output, since Radiko
+// HE-AAC emits 2048 output samples/frame, not the 1024 the ADTS rate implies.
+#define IDX_STRIDE 4     // ~0.17 s granularity — fine enough that seek rounding is inaudible
+static long         *s_idx;
+static int           s_idx_n;
+static int           s_file_frames;    // total ADTS frames in the open recording
+// s_frame_us (playback microseconds per frame, from the decoder) declared up top.
+
+static void index_build(FILE *f, long fsz, uint8_t *buf)
+{
+    free(s_idx); s_idx = NULL; s_idx_n = 0; s_file_frames = 0;
+    int cap = (int)(fsz / (80 * IDX_STRIDE)) + 32;   // safe upper bound on entries
+    s_idx = heap_caps_malloc((size_t)cap * sizeof(long), MALLOC_CAP_SPIRAM);
+    if (!s_idx) return;
+    fseek(f, 0, SEEK_SET);
+    long filepos = 0; int frames = 0, carry = 0;
+    while (true) {
+        int n = (int)fread(buf + carry, 1, SEG_BUF_BYTES - carry, f);
+        int avail = carry + n, pos = 0;
+        if (avail < 7) break;
+        while (pos + 7 <= avail) {
+            if (buf[pos] != 0xFF || (buf[pos + 1] & 0xF0) != 0xF0) { pos++; continue; }
+            int flen = ((buf[pos + 3] & 3) << 11) | (buf[pos + 4] << 3) | ((buf[pos + 5] >> 5) & 7);
+            if (flen < 7) { pos++; continue; }
+            if (pos + flen > avail) break;       // partial frame -> carry to next read
+            if (frames % IDX_STRIDE == 0 && s_idx_n < cap) s_idx[s_idx_n++] = filepos + pos;
+            frames++;
+            pos += flen;
+        }
+        carry = avail - pos;
+        memmove(buf, buf + pos, carry);
+        filepos += pos;
+        if (n <= 0) break;
+    }
+    s_file_frames = frames;
+    fseek(f, 0, SEEK_SET);
+}
+
+static void index_free(void)
+{
+    free(s_idx); s_idx = NULL; s_idx_n = 0; s_file_frames = 0;
+}
+
+uint32_t stream_file_total_secs(void)
+{
+    if (!s_file_frames || !s_frame_us) return 0;
+    return (uint32_t)((int64_t)s_file_frames * s_frame_us / 1000000);
+}
+
+// Byte offset for a seek to permil/1000 — by FRAME number, so it's time-exact.
+static long index_seek_byte(long fsz, int permil)
+{
+    if (!s_idx || s_idx_n == 0 || s_file_frames == 0)
+        return (long)((int64_t)fsz * permil / 1000);   // fallback: byte fraction
+    int frame = (int)((int64_t)s_file_frames * permil / 1000);
+    int e = frame / IDX_STRIDE;
+    if (e < 0) e = 0; else if (e >= s_idx_n) e = s_idx_n - 1;
+    return s_idx[e];
+}
 
 // Walk ADTS frames in [buf, buf+avail) and return the length of the longest
 // prefix that ends exactly on a frame boundary (so a seg never splits a frame,
@@ -340,6 +415,9 @@ static void fileplayer_task(void *arg)
     uint8_t *rbuf = heap_caps_malloc(SEG_BUF_BYTES, MALLOC_CAP_SPIRAM);
     if (!rbuf) { fclose(f); goto done; }
 
+    // Scan the frames once for an exact time->byte seek index + true duration.
+    index_build(f, fsz, rbuf);
+
     // ONE loop covers both reading and the post-EOF drain, so a seek is honoured
     // at ANY time — including after a short recording has been fully read into the
     // 30 s ring (its own phase before had no seek handling, so seeks were ignored
@@ -350,14 +428,21 @@ static void fileplayer_task(void *arg)
         // Seek from the progress slider: jump to permil/1000 of the file, drop the
         // buffered audio, and let adts_framed_len resync to the next frame.
         if (s_seek_permil >= 0) {
-            long off = (long)((int64_t)fsz * s_seek_permil / 1000);
+            long off = index_seek_byte(fsz, s_seek_permil);   // by TIME, not raw bytes
             if (off < 0) off = 0; else if (off > fsz) off = fsz;
             fseek(f, off, SEEK_SET);
             carry = 0;
             eof = false;
             s_seek_permil = -1;
-            audio_flush();      // discard buffered audio from the old position
-            audio_resume();     // restart output (also zeroes audio_played_ms)
+            // Discard the OLD position's audio that's still buffered ahead of the
+            // speaker: the decode queue (several seconds of segments) AND the PCM
+            // ring. Without draining the queue, that stale audio played out after
+            // the jump and counted toward the elapsed time, so the progress bar
+            // ran 6-10 s ahead of the sound.
+            seg_t junk;
+            while (xQueueReceive(s_q, &junk, 0) == pdTRUE) free(junk.buf);
+            audio_flush();      // drop the PCM ring + zero audio_played_ms
+            audio_resume();     // restart output from the new position
         }
 
         if (eof) {
@@ -395,6 +480,7 @@ static void fileplayer_task(void *arg)
     }
     fclose(f);
     free(rbuf);
+    index_free();
 
     ESP_LOGI(TAG, "playback: end");
     if (!s_stop && s_end_cb) s_end_cb();   // finished on its own (not stopped)
