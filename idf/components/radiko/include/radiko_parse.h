@@ -28,6 +28,21 @@ const uint8_t *radiko_gzip_body(const uint8_t *b, size_t len, size_t *out_len);
 void radiko_parse_now(const char *xml, const char *station_id,
                       char *out, size_t cap);
 
+// One programme in a station's daily schedule (time-free / タイムフリー, Phase 29b).
+#define RADIKO_PROG_TITLE 96
+typedef struct {
+    char ft[15];                     // start "YYYYMMDDHHMMSS" (14 digits + NUL)
+    char to[15];                     // end   "YYYYMMDDHHMMSS"
+    char title[RADIKO_PROG_TITLE];   // unescaped, UTF-8
+} radiko_prog_t;
+
+// Parse a station's whole-day schedule from the /v3/program/station/date XML into
+// `out` (up to `max` entries, in broadcast order); returns the count. Matching is
+// bounded to the station's own <station id="…"> block. ft/to feed the time-free
+// playlist URL; title is XML-unescaped.
+int radiko_parse_day(const char *xml, const char *station_id,
+                     radiko_prog_t *out, int max);
+
 #ifdef __cplusplus
 }
 #endif

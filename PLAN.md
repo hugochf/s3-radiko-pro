@@ -183,11 +183,33 @@ never an audio glitch. The 30 s PCM buffer covers any fetcher pause anyway.
   audio stack we already have, not a second stack — swap the network fetcher for a
   file reader that pushes ADTS frames into the decoder queue. Makes the radio
   self-contained (record and replay without a PC) and is the foundation 29b needs.
-- **29b — Radiko time-free (タイムフリー). DEFERRED.** Fetch programmes that already
-  aired in the past 7 days: separate API (`/v2/api/ts/playlist.m3u8?station_id=…&
-  ft=…&to=…`) with a time-free auth token + a programme-guide picker. Reuses 29a's
-  ID3-strip + recorder task AND 29a′'s file player. Not in the current scope; the
-  user chose "29a + on-device playback" — build time-free later if wanted.
+- **29b — Radiko time-free (タイムフリー). IN PROGRESS.** Play programmes that
+  already aired in the past 7 days. It **streams over the network — nothing is
+  written to or read from SD** — so it reuses the LIVE path (fetcher → ID3-strip →
+  libhelix → audio) with a different URL, not the recorder or the file player.
+  This makes it FAR gentler on internal RAM than 29a: no SDMMC mount (the ~12 KB
+  internal hog behind this session's RAM fights), and the persistent fetcher/
+  decoder stacks are already paid for. The new cost is a program-guide fetch
+  (~80 KB XML, same as the existing "now on air" fetch, buffered in PSRAM) and a
+  lazily-built guide UI (LVGL objects that spill to PSRAM). Rule: add NO new
+  persistent internal task and NO large internal buffer.
+  - **API:** time-free is the same auth token used against the ts playlist
+    endpoint: `https://radiko.jp/v2/api/ts/playlist.m3u8?station_id=X&l=15&
+    ft=YYYYMMDDHHMMSS&to=YYYYMMDDHHMMSS`. `ft`/`to` are the programme's start/end
+    from the guide. The returned playlist is FINITE (the whole programme), so
+    unlike the live edge it can be seeked.
+  - **Guide data:** per-station per-day XML `https://radiko.jp/v3/program/station/
+    date/YYYYMMDD/{station}.xml` → list of `<prog ft to dur><title><pfm>`.
+  - **Entry point / UI (small-screen plan):** a **Live / 過去 mode toggle in the
+    station-list header** — the list you already reach by tapping the logo. In
+    過去 mode, tapping a station opens that station's **day-stepper** (`‹ 7/20(日) ›`,
+    steps the last 7 days) + a scrollable **program list** (big TIME left column,
+    CJK title after). Tap a programme → resolve ft/to → time-free stream into the
+    existing player (finite, so the accurate seek bar fully applies).
+  - **Build order:** (1) guide parse (host-testable), (2) guide fetch into PSRAM,
+    (3) `stream_play_timefree(station, ft, to)` reusing the fetcher, (4) the UI.
+  - Radiko caveats to design around: time-free has playback windows + a rough
+    daily cap; the weekly programme-guide picker is most of the UI work.
 
 **Open items to settle at build time:** SDMMC 4-bit bring-up (a card that won't
 pull up D3 falls back to 1-bit — verify first); card hot-plug / mount-on-boot vs

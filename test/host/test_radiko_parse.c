@@ -128,6 +128,56 @@ static void test_parse_now_id_prefix_does_not_cross_match(void)
     TEST_ASSERT_EQUAL_STRING("FM Prog", out);
 }
 
+// ---- radiko_parse_day (time-free schedule) ----
+
+static const char *DAY_XML =
+    "<radiko><stations>"
+    "<station id=\"FMT\"><name>TOKYO FM</name><progs date=\"20260720\">"
+    "<prog id=\"1\" ft=\"20260720050000\" to=\"20260720060000\" dur=\"3600\">"
+    "<title>Blue Ocean</title><pfm>住吉美紀</pfm></prog>"
+    "<prog id=\"2\" ft=\"20260720060000\" to=\"20260720083000\" dur=\"9000\">"
+    "<title>SUNDAY&amp;MORNING</title></prog>"
+    "</progs></station>"
+    "<station id=\"FMJ\"><name>J-WAVE</name><progs date=\"20260720\">"
+    "<prog id=\"9\" ft=\"20260720070000\" to=\"20260720110000\" dur=\"14400\">"
+    "<title>OTHER STATION</title></prog>"
+    "</progs></station>"
+    "</stations></radiko>";
+
+static void test_parse_day_lists_programs_in_order(void)
+{
+    radiko_prog_t p[8];
+    int n = radiko_parse_day(DAY_XML, "FMT", p, 8);
+    TEST_ASSERT_EQUAL_INT(2, n);
+    TEST_ASSERT_EQUAL_STRING("20260720050000", p[0].ft);
+    TEST_ASSERT_EQUAL_STRING("20260720060000", p[0].to);
+    TEST_ASSERT_EQUAL_STRING("Blue Ocean", p[0].title);
+    TEST_ASSERT_EQUAL_STRING("20260720060000", p[1].ft);
+    TEST_ASSERT_EQUAL_STRING("SUNDAY&MORNING", p[1].title);   // entity unescaped
+}
+
+static void test_parse_day_bounded_to_station(void)
+{
+    radiko_prog_t p[8];
+    int n = radiko_parse_day(DAY_XML, "FMJ", p, 8);   // must not leak FMT's progs
+    TEST_ASSERT_EQUAL_INT(1, n);
+    TEST_ASSERT_EQUAL_STRING("OTHER STATION", p[0].title);
+}
+
+static void test_parse_day_respects_max(void)
+{
+    radiko_prog_t p[1];
+    int n = radiko_parse_day(DAY_XML, "FMT", p, 1);   // cap at 1 of 2
+    TEST_ASSERT_EQUAL_INT(1, n);
+    TEST_ASSERT_EQUAL_STRING("Blue Ocean", p[0].title);
+}
+
+static void test_parse_day_missing_station_is_zero(void)
+{
+    radiko_prog_t p[8];
+    TEST_ASSERT_EQUAL_INT(0, radiko_parse_day(DAY_XML, "XXX", p, 8));
+}
+
 void run_radiko_parse_tests(void)
 {
     RUN_TEST(test_unescape_all_entities);
@@ -140,4 +190,8 @@ void run_radiko_parse_tests(void)
     RUN_TEST(test_parse_now_missing_station_is_empty);
     RUN_TEST(test_parse_now_does_not_cross_station_boundary);
     RUN_TEST(test_parse_now_id_prefix_does_not_cross_match);
+    RUN_TEST(test_parse_day_lists_programs_in_order);
+    RUN_TEST(test_parse_day_bounded_to_station);
+    RUN_TEST(test_parse_day_respects_max);
+    RUN_TEST(test_parse_day_missing_station_is_zero);
 }
