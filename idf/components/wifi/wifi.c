@@ -137,6 +137,11 @@ esp_err_t wifi_start(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     if (s_have_creds) apply_config(ssid, pass);
     ESP_ERROR_CHECK(esp_wifi_start());  // STA_START handler connects if creds
+    // No modem power-save: the default (WIFI_PS_MIN_MODEM) sleeps the radio
+    // between DTIM beacons, adding RX latency jitter that periodically starves
+    // the audio pipeline and crackles the stream. This radio is always mains/USB
+    // powered, so keep the receiver on for a steady segment feed.
+    esp_wifi_set_ps(WIFI_PS_NONE);
 
     if (s_have_creds) ESP_LOGI(TAG, "starting, ssid='%s'", ssid);
     else              ESP_LOGW(TAG, "no creds - awaiting on-device setup");

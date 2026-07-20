@@ -92,11 +92,12 @@ static void writer_task(void *arg)
             break;
         }
         case CMD_DATA:
-            // Once stop is requested, DROP the backlog instead of writing it, so
-            // the file closes promptly (SD writes can lag well behind the feed
-            // while streaming). Costs at most the last couple seconds of audio,
-            // and means a recording is ready to browse/play the moment you stop.
-            if (f && s_active) {
+            // Write the WHOLE backlog, even after stop — dropping it lost most of
+            // the recording (a deep queue can hold a minute-plus of audio the
+            // writer hadn't caught up on yet). The writer runs above the decoder
+            // (see recorder_init) so it keeps up in real time and the backlog to
+            // flush on stop is small.
+            if (f) {
                 // Bounce through INTERNAL RAM. SDMMC DMA straight from a PSRAM
                 // source is pathologically slow (~2.8 s for 31 KB, and it stalls
                 // the bus enough to freeze the UI) — the bring-up hit 1 MB/s only
@@ -105,12 +106,7 @@ static void writer_task(void *arg)
                 static uint8_t bounce[4096];   // .bss = internal RAM
                 const uint8_t *src = cmd.buf + id3_skip(cmd.buf, cmd.len);
                 int remain = cmd.len - id3_skip(cmd.buf, cmd.len);
-                // Abort mid-write the instant stop is requested: a single segment
-                // write can take several SECONDS (the writer is preempted by the
-                // audio pipeline), and CMD_CLOSE waits behind it — so a browse that
-                // stops the recording would otherwise list the file before it closed
-                // (0:00). Dropping the tail of one segment on stop is harmless.
-                while (remain > 0 && s_active) {
+                while (remain > 0) {
                     int chunk = remain < (int)sizeof(bounce) ? remain : (int)sizeof(bounce);
                     memcpy(bounce, src, chunk);
                     s_bytes += fwrite(bounce, 1, chunk, f);
@@ -134,9 +130,14 @@ esp_err_t recorder_init(void)
 {
     s_q = xQueueCreate(Q_DEPTH, sizeof(rec_cmd_t));
     if (!s_q) return ESP_ERR_NO_MEM;
-    // Core 0 (with the network/decoder); low priority — audio always wins, and
-    // an SD stall here only backs up this queue.
-    xTaskCreatePinnedToCore(writer_task, "rec_wr", 4096, NULL, 3, NULL, 0);
+    // CORE 1, not core 0. On core 0 the writer either fell behind the decoder
+    // (dropped ~75% of the recording) or, when raised above it, starved the
+    // decoder enough to underrun the PCM ring and crackle the audio. Core 1 hosts
+    // the UI + I2S-output task, NOT the decoder, so the writer never competes with
+    // decoding: recordings keep up in real time AND live audio stays clean. Prio 5
+    // sits below the I2S output task (6) so audio still always wins; a slow SD
+    // write only preempts LVGL (at worst a little UI jank while recording).
+    xTaskCreatePinnedToCore(writer_task, "rec_wr", 4096, NULL, 5, NULL, 1);
     return ESP_OK;
 }
 
