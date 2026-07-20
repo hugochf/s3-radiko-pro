@@ -101,6 +101,18 @@ CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 # made streaming reliable once SD + recording shrank the internal-RAM headroom.
 CONFIG_MBEDTLS_HARDWARE_AES=n
 
+# Trim the WiFi driver's internal-RAM footprint (Phase 29). Internal RAM is the
+# scarce resource, and once SD record/playback landed, some boots and live<->
+# recordings transitions intermittently failed to auth or mount the card — the
+# scarce contiguous internal block just didn't survive the allocation churn. The
+# static RX pool (default 10 * 1600 B = 16 KB) is claimed upfront exactly when
+# that contiguous space is needed; 6 is plenty for a ~48 kbps audio stream. The
+# dynamic caps are lowered too so bursty traffic can't fragment internal RAM out
+# from under a TLS handshake or an SD mount.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+
 # --- OTA rollback (Phase 22) ---
 # An OTA-installed image boots as PENDING_VERIFY; unless the app marks itself
 # valid (main does so after 30 s alive), the NEXT reset rolls back to the
