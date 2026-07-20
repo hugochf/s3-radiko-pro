@@ -274,6 +274,53 @@ next thing then needed — a chain worth reading before touching this again:
   steady 19 KB. **Lesson: HW-crypto + external-mem-alloc is a latent OOM on any
   RAM-tight design; prefer software crypto once internal RAM is contended.**
 
+#### Phase 29a follow-up — recordings player + capture reliability
+(The deferred time-free feature keeps the "29b" name; this is polish on 29a.)
+
+A proper "Now Playing" screen mirroring the live player: recording name,
+elapsed/total, a draggable progress slider (seek), a circle transport row
+(prev / play-pause / stop / next) and a volume slider; a trash button per list
+row deletes. Lessons that cost real debugging time:
+
+- **Free a QUEUED buffer exactly once.** Both the fetcher and the file player
+  did `while (!s_stop && xQueueSend(...)) {}; if (s_stop) free(buf);` — but the
+  loop also exits on a SUCCESSFUL send, so a stop racing in right after the send
+  freed a buffer the decode queue already owned. The decoder (or stop_stream's
+  drain) then freed it again → `tlsf_free: block already marked as free`, a hard
+  reset on nearly every play/stop and live↔file switch. Fix: track whether the
+  send actually succeeded and only free when it never queued. This bit BOTH
+  producers identically — grep for the pattern, don't fix one site.
+- **Seek must survive the drain phase.** A recording shorter than the 30 s ring
+  is fully READ long before it finishes playing; the old code left the read loop
+  and sat in a separate drain-wait with no seek handling, so seeks near the end
+  were silently ignored. Fold read + drain into ONE loop with an `eof` flag so a
+  seek re-enters reading at any time. Also clear the pending-seek flag in
+  `start_file` — a seek left set at EOF would fire on the NEXT file's first loop.
+- **Exact elapsed comes from the DAC, not the decoder.** Count bytes handed to
+  I2S (`s_played_b`, /192 = ms at 48 kHz stereo) for the progress readout; it's
+  the true playback position and it freezes correctly on a true pause (writer
+  stops consuming, ring holds, `auto_clear` emits silence).
+- **SD writes are bursty-starved, not slow.** A 31 KB segment write measured
+  3-8 s wall-clock — but isolated writes hit 63 ms, so the SD is fine; the writer
+  task (low prio, shares core 0 with decode) is just preempted mid-write. With
+  only an 8-deep queue the fetcher overran it and dropped ~75 % of segments, so
+  recordings came out a quarter of their real length. A 24-deep PSRAM queue
+  rides out the bursts → full-bitrate capture. **Don't raise the writer above
+  audio; buffer deeper instead.**
+- **Finalize a recording before you list it.** A just-made recording (never
+  manually stopped) listed as 0:00 and played a second: the browser ran its
+  duration estimate on a file the writer hadn't flushed yet. Opening Recordings
+  now stops+flushes first AND the writer aborts its in-progress (multi-second)
+  write on stop so the close is prompt — otherwise the UI's finish-wait times
+  out behind an 8 s write and reads a 0-byte file.
+- **WiFi static RX pool is the boot-time contiguous-block hog.** After all the
+  above, boots and live↔recordings transitions still intermittently failed to
+  auth or mount (free internal landed 6-18 KB run to run; the scarce contiguous
+  block didn't always survive). Trimming `ESP_WIFI_STATIC_RX_BUFFER_NUM` 10→6
+  (+ dynamic caps 32→16) freed the upfront pool exactly where it's needed →
+  steady ~25 KB across reboots. **On a RAM-tight design the WiFi buffer pool is
+  a first-class tuning knob, not a default to leave alone.**
+
 #### Phase 32 design — audio visualiser
 
 **Where to tap the audio (the one decision that matters).** The PCM ring is
