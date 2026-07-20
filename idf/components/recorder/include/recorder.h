@@ -24,6 +24,7 @@ esp_err_t recorder_start(const char *station_id);  // open a file, begin capturi
 void      recorder_stop(void);                     // finish + close the file
 
 bool      recorder_active(void);
+bool      recorder_busy(void);   // recording OR a file is still open/flushing
 uint32_t  recorder_secs(void);   // elapsed recording time (UI)
 uint32_t  recorder_kb(void);     // bytes written so far (UI)
 

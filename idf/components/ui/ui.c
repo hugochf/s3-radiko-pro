@@ -2415,6 +2415,14 @@ static void ev_rec_back(lv_event_t *e)   // list -> main player, resume live rad
 
 static void ev_open_recordings(lv_event_t *e)
 {
+    // Finish any in-progress recording BEFORE listing, so the just-made file is
+    // closed and flushed — otherwise it lists at 0:00 (unwritten) and plays only
+    // the few bytes that reached the card. Wait briefly for the writer to close
+    // it (drop-on-stop makes this fast: the backlog is discarded, not written).
+    if (recorder_busy()) {
+        recorder_stop();   // aborts the in-progress write, so this closes promptly
+        for (int i = 0; i < 120 && recorder_busy(); i++) vTaskDelay(pdMS_TO_TICKS(20));
+    }
     if (!s_scr_rec) build_recordings_screen();
     rebuild_rec_rows();
     lv_screen_load(s_scr_rec);

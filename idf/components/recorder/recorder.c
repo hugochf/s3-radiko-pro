@@ -17,7 +17,10 @@
 
 static const char *TAG = "recorder";
 
-#define Q_DEPTH   8              // segments buffered if the SD write stalls
+#define Q_DEPTH   24             // segments buffered if the SD write stalls (PSRAM copies,
+                                 // so cheap) — absorbs decode-burst starvation of the writer
+                                 // instead of dropping segments (recordings were coming out
+                                 // far shorter than wall-clock time)
 #define REC_DIR   "/rec"         // under storage_root()
 #define FSYNC_EVERY 10           // ~40 s: bound data loss on a power cut
 
@@ -34,6 +37,7 @@ typedef struct {
 static QueueHandle_t    s_q;
 static volatile bool    s_active;
 static volatile bool    s_close_req;   // stop asked to close but the queue was full
+static volatile bool    s_file_open;   // a recording file is currently open on the writer
 static volatile uint32_t s_bytes;
 static time_t           s_start;
 
@@ -54,6 +58,7 @@ static void writer_close(FILE **f, bool *mounted)
               ESP_LOGI(TAG, "recording closed (%u KB)", (unsigned)(s_bytes / 1024)); }
     if (*mounted) { storage_release(); *mounted = false; }   // free SD RAM back to TLS
     s_close_req = false;
+    s_file_open = false;
 }
 
 static void writer_task(void *arg)
@@ -81,6 +86,7 @@ static void writer_task(void *arg)
             if (f) fclose(f);
             f = fopen(path, "wb");
             since_sync = 0;
+            s_file_open = (f != NULL);
             if (f) ESP_LOGI(TAG, "recording -> %s", path);
             else   ESP_LOGE(TAG, "fopen failed: %s", path);
             break;
@@ -99,7 +105,12 @@ static void writer_task(void *arg)
                 static uint8_t bounce[4096];   // .bss = internal RAM
                 const uint8_t *src = cmd.buf + id3_skip(cmd.buf, cmd.len);
                 int remain = cmd.len - id3_skip(cmd.buf, cmd.len);
-                while (remain > 0) {
+                // Abort mid-write the instant stop is requested: a single segment
+                // write can take several SECONDS (the writer is preempted by the
+                // audio pipeline), and CMD_CLOSE waits behind it — so a browse that
+                // stops the recording would otherwise list the file before it closed
+                // (0:00). Dropping the tail of one segment on stop is harmless.
+                while (remain > 0 && s_active) {
                     int chunk = remain < (int)sizeof(bounce) ? remain : (int)sizeof(bounce);
                     memcpy(bounce, src, chunk);
                     s_bytes += fwrite(bounce, 1, chunk, f);
@@ -156,6 +167,7 @@ void recorder_stop(void)
 }
 
 bool     recorder_active(void) { return s_active; }
+bool     recorder_busy(void)   { return s_active || s_file_open; }   // still capturing or flushing
 uint32_t recorder_secs(void)   { return s_active ? (uint32_t)(time(NULL) - s_start) : 0; }
 uint32_t recorder_kb(void)     { return s_bytes / 1024; }
 
