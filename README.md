@@ -64,6 +64,12 @@ Live Radiko audio plays, touchscreen-controlled. Working today:
   volume, play/pause and per-recording delete. Record straight from the transport
   row; a flashing red "● REC m:ss" and a solid-red LED show it's rolling. No PC
   needed to capture or replay.
+- **Time-free (タイムフリー) — listen to the past 7 days**: flip the station list
+  to **PAST**, pick a station, and browse its day-by-day schedule (‹ › steps back
+  a week). Tapping a programme streams it straight from Radiko — nothing is
+  downloaded and the SD card isn't touched — with a draggable seek bar. A show
+  still **on air** stays in the list and keeps playing as the rest broadcasts;
+  seeking is clamped to what Radiko has actually published
 - Real-time **audio spectrum visualiser** — long-press the logo to cycle four
   styles (rainbow bars, green/amber/red LED/car meter, rainbow LED); a 512-pt FFT
   of the PCM actually reaching the DAC, kept from ever starving playback (the
@@ -83,7 +89,8 @@ Live Radiko audio plays, touchscreen-controlled. Working today:
 - Optional signed-OTA enforcement profile (Phase 25 Stage A); JTAG live-debug
 
 **All 25 planned phases complete**, plus Tier E extras: **SD recording +
-on-device playback (Phase 29)**, VPN-free multi-area geo-auth (Phase 30), an
+on-device playback (Phase 29a)**, **time-free / past-7-days playback (Phase
+29b)**, VPN-free multi-area geo-auth (Phase 30), an
 LVGL heap fix (Phase 31) and the audio visualiser (Phase 32). The hardware secure-boot /
 flash-encryption burn (Phase 25 Stage B) is documented as a factory-ready runbook
 but deliberately not executed on this single in-use board — see

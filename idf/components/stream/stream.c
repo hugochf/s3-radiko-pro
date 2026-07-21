@@ -30,16 +30,24 @@ static const char *TAG = "stream";
 // Two-stage pipeline: the fetcher pulls AAC segments over the network (~4 s each)
 // into a queue; the decoder drains the queue -> libhelix -> audio. This overlaps
 // network latency with real-time playback so throughput stays >= 1x.
-typedef struct { char *buf; int len; } seg_t;
+// `gen` tags the session a segment belongs to, so the decoder can drop stale ones.
+typedef struct { char *buf; int len; uint32_t gen; } seg_t;
 
 static QueueHandle_t    s_q          = NULL;
 static volatile bool    s_stop       = true;   // idle both persistent tasks until a stream starts
 static volatile bool    s_live       = false;  // fetcher pulls live segments (vs file playback)
+// Session generation, bumped once per control command. s_stop alone can't mark a
+// restart: ctrl_task does stop_stream()+start_stream() back-to-back, so s_stop
+// flips true->false in microseconds — a fetcher blocked in a 10 s segment fetch
+// never observes it, keeps its old media_url, and goes on streaming the previous
+// session (old station, or the pre-seek ft on time-free). Comparing generations
+// makes the restart impossible to miss, whatever the timing.
+static volatile uint32_t s_gen = 0;
 static char             s_station[16];
 static volatile uint32_t s_frame_us;   // decoder's real playback microseconds per frame
 static volatile int     s_seek_permil = -1;   // >=0: seek the file player to permil/1000
 static volatile bool    s_timefree;    // live session is a time-free (past) programme
-static char             s_tf_master[420];   // the ts playlist URL for time-free
+static char             s_tf_ft[16], s_tf_to[16];   // programme window YYYYMMDDHHMMSS
 static void           (*s_end_cb)(void) = NULL;   // file/time-free playback reached EOF
 
 // Persistent keep-alive HTTPS client (fetcher task only).
@@ -52,6 +60,19 @@ static void make_lsid(char *out /* [33] */)
     esp_fill_random(rnd, sizeof(rnd));
     for (int i = 0; i < 16; i++) sprintf(out + i * 2, "%02x", rnd[i]);
     out[32] = '\0';
+}
+
+#define PDT_TAG "#EXT-X-PROGRAM-DATE-TIME:"
+
+// "2026-07-19T10:57:45.325+09:00" -> "20260719105745". Both this and the ft/to
+// window bounds are fixed-width zero-padded, so plain strcmp orders them
+// chronologically — no date arithmetic (or timezone handling) needed.
+static void pdt_digits(const char *s, char *out /* [15] */)
+{
+    int n = 0;
+    for (; *s && n < 14; s++) if (*s >= '0' && *s <= '9') out[n++] = *s;
+    out[n] = '\0';
+    if (n < 14) out[0] = '\0';   // malformed — treat as "no timestamp"
 }
 
 static esp_err_t on_http(esp_http_client_event_t *e)
@@ -108,13 +129,16 @@ static void fetcher_task(void *arg)
 
     const char *token = radiko_token();
     char media_url[400] = {0}, last_seg[256] = {0};
+    // This session's generation. Any control command bumps s_gen, which drops us
+    // out of the loop below to re-resolve the playlist for the NEW session.
+    uint32_t gen = s_gen;
 
     ESP_LOGI(TAG, "streaming %s", s_station);
 
     int backoff = 0;    // grows on repeated failures at any stage (don't hammer Radiko)
     int empty = 0;      // consecutive live-playlist polls that yielded no new segment
     int auth_fail = 0;  // consecutive 401/403s — the token has expired/been revoked
-    while (!s_stop && s_live) {
+    while (!s_stop && s_live && s_gen == gen) {
         app_watchdog_feed();
 
         // Token rejected twice in a row → it's dead (Radiko can invalidate it at
@@ -163,12 +187,20 @@ static void fetcher_task(void *arg)
         }
 
         if (media_url[0] == '\0') {
-            char purl[420];
+            char lsid[33]; make_lsid(lsid);
+            char purl[512];
             if (s_timefree) {
-                // Time-free: the ts endpoint is the master playlist (ft/to window).
-                snprintf(purl, sizeof(purl), "%s", s_tf_master);
+                // The old radiko.jp/v2/api/ts/ endpoint is gone (404); time-free
+                // now lives on the smartstream tf CDN, advertised as the
+                // timefree="1" entry in the station's stream XML. The FULL window
+                // param set (start_at/ft + end_at/to + lsid + type=b) is required
+                // — the short ?station_id&l&ft&to form is rejected 400 "illegal
+                // parameter".
+                snprintf(purl, sizeof(purl),
+                         "https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/playlist.m3u8?station_id=%s"
+                         "&start_at=%s&ft=%s&end_at=%s&to=%s&l=15&lsid=%s&type=b",
+                         s_station, s_tf_ft, s_tf_ft, s_tf_to, s_tf_to, lsid);
             } else {
-                char lsid[33]; make_lsid(lsid);
                 snprintf(purl, sizeof(purl), "%s?station_id=%s&l=30&lsid=%s&type=b",
                          base, s_station, lsid);
             }
@@ -202,12 +234,26 @@ static void fetcher_task(void *arg)
         bool endlist = s_timefree && strstr(plist, "#EXT-X-ENDLIST") != NULL;
 
         bool seen_last = (last_seg[0] == '\0');
+        bool reached_end = false;   // time-free: segments have caught up to `to`
+        char pdt[15] = {0};         // the pending segment's start, YYYYMMDDHHMMSS
         int pushed = 0;
         char *save = NULL;
         for (char *line = strtok_r(plist, "\r\n", &save); line && !s_stop;
              line = strtok_r(NULL, "\r\n", &save)) {
-            if (!line[0] || line[0] == '#') continue;
+            if (line[0] == '#') {
+                // A time-free medialist is NOT a finite VOD playlist: it is a
+                // sliding window with no #EXT-X-ENDLIST, and it keeps serving
+                // straight past `to` into the following programme. Each segment's
+                // PROGRAM-DATE-TIME is the only marker of the real end, so keep
+                // the latest one for the URL line that follows it.
+                if (s_timefree && !strncmp(line, PDT_TAG, strlen(PDT_TAG)))
+                    pdt_digits(line + strlen(PDT_TAG), pdt);
+                continue;
+            }
+            if (!line[0]) continue;
             if (!seen_last) { if (!strcmp(line, last_seg)) seen_last = true; continue; }
+            // This segment starts at/after the programme's end — stop here.
+            if (s_timefree && pdt[0] && strcmp(pdt, s_tf_to) >= 0) { reached_end = true; break; }
             app_watchdog_feed();   // once per segment (each fetch can take 10 s)
 
             char *buf = heap_caps_malloc(SEG_BUF_BYTES, MALLOC_CAP_SPIRAM);
@@ -224,26 +270,28 @@ static void fetcher_task(void *arg)
             // the recorder never stalls the fetcher (audio always wins).
             recorder_feed(buf, slen);
 
-            seg_t seg = { buf, slen };
+            seg_t seg = { buf, slen, gen };
             // Blocks when the queue is full -> paces the fetcher to real time
             // (legitimately minutes at the live edge, so feed while waiting). Track
             // whether the send SUCCEEDED: freeing buf here after it was already
             // queued (a stop racing in on a live->file switch) double-freed it with
             // the decoder -> the seg_dec heap assert. Only free if never queued.
             bool queued = false;
-            while (!s_stop && !(queued = (xQueueSend(s_q, &seg, pdMS_TO_TICKS(200)) == pdTRUE))) {
+            while (!s_stop && s_gen == gen &&
+                   !(queued = (xQueueSend(s_q, &seg, pdMS_TO_TICKS(200)) == pdTRUE))) {
                 app_watchdog_feed();
             }
             if (!queued) { free(buf); break; }   // stopped before queuing -> we still own it
-            if (s_stop) break;
+            if (s_stop || s_gen != gen) break;
             strncpy(last_seg, line, sizeof(last_seg) - 1);
             last_seg[sizeof(last_seg) - 1] = '\0';
             pushed++;
         }
-        if (pushed > 0) {
-            empty = 0;
-        } else if (endlist) {
-            // Time-free: every segment of the finite programme has been fed. Let the
+        // reached_end wins over `pushed`: the final batch usually feeds a few
+        // segments AND crosses `to`, and waiting for a later empty poll would let
+        // the sliding window roll on into the next programme.
+        if (reached_end || (pushed == 0 && endlist)) {
+            // Time-free: every segment of the programme has been fed. Let the
             // 30 s buffer drain so the speaker actually finishes, then notify + end
             // the session (like the file player's EOF).
             ESP_LOGI(TAG, "time-free programme complete");
@@ -254,12 +302,19 @@ static void fetcher_task(void *arg)
             if (!s_stop && s_end_cb) s_end_cb();
             s_live = false;
             break;
+        } else if (pushed > 0) {
+            empty = 0;
         } else {
             // A few empty polls is normal at the live edge, but many in a row means
             // the medialist session went stale — Radiko expires it after a few
             // minutes and then serves a frozen playlist with HTTP 200, so the fetch
             // never fails and audio silently dies. Force a fresh session.
-            if (++empty >= 5) {
+            //
+            // Never for time-free: re-resolving rebuilds the URL from the session's
+            // ft, so it would jump back and replay from the start. Running dry here
+            // just means an on-air programme has been caught up to — the right
+            // response is to keep polling until the next segment is published.
+            if (!s_timefree && ++empty >= 5) {
                 ESP_LOGI(TAG, "live playlist stale; new session");
                 empty = 0; media_url[0] = '\0'; last_seg[0] = '\0';
             }
@@ -295,6 +350,13 @@ static void decoder_task(void *arg)
             app_watchdog_feed();
             seg_t seg;
             if (xQueueReceive(s_q, &seg, pdMS_TO_TICKS(300)) != pdTRUE) continue;
+
+            // Belongs to a session we've already left (station switch, or a
+            // time-free seek). stop_stream() drains the queue, but a fetcher
+            // finishing an in-flight download can push one more segment after
+            // that drain — decoding it would play several seconds of the OLD
+            // position, which is exactly what a seek is trying to escape.
+            if (seg.gen != s_gen) { free(seg.buf); continue; }
 
             unsigned char *inp = (unsigned char *)seg.buf;
             int left = seg.len;
@@ -489,7 +551,7 @@ static void fileplayer_task(void *arg)
         char *seg = heap_caps_malloc(framed, MALLOC_CAP_SPIRAM);
         if (seg) {
             memcpy(seg, rbuf, framed);
-            seg_t s = { seg, framed };
+            seg_t s = { seg, framed, s_gen };   // current session (file seeks use s_seek_permil)
             // Blocks while the queue is full -> real-time pacing. Only free the seg
             // if it was NEVER queued (a stop/seek racing in) — freeing a queued
             // buffer double-frees it with the decoder (Phase 29 seg_dec crash).
@@ -563,6 +625,7 @@ static void ctrl_task(void *arg)
     cmd_t c;
     while (true) {
         if (xQueueReceive(s_cmd_q, &c, portMAX_DELAY) != pdTRUE) continue;
+        s_gen++;          // invalidate the previous session before tearing it down
         stop_stream();                                   // waits for the file player to exit
         if (file_session) { storage_release(); file_session = false; }   // safe: player gone
         s_timefree = false;   // default; mode 3 (time-free) turns it on before start
@@ -617,9 +680,8 @@ void stream_play_file(const char *path)
 // Streams the finite ts playlist through the live fetcher/decoder — no SD.
 void stream_play_timefree(const char *station, const char *ft, const char *to)
 {
-    snprintf(s_tf_master, sizeof(s_tf_master),
-             "https://radiko.jp/v2/api/ts/playlist.m3u8?station_id=%s&l=15&ft=%s&to=%s",
-             station, ft, to);
+    strncpy(s_tf_ft, ft, sizeof(s_tf_ft) - 1); s_tf_ft[sizeof(s_tf_ft) - 1] = '\0';
+    strncpy(s_tf_to, to, sizeof(s_tf_to) - 1); s_tf_to[sizeof(s_tf_to) - 1] = '\0';
     cmd_t c = { .mode = 3 };
     strncpy(c.arg, station, sizeof(c.arg) - 1);
     xQueueOverwrite(s_cmd_q, &c);

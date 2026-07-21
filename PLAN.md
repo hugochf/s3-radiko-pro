@@ -343,6 +343,73 @@ row deletes. Lessons that cost real debugging time:
   steady ~25 KB across reboots. **On a RAM-tight design the WiFi buffer pool is
   a first-class tuning knob, not a default to leave alone.**
 
+#### Phase 29b — built (time-free / タイムフリー: play the past 7 days)
+
+A LIVE/PAST toggle in the station-list header; picking a station in PAST mode
+opens a day guide (station schedule, ‹ › day stepper back to -6); picking a
+programme streams it through the existing fetcher/decoder into the recordings
+player (no SD, nothing downloaded). Almost every bug here was a **wrong
+assumption about the server**, and each one failed silently rather than loudly:
+
+- **APIs rot; ask the server where to go.** `radiko.jp/v2/api/ts/playlist.m3u8`
+  — the endpoint every guide still documents — now returns 404. The live base is
+  advertised in `v3/station/stream/pc_html5/<id>.xml` under the entry flagged
+  `timefree="1"` (`tf-f-rpaa-radiko.smartstream.ne.jp/tf/`). It also demands the
+  FULL window param set (`start_at`+`ft`, `end_at`+`to`, `lsid`, `type=b`); the
+  short `?station_id&l&ft&to` form is rejected 400 "illegal parameter".
+- **Time-free is NOT a finite VOD playlist.** It has no `#EXT-X-ENDLIST` — it is
+  a sliding window serving ~3 segments at a time that rolls straight past `to`
+  into the NEXT programme, forever. Waiting for an ENDLIST meant playback simply
+  never ended. The only real end marker is each segment's
+  `#EXT-X-PROGRAM-DATE-TIME` compared against `to` (both fixed-width and
+  zero-padded, so `strcmp` orders them — no date arithmetic).
+- **A stop+start pair is invisible to a blocked task.** `ctrl_task` does
+  `stop_stream(); start_stream();` back-to-back, so `s_stop` flips true→false in
+  microseconds. A fetcher parked in a 10 s segment download never observes it,
+  keeps its old `media_url`, and goes on streaming the OLD position — a seek
+  that visibly did nothing. Booleans can't express "this session is over" across
+  a blocking call: use a **generation counter**, tag every queued segment with
+  the generation it was fetched under, and have the decoder DROP stale ones.
+  `stop_stream()` drains the queue, but an in-flight fetch can still push one
+  more segment after that drain — only the tag closes that race. Same bug had
+  been mis-diagnosed earlier as a live station-switch quirk.
+- **Seeking an HLS session = restarting it at a shifted `ft`.** There is no
+  frame index to jump around in (that's the file player's trick). Radiko honours
+  a shifted `ft` exactly, down to a 10-second window.
+- **The server answered a question we shouldn't have asked.** Seeking inside a
+  programme still ON AIR asks for a timestamp in the future; Radiko does not
+  error — it quietly serves the newest audio it holds (~6 min behind live). The
+  bar jumped to 100 % while the audio still had ~16 min to run, which reads
+  exactly like a broken seek. Clamp seeks to the published edge (minus a margin
+  so the fetcher keeps segments ahead); keep the programme's REAL end so an
+  on-air show simply plays on as the rest airs (playback and broadcast both run
+  at 1×, so a listener behind the edge stays behind it).
+- **Never "recover" a time-free session by re-resolving.** The live path's
+  stale-session recovery rebuilds the URL from `ft` — on time-free that silently
+  replays from the start. Running dry there just means the live edge was caught
+  up to; keep polling.
+- **"Radiko always gzips, even unasked" was false — and the fallback hid it.**
+  Without `Accept-Encoding`, a whole-day schedule came back as 90-120 KB of
+  PLAIN XML. The 48 KB response buffer kept the first 49151 bytes, and
+  `fetch_gz_xml`'s "not gzip → treat as plain XML" branch parsed that stump into
+  13 perfectly valid programmes. No error, no crash: the guide just ended at
+  17:00. Now: send `Accept-Encoding`, size the buffers for the UNCOMPRESSED
+  worst case anyway (the server picks the encoding, not us), and **log an error
+  when a response fills its buffer** — silent truncation is indistinguishable
+  from real data.
+
+**Debugging method (what actually found it).** Four confident theories died —
+the seek maths, LVGL memory, the aired-filter, the clock. What worked was
+verifying each layer *independently* against ground truth: curl proved the
+server honoured `ft`; compiling the real parser against the real XML on the host
+proved 29/29 programmes; only then did the board's own `guide FMT ...: 13
+programmes (49151 bytes)` line name the culprit — and `49151 = GZ_CAP-1` said
+"buffer", not "parser". Note the near-miss: `curl --compressed` sends
+`Accept-Encoding`, so every host check had been exercising a code path the
+device never took. **Reproduce with the client's exact request, not a
+convenient one.** When the USB-JTAG console wedged (it does, on repeated opens),
+printing the counters onto the guide's date label beat fighting the cable.
+
 #### Phase 32 design — audio visualiser
 
 **Where to tap the audio (the one decision that matters).** The PCM ring is

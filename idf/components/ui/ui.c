@@ -255,11 +255,17 @@ static void persist_station(void) { settings_get()->station = s_cur; settings_sa
 static void persist_volume(void)  { settings_get()->volume  = s_vol; settings_save(); }
 
 // Reflect s_playing/s_cur onto the actual stream (non-blocking requests).
+// Set whenever live radio is displaced by a detour (recording playback or a
+// time-free programme). Every route back to the live player checks it — see
+// back_to_live_player.
+static bool s_rec_interrupted;
+
 static void apply_playback(void)
 {
     // A recording captures ONE station's live airtime; any station switch or
     // stop ends it cleanly (the fetcher is about to feed different/no audio).
     recorder_stop();
+    s_rec_interrupted = false;   // whatever detour was running, it ends here
     if (s_playing) stream_play(station_id(s_cur));
     else           stream_stop();
 }
@@ -1380,7 +1386,17 @@ static void ev_logo_released(lv_event_t *e)
     else if (dx > -8 && dx < 8 && p.x >= 120 && p.x <= 200 && p.y >= 40)
         ev_open_list(e);   // y-guard: don't steal near-miss taps on the title
 }
-static void ev_back_to_player(lv_event_t *e) { lv_screen_load(s_scr_player); }
+// Returning to the live player from ANY detour must restore live radio. Routing
+// every path through here is what makes that reliable: the time-free route home
+// is player -> guide -> station list -> player, and each of those handlers used
+// to just load a screen, so the radio stayed silent all the way back.
+static void back_to_live_player(void)
+{
+    if (s_rec_interrupted) apply_playback();   // clears the flag itself
+    lv_screen_load(s_scr_player);
+}
+
+static void ev_back_to_player(lv_event_t *e) { back_to_live_player(); }
 // Audio keeps playing during WiFi setup (unlike the Arduino, which had to stop
 // its audio library): a scan only blips the connection and the 30 s PCM buffer
 // rides through it. Actually changing networks interrupts audio naturally.
@@ -1424,13 +1440,13 @@ static void ev_select_station(lv_event_t *e)
     lv_screen_load(s_scr_player);
 }
 
-// Live / 過去 (time-free) toggle in the station-list header.
+// LIVE / PAST (time-free) toggle in the station-list header.
 static void ev_list_mode_toggle(lv_event_t *e)
 {
     s_list_timefree = !s_list_timefree;
     if (s_list_mode_lbl)
         lv_label_set_text(s_list_mode_lbl,
-                          s_list_timefree ? LV_SYMBOL_LEFT " \xE9\x81\x8E\xE5\x8E\xBB"   // 過去
+                          s_list_timefree ? LV_SYMBOL_PREV " PAST"
                                           : LV_SYMBOL_PLAY " LIVE");
 }
 
@@ -1875,10 +1891,12 @@ static void build_list_screen(void)
     lv_obj_set_style_bg_color(mode, lv_color_hex(C_ACCENT), 0);
     lv_obj_set_style_shadow_width(mode, 0, 0);
     lv_obj_add_event_cb(mode, ev_list_mode_toggle, LV_EVENT_CLICKED, NULL);
+    // Default (Montserrat) font, NOT the JP one: the JP font carries no LVGL
+    // symbol glyphs, so the icon rendered as a tofu square. Both labels are
+    // English for the same reason.
     s_list_mode_lbl = lv_label_create(mode);
-    lv_obj_set_style_text_font(s_list_mode_lbl, &lv_font_jp_16, 0);
     lv_label_set_text(s_list_mode_lbl,
-                      s_list_timefree ? LV_SYMBOL_LEFT " \xE9\x81\x8E\xE5\x8E\xBB"
+                      s_list_timefree ? LV_SYMBOL_PREV " PAST"
                                       : LV_SYMBOL_PLAY " LIVE");
     lv_obj_center(s_list_mode_lbl);
 
@@ -2090,12 +2108,12 @@ void ui_show_wifi_setup(void)
 static lv_obj_t   *s_scr_rec  = NULL;
 static lv_obj_t   *s_rec_list = NULL;
 static rec_entry_t s_rec_entries[REC_MAX_ROWS];
-static bool        s_rec_interrupted;   // did we stop live radio to play a file?
 static void        ev_rec_back(lv_event_t *e);   // list -> main player (defined below)
 
 // Player screen widgets + state.
 static lv_obj_t *s_scr_recplayer = NULL;
-static lv_obj_t *s_pl_name  = NULL;     // friendly recording name
+static lv_obj_t *s_pl_name  = NULL;     // friendly recording name / programme title
+static const lv_font_t *s_pl_name_font0;   // its default (English) font
 static lv_obj_t *s_pl_time  = NULL;     // "m:ss / m:ss"
 static lv_obj_t *s_pl_bar   = NULL;     // progress / seek slider
 static lv_obj_t *s_pl_pp    = NULL;     // play/pause button label (icon)
@@ -2163,7 +2181,11 @@ static uint32_t player_pos(void) { return s_pl_base + audio_played_ms() / 1000; 
 static void player_tick(void)
 {
     if (lv_screen_active() != s_scr_recplayer) return;
-    uint32_t exact = stream_file_total_secs();   // replace the list estimate once known
+    // Only a recording has a file duration to refine. For time-free, s_pl_total
+    // comes from the programme's ft/to and is authoritative — letting a stale
+    // file duration overwrite it corrupts the whole scale: seek offsets are
+    // derived from it, so the bar would end early while audio played on.
+    uint32_t exact = s_pl_timefree ? 0 : stream_file_total_secs();
     if (exact) s_pl_total = exact;
     if (s_pl_state == 0) player_show(player_pos());
 }
@@ -2204,6 +2226,8 @@ static void open_recording(int idx)
     s_pl_total = s_rec_entries[idx].secs;
     char friendly[96];
     rec_friendly(s_rec_entries[idx].name, friendly, sizeof(friendly));
+    if (s_pl_name_font0)   // back to the original font for recording names
+        lv_obj_set_style_text_font(s_pl_name, s_pl_name_font0, 0);
     lv_label_set_text(s_pl_name, friendly);
     play_current();
 }
@@ -2239,11 +2263,14 @@ static void ev_pl_stop(lv_event_t *e)
 static void ev_pl_prev(lv_event_t *e) { open_recording(s_pl_index - 1); }
 static void ev_pl_next(lv_event_t *e) { open_recording(s_pl_index + 1); }
 
+static void tf_seek_restart(int pct);   // defined with the time-free helpers below
+
 // Drag the progress slider to seek. Fires on release; the value is 0..100 %.
 static void ev_pl_seek(lv_event_t *e)
 {
-    if (s_pl_timefree) return;   // time-free has no file/seek index (yet)
     int pct = (int)lv_slider_get_value(s_pl_bar);
+    // Time-free is an HLS session, not a file: seeking restarts it at a later ft.
+    if (s_pl_timefree) { tf_seek_restart(pct); return; }
     s_pl_base = s_pl_total * pct / 100;      // display jumps immediately
     stream_seek_file(pct * 10);              // permil
     s_pl_state = 0;
@@ -2296,8 +2323,14 @@ static void build_recplayer_screen(void)
     // then the VOL row at y=146/150, then the circle transport row at y=176.
     s_pl_name = lv_label_create(s_scr_recplayer);
     lv_obj_set_width(s_pl_name, 300);
-    lv_label_set_long_mode(s_pl_name, LV_LABEL_LONG_DOT);
-    lv_obj_set_style_text_color(s_pl_name, lv_color_hex(C_TEXT), 0);   // default (original) font
+    // Marquee, like the live player's programme label. LONG_DOT leaves the height
+    // automatic, so a long (Japanese) title wrapped to a second line and grew down
+    // over the elapsed/total time below it; scrolling keeps it to one line.
+    lv_label_set_long_mode(s_pl_name, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_obj_set_style_text_color(s_pl_name, lv_color_hex(C_TEXT), 0);
+    // Recording names keep this default (original) font; time-free titles are
+    // Japanese and switch to the JP font. Remember it so we can switch back.
+    s_pl_name_font0 = lv_obj_get_style_text_font(s_pl_name, LV_PART_MAIN);
     lv_obj_set_style_text_align(s_pl_name, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_pl_name, LV_ALIGN_TOP_MID, 0, 46);
 
@@ -2451,9 +2484,11 @@ static void build_recordings_screen(void)
 
 static void ev_rec_back(lv_event_t *e)   // list -> main player, resume live radio
 {
-    stream_stop();
-    if (s_rec_interrupted) { s_rec_interrupted = false; apply_playback(); }
-    lv_screen_load(s_scr_player);
+    // No unconditional stream_stop(): if nothing was played, live radio is still
+    // running untouched and stopping it here left the player silent with no way
+    // back. apply_playback() ends any file session on its own (the control task
+    // stops the current one before starting the next).
+    back_to_live_player();
 }
 
 static void ev_open_recordings(lv_event_t *e)
@@ -2505,6 +2540,18 @@ static void tf_hhmm(const char *ts, char *out)   // "HH:MM" from YYYYMMDDHHMMSS
     } else out[0] = '\0';
 }
 
+// Seeking closer than this to the programme's end would ask Radiko for a window
+// too short to be worth streaming (and a zero-length one is rejected outright).
+#define TF_SEEK_TAIL 10   // seconds
+
+// How far behind the live edge Radiko's time-free audio is published. A
+// programme is only listed once it ended this long ago — see guide_refresh_async.
+#define TF_AVAIL_LAG 420  // seconds (7 min, with margin)
+
+// Extra headroom kept between a seek target and the published edge, so the
+// fetcher always has segments queued ahead of the decoder on an on-air programme.
+#define TF_EDGE_MARGIN 60  // seconds
+
 static time_t tf_epoch(const char *ts)
 {
     if (strlen(ts) < 14) return 0;
@@ -2515,10 +2562,51 @@ static time_t tf_epoch(const char *ts)
     tm.tm_hour = h; tm.tm_min = mi; tm.tm_sec = s; tm.tm_isdst = -1;
     return mktime(&tm);
 }
+static void tf_fmt(time_t t, char *out /* [15] */)   // epoch -> YYYYMMDDHHMMSS
+{
+    struct tm tm;
+    localtime_r(&t, &tm);
+    strftime(out, 15, "%Y%m%d%H%M%S", &tm);
+}
+
 static uint32_t tf_duration(const char *ft, const char *to)
 {
     time_t a = tf_epoch(ft), b = tf_epoch(to);
     return (b > a) ? (uint32_t)(b - a) : 0;
+}
+
+// Time-free seek. An HLS session has no frame index to jump around in, but the
+// ts endpoint takes an absolute window — so seeking is just restarting the
+// session with ft shifted forward to the seek point, keeping the original end.
+// audio_flush() in stop_stream zeroes audio_played_ms, so s_pl_base carries the
+// offset and player_pos() stays correct across the restart.
+static void tf_seek_restart(int pct)
+{
+    if (!s_pl_total) return;
+    uint32_t off = (uint32_t)((uint64_t)s_pl_total * pct / 100);
+    // Never seek to (or past) the end: a zero-length window is rejected by Radiko.
+    if (s_pl_total > TF_SEEK_TAIL && off > s_pl_total - TF_SEEK_TAIL)
+        off = s_pl_total - TF_SEEK_TAIL;
+
+    // A programme still on air has nothing published past the live edge. Seeking
+    // there asks for the future, which Radiko answers with its newest audio
+    // instead of the requested point — so clamp, keeping a margin so the fetcher
+    // still has segments ahead of the decoder. The bar snaps back to the clamped
+    // spot, which is honest: that really is as far as this programme has aired.
+    time_t start = tf_epoch(s_tf_cur.ft);
+    time_t limit = time(NULL) - TF_AVAIL_LAG - TF_EDGE_MARGIN;
+    if (start + (time_t)off > limit)
+        off = (limit > start) ? (uint32_t)(limit - start) : 0;
+
+    char ft[15];
+    tf_fmt(tf_epoch(s_tf_cur.ft) + off, ft);
+
+    s_pl_base  = off;
+    s_pl_state = 0;
+    if (s_pl_pp) lv_label_set_text(s_pl_pp, LV_SYMBOL_PAUSE);
+    player_show(off);
+    stream_pause(false);
+    stream_play_timefree(s_tf_station, ft, s_tf_cur.to);
 }
 
 // Start a past programme in the (reused) recordings-player screen. Time-free has
@@ -2531,17 +2619,22 @@ static void play_timefree(const char *station, const radiko_prog_t *prog)
     strncpy(s_tf_station, station, sizeof(s_tf_station) - 1);
     s_tf_station[sizeof(s_tf_station) - 1] = '\0';
     s_tf_cur   = *prog;
-    s_pl_total = tf_duration(prog->ft, prog->to);
+    // Keep the programme's REAL end even if it is still on air: playback runs at
+    // 1x and so does the broadcast, so a listener starting behind the live edge
+    // stays behind it and simply plays on as the rest airs. Only seeking has to
+    // respect the published edge (see tf_seek_restart).
+    s_pl_total = tf_duration(s_tf_cur.ft, s_tf_cur.to);
     s_pl_base  = 0;
     s_pl_state = 0;
     s_rec_interrupted = true;              // leaving the player resumes live radio
+    lv_obj_set_style_text_font(s_pl_name, &lv_font_jp_16, 0);   // Japanese title
     lv_label_set_text(s_pl_name, prog->title);
     if (s_pl_pp)  lv_label_set_text(s_pl_pp, LV_SYMBOL_PAUSE);
     if (s_pl_vol) lv_slider_set_value(s_pl_vol, s_vol, LV_ANIM_OFF);
     player_show(0);
     lv_screen_load(s_scr_recplayer);
     stream_pause(false);
-    stream_play_timefree(station, prog->ft, prog->to);
+    stream_play_timefree(station, s_tf_cur.ft, s_tf_cur.to);   // clamped window
 }
 
 static void ev_pick_program(lv_event_t *e)
@@ -2560,11 +2653,23 @@ static void guide_refresh_async(void *unused)
     lv_obj_clean(s_guide_list);
     if (s_guide_loading || s_guide_n <= 0) {
         lv_obj_t *l = lv_label_create(s_guide_list);
-        lv_label_set_text(l, s_guide_loading ? "\xE2\x80\xA6" : "No schedule");   // …
+        // Plain ASCII: U+2026 (…) is absent from the font and rendered as tofu.
+        lv_label_set_text(l, s_guide_loading ? "Loading..." : "No schedule");
         lv_obj_set_style_text_color(l, lv_color_hex(C_DIM), 0);
         return;
     }
+    // Radiko publishes time-free audio a few minutes behind the live edge, so
+    // `avail` is the newest instant that can actually be played. A programme still
+    // on air is kept in the list (marked below) and plays up to that point — see
+    // play_timefree. Only ones with nothing playable yet are hidden: asking for a
+    // position past the live edge is asking for the future, and Radiko answers it
+    // by quietly serving its newest audio, which reads as a wildly wrong seek.
+    time_t avail = time(NULL) - TF_AVAIL_LAG;
+    int shown = 0;
     for (int i = 0; i < s_guide_n; i++) {
+        if (tf_epoch(s_guide_progs[i].ft) >= avail) continue;
+        bool onair = tf_epoch(s_guide_progs[i].to) > avail;
+        shown++;
         lv_obj_t *row = lv_button_create(s_guide_list);
         lv_obj_set_size(row, 306, 34);
         lv_obj_set_style_bg_color(row, lv_color_hex(C_PANEL), 0);
@@ -2574,15 +2679,25 @@ static void guide_refresh_async(void *unused)
         char hhmm[6]; tf_hhmm(s_guide_progs[i].ft, hhmm);
         lv_obj_t *tl = lv_label_create(row);
         lv_label_set_text(tl, hhmm);
-        lv_obj_set_style_text_color(tl, lv_color_hex(C_HL), 0);
+        // Still on air: dim the start time so it reads as "partial" — only the
+        // portion Radiko has already published will play.
+        lv_obj_set_style_text_color(tl, lv_color_hex(onair ? C_DIM : C_HL), 0);
         lv_obj_align(tl, LV_ALIGN_LEFT_MID, 8, 0);
         lv_obj_t *nl = lv_label_create(row);
         lv_obj_set_style_text_font(nl, &lv_font_jp_16, 0);
-        lv_obj_set_width(nl, 232);
-        lv_label_set_long_mode(nl, LV_LABEL_LONG_DOT);
+        // Marquee, matching the player. The height is pinned to ONE line because
+        // an automatic height let a long title wrap and spill out of the 34 px
+        // row; LVGL only animates the rows whose text actually overflows.
+        lv_obj_set_size(nl, 232, lv_font_get_line_height(&lv_font_jp_16));
+        lv_label_set_long_mode(nl, LV_LABEL_LONG_SCROLL_CIRCULAR);
         lv_label_set_text(nl, s_guide_progs[i].title);
         lv_obj_set_style_text_color(nl, lv_color_hex(C_TEXT), 0);
         lv_obj_align(nl, LV_ALIGN_LEFT_MID, 62, 0);
+    }
+    if (!shown) {   // e.g. today, before the first programme has finished
+        lv_obj_t *l = lv_label_create(s_guide_list);
+        lv_label_set_text(l, "Not aired yet");
+        lv_obj_set_style_text_color(l, lv_color_hex(C_DIM), 0);
     }
 }
 

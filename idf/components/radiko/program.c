@@ -2,11 +2,13 @@
  * Radiko "now on air" program info.
  *
  * radiko.jp/v3/program/now/{area}.xml returns the current + upcoming programmes
- * for every station in the area, in one gzip'd XML (~14 KB compressed, ~68 KB
- * raw). Radiko always gzips, even unasked, so we decompress with the ROM miniz
- * (tinfl) — no bundled zlib. Fetched over plain HTTP on purpose: the data is
- * public and this avoids a second TLS session competing with the stream's for
- * the scarce ~40 KB of contiguous internal RAM that mbedtls needs.
+ * for every station in the area, in one XML (~14 KB gzipped, ~68 KB raw), which
+ * we inflate with puff. Radiko does NOT reliably gzip unasked — a whole-day
+ * schedule came back as 90-120 KB of plain XML — so we send Accept-Encoding and
+ * still size the buffers for the uncompressed case; the server picks. Fetched
+ * over plain HTTP on purpose: the data is public and this avoids a second TLS
+ * session competing with the stream's for the scarce ~40 KB of contiguous
+ * internal RAM that mbedtls needs.
  */
 #include "radiko.h"
 
@@ -25,8 +27,13 @@
 
 static const char *TAG = "radiko_prog";
 
-#define GZ_CAP   (48 * 1024)    // compressed response (~14 KB) + headroom
-#define XML_CAP  (128 * 1024)   // decompressed XML (~68 KB) + headroom
+// Radiko does NOT always gzip: without an explicit Accept-Encoding it serves a
+// whole-day schedule as plain XML (90-120 KB). The old 48 KB response buffer then
+// silently kept the first 48 KB and the day's guide simply ended mid-afternoon.
+// So: ask for gzip (keeping transfers ~18 KB), but still size the buffer for the
+// uncompressed worst case, because the server decides the encoding, not us.
+#define GZ_CAP   (192 * 1024)   // response as received: gzip (~18 KB) OR plain XML
+#define XML_CAP  (256 * 1024)   // decompressed XML — a busy day is ~120 KB raw
 #define PROG_MAX 256            // programme title + performers (pfm), UTF-8
 
 // Current-programme titles, parallel to the active station list. Guarded by s_lock.
@@ -55,8 +62,11 @@ static size_t fetch_gz_xml(const char *url, char *xml, size_t xml_cap)
 {
     uint8_t *gz = heap_caps_malloc(GZ_CAP, MALLOC_CAP_SPIRAM);
     if (!gz) return 0;
+    // Ask for gzip: unasked, Radiko serves a whole day as ~120 KB of plain XML.
+    static const http_header_t hdrs[] = {{ "Accept-Encoding", "gzip" }};
     http_req_t req = {
         .url = url, .method = HTTP_METHOD_GET,
+        .req_headers = hdrs, .n_req_headers = 1,
         .body = (char *)gz, .body_cap = GZ_CAP,
     };
     esp_err_t err = httpc_do(&req);
@@ -66,6 +76,11 @@ static size_t fetch_gz_xml(const char *url, char *xml, size_t xml_cap)
         free(gz);
         return 0;
     }
+    // httpc fills at most body_cap-1, so this means the response was cut off. It
+    // used to pass silently as a short-but-valid schedule (the guide just ended
+    // mid-afternoon) — say so instead of quietly serving partial data.
+    if (req.body_len >= GZ_CAP - 1)
+        ESP_LOGE(TAG, "response filled the %u KB buffer — truncated", GZ_CAP / 1024);
 
     size_t xlen = 0, dlen = 0;
     const uint8_t *deflate = radiko_gzip_body(gz, req.body_len, &dlen);
