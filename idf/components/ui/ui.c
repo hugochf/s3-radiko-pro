@@ -2140,6 +2140,7 @@ static int       s_rec_count;           // number of listed recordings
 static bool      s_pl_timefree;         // player is showing a time-free programme, not a file
 static char      s_tf_station[16];      // station id of the playing time-free programme
 static radiko_prog_t s_tf_cur;          // its ft/to/title (for restart + back-to-guide)
+static int       s_tf_index;            // its row in s_guide_progs (for prev/next)
 
 static void fmt_mmss(char *out, int sz, uint32_t s)
 {
@@ -2273,8 +2274,21 @@ static void ev_pl_stop(lv_event_t *e)
     player_show(0);
 }
 
-static void ev_pl_prev(lv_event_t *e) { open_recording(s_pl_index - 1); }
-static void ev_pl_next(lv_event_t *e) { open_recording(s_pl_index + 1); }
+static void tf_step_program(int dir);   // defined with the time-free helpers below
+
+// This player screen is shared by recordings and time-free, so prev/next must
+// follow whichever list the current item came from — stepping through SD
+// recordings while a past programme plays was just confusing.
+static void ev_pl_prev(lv_event_t *e)
+{
+    if (s_pl_timefree) tf_step_program(-1);
+    else               open_recording(s_pl_index - 1);
+}
+static void ev_pl_next(lv_event_t *e)
+{
+    if (s_pl_timefree) tf_step_program(+1);
+    else               open_recording(s_pl_index + 1);
+}
 
 static void tf_seek_restart(int pct);   // defined with the time-free helpers below
 
@@ -2651,7 +2665,25 @@ static void play_timefree(const char *station, const radiko_prog_t *prog)
 static void ev_pick_program(lv_event_t *e)
 {
     int i = (int)(intptr_t)lv_event_get_user_data(e);
-    if (i >= 0 && i < s_guide_n) play_timefree(station_id(s_guide_station), &s_guide_progs[i]);
+    if (i < 0 || i >= s_guide_n) return;
+    s_tf_index = i;
+    play_timefree(station_id(s_guide_station), &s_guide_progs[i]);
+}
+
+// Prev/next within the loaded day guide. Skips programmes that have not aired
+// yet — the same rule guide_refresh_async applies — so the transport buttons can
+// never land on something the list itself wouldn't offer. Stops at the ends
+// rather than wrapping (the guide is one day, not a playlist).
+static void tf_step_program(int dir)
+{
+    if (!s_guide_progs || s_guide_n <= 0) return;
+    time_t avail = time(NULL) - TF_AVAIL_LAG;
+    for (int i = s_tf_index + dir; i >= 0 && i < s_guide_n; i += dir) {
+        if (tf_epoch(s_guide_progs[i].ft) >= avail) continue;
+        s_tf_index = i;
+        play_timefree(s_tf_station, &s_guide_progs[i]);
+        return;
+    }
 }
 
 // Rebuild the programme list for the current station/day (runs on the LVGL task).

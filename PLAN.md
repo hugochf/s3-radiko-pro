@@ -132,7 +132,7 @@ back to esp-adf only if libhelix proves unworkable.
 | 26 | Localization framework | Japanese UI strings via lookup table |
 | 27 | Better volume curve, equalizer | Audio quality |
 | 28 | Bluetooth output | A2DP source |
-| 29 | **Recording to SD + playback** | 29a ✅ live record + on-device playback; 29b time-free deferred |
+| 29 | **Recording to SD + playback** ✅ | 29a ✅ live record + on-device playback; 29b ✅ time-free (past 7 days, streamed — no SD) |
 | 30 | **VPN-free geo-auth + area picker** ✅ | Android-app auth so any area streams from any IP; Settings area selector (built) |
 | 31 | **LVGL heap exhaustion fix** ✅ | Opening WiFi setup rebooted the radio: LVGL's fixed 64 KB pool hit 100%. +256 KB PSRAM spill pool |
 | 32 | **Audio visualiser** | Rainbow spectrum bars in the logo tile; long-press to toggle. FFT of the PCM actually being played |

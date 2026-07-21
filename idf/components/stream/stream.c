@@ -132,6 +132,12 @@ static void fetcher_task(void *arg)
     // This session's generation. Any control command bumps s_gen, which drops us
     // out of the loop below to re-resolve the playlist for the NEW session.
     uint32_t gen = s_gen;
+    // Where a time-free session should (re)start. Begins at the requested ft and
+    // advances with playback, so re-resolving mid-programme — a token re-auth, a
+    // dropped session — resumes roughly where we were instead of rewinding to
+    // the programme's start and replaying everything already heard.
+    char tf_ft[16];   // same width as s_tf_ft it is copied from
+    snprintf(tf_ft, sizeof tf_ft, "%s", s_tf_ft);
 
     ESP_LOGI(TAG, "streaming %s", s_station);
 
@@ -199,7 +205,7 @@ static void fetcher_task(void *arg)
                 snprintf(purl, sizeof(purl),
                          "https://tf-f-rpaa-radiko.smartstream.ne.jp/tf/playlist.m3u8?station_id=%s"
                          "&start_at=%s&ft=%s&end_at=%s&to=%s&l=15&lsid=%s&type=b",
-                         s_station, s_tf_ft, s_tf_ft, s_tf_to, s_tf_to, lsid);
+                         s_station, tf_ft, tf_ft, s_tf_to, s_tf_to, lsid);
             } else {
                 snprintf(purl, sizeof(purl), "%s?station_id=%s&l=30&lsid=%s&type=b",
                          base, s_station, lsid);
@@ -285,6 +291,10 @@ static void fetcher_task(void *arg)
             if (s_stop || s_gen != gen) break;
             strncpy(last_seg, line, sizeof(last_seg) - 1);
             last_seg[sizeof(last_seg) - 1] = '\0';
+            // Advance the time-free resume point. A re-resolve restarts at this
+            // segment, so at worst it repeats the ~5 s already queued — versus
+            // replaying the whole programme from ft.
+            if (s_timefree && pdt[0]) snprintf(tf_ft, sizeof tf_ft, "%s", pdt);
             pushed++;
         }
         // reached_end wins over `pushed`: the final batch usually feeds a few
