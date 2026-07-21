@@ -65,7 +65,7 @@ Live Radiko audio plays, touchscreen-controlled. Working today:
   row; a flashing red "● REC m:ss" and a solid-red LED show it's rolling. No PC
   needed to capture or replay.
 - **Time-free (タイムフリー) — listen to the past 7 days**: flip the station list
-  to **PAST**, pick a station, and browse its day-by-day schedule (‹ › steps back
+  to **TIMEFREE**, pick a station, and browse its day-by-day schedule (‹ › steps back
   a week). Tapping a programme streams it straight from Radiko — nothing is
   downloaded and the SD card isn't touched — with a draggable seek bar. A show
   still **on air** stays in the list and keeps playing as the rest broadcasts;

@@ -246,6 +246,17 @@ static void refresh_player(void)
     }
 }
 
+// Every button in this UI is flat. LVGL's default theme draws a drop shadow, and
+// shadow_width is NOT inherited, so it had to be cleared on each button
+// individually — which six of them silently missed. Create buttons through here
+// and the house style can't drift again.
+static lv_obj_t *ui_button(lv_obj_t *parent)
+{
+    lv_obj_t *b = lv_button_create(parent);
+    lv_obj_set_style_shadow_width(b, 0, 0);
+    return b;
+}
+
 // =====================================================================
 // Event callbacks
 // =====================================================================
@@ -358,8 +369,8 @@ static lv_obj_t *s_set_off_val = NULL;
 static const uint8_t BL_DUTY[4] = { 64, 128, 192, 255 };
 static const char   *BL_NAMES[4] = { "Low", "Mid", "High", "Max" };
 static const char   *SLEEP_NAMES[4] = { "Off", "30 min", "60 min", "90 min" };
-static const uint32_t DIM_MS[5]   = { 60000, 180000, 300000, 600000, 900000 };
-static const char    *DIM_NAMES[5] = { "1 min", "3 min", "5 min", "10 min", "15 min" };
+static const uint32_t DIM_MS[6]   = { 60000, 180000, 300000, 600000, 900000, 0 };  // 0=never
+static const char    *DIM_NAMES[6] = { "1 min", "3 min", "5 min", "10 min", "15 min", "Never" };
 static const uint32_t OFF_MS[5]   = { 180000, 300000, 600000, 1800000, 0 };  // 0=never
 static const char    *OFF_NAMES[5] = { "3 min", "5 min", "10 min", "30 min", "Never" };
 
@@ -783,11 +794,10 @@ static void build_settings_screen(void)
     lv_obj_set_style_pad_all(hdr, 2, 0);
     lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *back = lv_button_create(hdr);
+    lv_obj_t *back = ui_button(hdr);
     lv_obj_set_size(back, 72, 24);
     lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_set_style_bg_color(back, lv_color_hex(C_ACCENT), 0);
-    lv_obj_set_style_shadow_width(back, 0, 0);
     lv_obj_add_event_cb(back, ev_set_back, LV_EVENT_CLICKED, NULL);
     lv_obj_t *bl = lv_label_create(back);
     lv_label_set_text(bl, LV_SYMBOL_LEFT " Back");
@@ -862,8 +872,8 @@ static void build_settings_screen(void)
     s_set_bl_sl = set_slider_row(cont, "Brightness", 3, st->brightness,
                                  BL_NAMES[st->brightness], ev_set_bl, &s_set_bl_val);
     // Arduino row order: Brightness, Screen Dim, Screen Off, Sleep Timer.
-    int didx = opt_index(DIM_MS, 5, st->dim_ms, 2);
-    s_set_dim_sl = set_slider_row(cont, "Screen Dim", 4, didx,
+    int didx = opt_index(DIM_MS, 6, st->dim_ms, 2);
+    s_set_dim_sl = set_slider_row(cont, "Screen Dim", 5, didx,
                                   DIM_NAMES[didx], ev_set_dim, &s_set_dim_val);
     int oidx = opt_index(OFF_MS, 5, st->off_ms, 2);
     s_set_off_sl = set_slider_row(cont, "Screen Off", 4, oidx,
@@ -900,11 +910,10 @@ static void build_settings_screen(void)
     lv_label_set_text(f2, fw);
 
     // OTA (Phase 22): check GitHub releases, update in place.
-    s_ota_btn = lv_button_create(cont);
+    s_ota_btn = ui_button(cont);
     lv_obj_set_size(s_ota_btn, 288, 30);
     lv_obj_set_style_bg_color(s_ota_btn, lv_color_hex(C_ACCENT), 0);
     lv_obj_set_style_bg_color(s_ota_btn, lv_color_hex(C_HL), LV_STATE_PRESSED);
-    lv_obj_set_style_shadow_width(s_ota_btn, 0, 0);
     lv_obj_add_event_cb(s_ota_btn, ev_ota_check, LV_EVENT_CLICKED, NULL);
     lv_obj_t *ol = lv_label_create(s_ota_btn);
     lv_label_set_text(ol, LV_SYMBOL_DOWNLOAD "  Check for Update");
@@ -915,10 +924,9 @@ static void build_settings_screen(void)
     lv_label_set_text(s_ota_lbl, "");
 
     // ---- Recordings library (Phase 29; the Record toggle lives on the player) ----
-    lv_obj_t *rl_btn = lv_button_create(cont);
+    lv_obj_t *rl_btn = ui_button(cont);
     lv_obj_set_size(rl_btn, 288, 30);
     lv_obj_set_style_bg_color(rl_btn, lv_color_hex(C_ACCENT), 0);
-    lv_obj_set_style_shadow_width(rl_btn, 0, 0);
     lv_obj_add_event_cb(rl_btn, ev_open_recordings, LV_EVENT_CLICKED, NULL);
     s_reclib_lbl = lv_label_create(rl_btn);
     lv_obj_center(s_reclib_lbl);
@@ -1440,14 +1448,22 @@ static void ev_select_station(lv_event_t *e)
     lv_screen_load(s_scr_player);
 }
 
-// LIVE / PAST (time-free) toggle in the station-list header.
+// LIVE / TIMEFREE toggle in the station-list header. "TIMEFREE" is Radiko's own
+// name for this (タイムフリー), so it reads as the same feature to anyone who uses
+// the service. The button is accent-coloured in BOTH states to set it apart from
+// the plain navigation buttons — it is a mode switch, not another Back.
+static void list_mode_refresh(void)
+{
+    if (!s_list_mode_lbl) return;
+    lv_label_set_text(s_list_mode_lbl,
+                      s_list_timefree ? LV_SYMBOL_PREV " TIMEFREE"
+                                      : LV_SYMBOL_PLAY " LIVE");
+}
+
 static void ev_list_mode_toggle(lv_event_t *e)
 {
     s_list_timefree = !s_list_timefree;
-    if (s_list_mode_lbl)
-        lv_label_set_text(s_list_mode_lbl,
-                          s_list_timefree ? LV_SYMBOL_PREV " PAST"
-                                          : LV_SYMBOL_PLAY " LIVE");
+    list_mode_refresh();
 }
 
 // Poll WiFi state and reflect it in the status bar. Runs inside lv_timer_handler
@@ -1529,19 +1545,23 @@ static void idle_timer_cb(lv_timer_t *t)
         // bouncing clock at full brightness and leave it there — no dimming
         // (the moving clock avoids burn-in, and dimming a screensaver is what
         // the user explicitly does NOT want). Any touch exits via the wake path.
-        if (s_screen_state == 0 && idle > st->dim_ms &&
+        // dim_ms == 0 ("Never") means never change the screen — so the saver
+        // never takes over either.
+        if (s_screen_state == 0 && st->dim_ms && idle > st->dim_ms &&
             lv_screen_active() == s_scr_player) {
             s_screen_state = 1;
             saver_enter();
         }
         return;
     }
-    if (s_screen_state == 0 && idle > st->dim_ms) {
-        s_screen_state = 1;
-        display_backlight_set(DIM_DUTY);
-    } else if (s_screen_state == 1 && st->off_ms && idle > st->off_ms) {
-        s_screen_state = 2;
-        display_backlight_set(0);
+    // "Never" is a 0 timeout, for dim as well as off. Both are measured from
+    // idle rather than chaining off->dim, so "Dim: Never" + "Off: 10 min" still
+    // blanks at 10 min; the old chain required passing through the dim state, so
+    // a never-dimming screen could never switch off either.
+    if (st->off_ms && idle > st->off_ms) {
+        if (s_screen_state != 2) { s_screen_state = 2; display_backlight_set(0); }
+    } else if (st->dim_ms && idle > st->dim_ms) {
+        if (s_screen_state != 1) { s_screen_state = 1; display_backlight_set(DIM_DUTY); }
     }
 }
 
@@ -1551,13 +1571,12 @@ static void idle_timer_cb(lv_timer_t *t)
 static lv_obj_t *mk_circle_btn(lv_obj_t *parent, int size, int x, int y,
                                uint32_t bg, lv_event_cb_t cb)
 {
-    lv_obj_t *b = lv_button_create(parent);
+    lv_obj_t *b = ui_button(parent);
     lv_obj_set_size(b, size, size);
     lv_obj_set_pos(b, x, y);
     lv_obj_set_style_radius(b, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(b, lv_color_hex(bg), 0);
     lv_obj_set_style_bg_color(b, lv_color_hex(C_HL), LV_STATE_PRESSED);
-    lv_obj_set_style_shadow_width(b, 0, 0);
     lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, NULL);
     return b;
 }
@@ -1579,11 +1598,10 @@ static void build_player_screen(void)
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
 
     // WiFi status — tappable to open the setup screen.
-    lv_obj_t *wbtn = lv_button_create(bar);
+    lv_obj_t *wbtn = ui_button(bar);
     lv_obj_set_size(wbtn, 86, 22);
     lv_obj_align(wbtn, LV_ALIGN_LEFT_MID, -4, 0);
     lv_obj_set_style_bg_opa(wbtn, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_shadow_width(wbtn, 0, 0);
     lv_obj_set_ext_click_area(wbtn, 16);   // small target at the screen edge
     lv_obj_add_event_cb(wbtn, ev_open_wifi_setup, LV_EVENT_CLICKED, NULL);
     w_wifi = lv_label_create(wbtn);
@@ -1601,13 +1619,12 @@ static void build_player_screen(void)
     // OVERFLOW_VISIBLE lets the title label spill past the 140 px button so a
     // long "Radiko - <area>" (e.g. Kanagawa) shows in full instead of clipping;
     // the centre gap to the wifi/battery buttons has room for it.
-    lv_obj_t *hdr_btn = lv_button_create(bar);
+    lv_obj_t *hdr_btn = ui_button(bar);
     lv_obj_set_size(hdr_btn, 140, 24);
     lv_obj_add_flag(hdr_btn, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
     lv_obj_align(hdr_btn, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_style_bg_opa(hdr_btn, LV_OPA_TRANSP, 0);
     lv_obj_set_style_bg_color(hdr_btn, lv_color_hex(C_HL), LV_STATE_PRESSED);
-    lv_obj_set_style_shadow_width(hdr_btn, 0, 0);
     lv_obj_add_event_cb(hdr_btn, ev_open_settings, LV_EVENT_CLICKED, NULL);
     w_hdr = lv_label_create(hdr_btn);   // English, default 14 pt (overflows the button)
     lv_label_set_text_fmt(w_hdr, "Radiko - %s", radiko_area_name(radiko_area_num()));
@@ -1627,11 +1644,10 @@ static void build_player_screen(void)
     lv_obj_add_flag(s_hdr_dot, LV_OBJ_FLAG_HIDDEN);
 
     // Battery (real reading via ADC); tapping it cycles brightness (Arduino).
-    lv_obj_t *bbtn = lv_button_create(bar);
+    lv_obj_t *bbtn = ui_button(bar);
     lv_obj_set_size(bbtn, 86, 22);
     lv_obj_align(bbtn, LV_ALIGN_RIGHT_MID, 4, 0);
     lv_obj_set_style_bg_opa(bbtn, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_shadow_width(bbtn, 0, 0);
     lv_obj_set_ext_click_area(bbtn, 16);
     lv_obj_add_event_cb(bbtn, ev_bat_cycle, LV_EVENT_CLICKED, NULL);
     w_bat = lv_label_create(bbtn);
@@ -1874,7 +1890,7 @@ static void build_list_screen(void)
     lv_obj_set_style_pad_all(hdr, 4, 0);
     lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *back = lv_button_create(hdr);
+    lv_obj_t *back = ui_button(hdr);
     lv_obj_set_size(back, 80, 24);
     lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_set_style_bg_color(back, lv_color_hex(C_ACCENT), 0);
@@ -1883,22 +1899,19 @@ static void build_list_screen(void)
     lv_label_set_text(bl, LV_SYMBOL_LEFT " Back");
     lv_obj_center(bl);
 
-    // Live / 過去 (time-free) mode toggle — right of the header. In 過去 mode,
+    // LIVE / TIMEFREE mode toggle — right of the header. In TIMEFREE mode,
     // tapping a station opens its 7-day guide instead of playing it live.
-    lv_obj_t *mode = lv_button_create(hdr);
-    lv_obj_set_size(mode, 92, 24);
+    lv_obj_t *mode = ui_button(hdr);
+    lv_obj_set_size(mode, 116, 24);   // fits "⏮ TIMEFREE"; header has room beside Back
     lv_obj_align(mode, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_set_style_bg_color(mode, lv_color_hex(C_ACCENT), 0);
-    lv_obj_set_style_shadow_width(mode, 0, 0);
+    lv_obj_set_style_bg_color(mode, lv_color_hex(C_HL), 0);   // stands out from Back
     lv_obj_add_event_cb(mode, ev_list_mode_toggle, LV_EVENT_CLICKED, NULL);
     // Default (Montserrat) font, NOT the JP one: the JP font carries no LVGL
     // symbol glyphs, so the icon rendered as a tofu square. Both labels are
     // English for the same reason.
     s_list_mode_lbl = lv_label_create(mode);
-    lv_label_set_text(s_list_mode_lbl,
-                      s_list_timefree ? LV_SYMBOL_PREV " PAST"
-                                      : LV_SYMBOL_PLAY " LIVE");
     lv_obj_center(s_list_mode_lbl);
+    list_mode_refresh();   // sets the label AND the mode colour
 
     // Scrollable rows (populated per-area by rebuild_list_rows)
     s_list_cont = lv_obj_create(s_scr_list);
@@ -2015,7 +2028,7 @@ static void scan_task(void *arg)
         lv_obj_set_style_text_color(l, lv_color_hex(C_DIM), 0);
     }
     for (int i = 0; i < n; i++) {
-        lv_obj_t *btn = lv_button_create(s_wifi_list);
+        lv_obj_t *btn = ui_button(s_wifi_list);
         lv_obj_set_size(btn, 300, 34);
         lv_obj_set_style_bg_color(btn, lv_color_hex(C_PANEL), 0);
         lv_obj_add_event_cb(btn, ev_pick_ssid, LV_EVENT_CLICKED, &s_aps[i]);
@@ -2046,7 +2059,7 @@ static void build_wifi_setup_screen(void)
     lv_obj_set_style_pad_all(hdr, 2, 0);
     lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *back = lv_button_create(hdr);
+    lv_obj_t *back = ui_button(hdr);
     lv_obj_set_size(back, 70, 22);
     lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_set_style_bg_color(back, lv_color_hex(C_ACCENT), 0);
@@ -2306,7 +2319,7 @@ static void build_recplayer_screen(void)
     lv_obj_set_style_border_width(hdr, 0, 0);
     lv_obj_set_style_pad_all(hdr, 2, 0);
     lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_t *back = lv_button_create(hdr);
+    lv_obj_t *back = ui_button(hdr);
     lv_obj_set_size(back, 70, 22);
     lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_set_style_bg_color(back, lv_color_hex(C_ACCENT), 0);
@@ -2409,11 +2422,10 @@ static void rebuild_rec_rows(void)
         return;
     }
     for (int i = 0; i < n; i++) {
-        lv_obj_t *row = lv_button_create(s_rec_list);
+        lv_obj_t *row = ui_button(s_rec_list);
         lv_obj_set_size(row, 300, 34);
         lv_obj_set_style_bg_color(row, lv_color_hex(C_PANEL), 0);
         lv_obj_set_style_bg_color(row, lv_color_hex(C_HL), LV_STATE_PRESSED);
-        lv_obj_set_style_shadow_width(row, 0, 0);
         lv_obj_add_event_cb(row, ev_open_player, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         char friendly[96];
         rec_friendly(s_rec_entries[i].name, friendly, sizeof(friendly));
@@ -2430,12 +2442,11 @@ static void rebuild_rec_rows(void)
         lv_obj_set_style_text_color(dl, lv_color_hex(C_DIM), 0);
         lv_obj_align(dl, LV_ALIGN_RIGHT_MID, -44, 0);
         // Trash button — its own button so tapping it deletes without playing.
-        lv_obj_t *tb = lv_button_create(row);
+        lv_obj_t *tb = ui_button(row);
         lv_obj_set_size(tb, 34, 30);
         lv_obj_align(tb, LV_ALIGN_RIGHT_MID, -2, 0);
         lv_obj_set_style_bg_color(tb, lv_color_hex(C_BG), 0);
         lv_obj_set_style_bg_color(tb, lv_color_hex(0xE01030), LV_STATE_PRESSED);
-        lv_obj_set_style_shadow_width(tb, 0, 0);
         lv_obj_add_event_cb(tb, ev_delete_recording, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         lv_obj_t *tl = lv_label_create(tb);
         lv_label_set_text(tl, LV_SYMBOL_TRASH);
@@ -2459,7 +2470,7 @@ static void build_recordings_screen(void)
     lv_obj_set_style_pad_all(hdr, 2, 0);
     lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *back = lv_button_create(hdr);
+    lv_obj_t *back = ui_button(hdr);
     lv_obj_set_size(back, 70, 22);
     lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_set_style_bg_color(back, lv_color_hex(C_ACCENT), 0);
@@ -2670,11 +2681,10 @@ static void guide_refresh_async(void *unused)
         if (tf_epoch(s_guide_progs[i].ft) >= avail) continue;
         bool onair = tf_epoch(s_guide_progs[i].to) > avail;
         shown++;
-        lv_obj_t *row = lv_button_create(s_guide_list);
+        lv_obj_t *row = ui_button(s_guide_list);
         lv_obj_set_size(row, 306, 34);
         lv_obj_set_style_bg_color(row, lv_color_hex(C_PANEL), 0);
         lv_obj_set_style_bg_color(row, lv_color_hex(C_HL), LV_STATE_PRESSED);
-        lv_obj_set_style_shadow_width(row, 0, 0);
         lv_obj_add_event_cb(row, ev_pick_program, LV_EVENT_CLICKED, (void *)(intptr_t)i);
         char hhmm[6]; tf_hhmm(s_guide_progs[i].ft, hhmm);
         lv_obj_t *tl = lv_label_create(row);
@@ -2740,7 +2750,7 @@ static void build_guide_screen(void)
     lv_obj_set_style_border_width(hdr, 0, 0);
     lv_obj_set_style_pad_all(hdr, 2, 0);
     lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_t *back = lv_button_create(hdr);
+    lv_obj_t *back = ui_button(hdr);
     lv_obj_set_size(back, 64, 22);
     lv_obj_align(back, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_set_style_bg_color(back, lv_color_hex(C_ACCENT), 0);
@@ -2754,11 +2764,10 @@ static void build_guide_screen(void)
     lv_obj_align(s_guide_ttl, LV_ALIGN_LEFT_MID, 72, 0);
 
     // Day stepper: ‹  <date>  ›
-    lv_obj_t *prev = lv_button_create(s_scr_guide);
+    lv_obj_t *prev = ui_button(s_scr_guide);
     lv_obj_set_size(prev, 44, 26);
     lv_obj_set_pos(prev, 6, 32);
     lv_obj_set_style_bg_color(prev, lv_color_hex(C_ACCENT), 0);
-    lv_obj_set_style_shadow_width(prev, 0, 0);
     lv_obj_add_event_cb(prev, ev_guide_prevday, LV_EVENT_CLICKED, NULL);
     lv_obj_t *pl = lv_label_create(prev); lv_label_set_text(pl, LV_SYMBOL_LEFT); lv_obj_center(pl);
 
@@ -2767,11 +2776,10 @@ static void build_guide_screen(void)
     lv_obj_set_style_text_color(s_guide_daylbl, lv_color_hex(C_TEXT), 0);
     lv_obj_align(s_guide_daylbl, LV_ALIGN_TOP_MID, 0, 36);
 
-    lv_obj_t *nxt = lv_button_create(s_scr_guide);
+    lv_obj_t *nxt = ui_button(s_scr_guide);
     lv_obj_set_size(nxt, 44, 26);
     lv_obj_set_pos(nxt, 270, 32);
     lv_obj_set_style_bg_color(nxt, lv_color_hex(C_ACCENT), 0);
-    lv_obj_set_style_shadow_width(nxt, 0, 0);
     lv_obj_add_event_cb(nxt, ev_guide_nextday, LV_EVENT_CLICKED, NULL);
     lv_obj_t *nl2 = lv_label_create(nxt); lv_label_set_text(nl2, LV_SYMBOL_RIGHT); lv_obj_center(nl2);
 
